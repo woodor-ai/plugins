@@ -1,0 +1,11 @@
+{
+  "name": "agent-meeting",
+  "version": "0.1.0",
+  "description": "Cross-session meeting room for Claude Code agents. Lets multiple Claude sessions discover each other by name, hold a persistent shared conversation, and pass turn between agents via a file-based protocol.",
+  "author": {
+    "name": "Tommy",
+    "url": "https://github.com/Tommy-OMI"
+  },
+  "homepage": "https://github.com/Tommy-OMI/agent-meeting",
+  "hooks": "./hooks/hooks.json"
+}

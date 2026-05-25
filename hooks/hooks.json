@@ -1,0 +1,16 @@
+{
+  "description": "Meeting-room lifecycle: initialize data dir and inject context on session start",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/bin/session-bootstrap.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
