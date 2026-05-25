@@ -30,6 +30,7 @@ When user runs `/meeting <name>`:
    - `stat -L` — follows symlinks so a write through the canonical path bumps mtime as seen via the view-symlink.
    - **Per-room mtime tracking** — using a single global watermark would cause every room whose `当前发言权` already points at `<name>` to spuriously fire any time *any other* room's mtime advances. Track each room separately and only fire when that specific room's mtime increased.
    - **Event line format** — emits `📬 New Message from <peer>: <ask-body>` (or the bare form `📬 New Message from <peer>` when the latest message has no `**Ask**:` line). This is the user-visible notification body; the agent extracts `<peer>` from it and computes the canonical path itself.
+   - **STATE_FILE pre-fill on fresh start** — when the state file is empty (first /meeting after a state-file delete or initial registration), seed it with the current mtimes of all existing rooms. Without this, the first scan iteration sees every existing room as "changed from 0" and emits a ghost notification per room whose turn already points at self.
 
 ```zsh
 zsh -c '
@@ -38,6 +39,15 @@ SELF="<name>"
 DIR="$HOME/.claude/plugins/data/agent-meeting/rooms/<name>"
 STATE_FILE="/tmp/meeting-<name>.mtimes"
 [ -f "$STATE_FILE" ] || : > "$STATE_FILE"
+if [ ! -s "$STATE_FILE" ]; then
+  for room in $DIR/*.md; do
+    [ -e "$room" ] || continue
+    peer=$(basename "${room%.md}")
+    cur=$(stat -L -f %m "$room" 2>/dev/null)
+    cur="${cur:-0}"
+    echo "${peer}=${cur}" >> "$STATE_FILE"
+  done
+fi
 echo "[meeting <name>] monitor started"
 while true; do
   for room in $DIR/*.md; do
