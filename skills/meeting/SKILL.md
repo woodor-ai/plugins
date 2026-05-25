@@ -19,12 +19,17 @@ When user runs `/meeting <name>`:
 
    Note: this is not a hard mutex — if two sessions register simultaneously, one entry can be lost (read-modify-write race between the two `jq` reads). The window is small (milliseconds) and the use case is 1–5 long-lived sessions, so this is accepted. `flock` is intentionally not used because macOS does not ship it.
 4. **Create view dir**: `mkdir -p ~/.claude/plugins/data/agent-meeting/rooms/<name>`
-5. **Install monitor**: invoke the Monitor tool with this exact command (substitute `<name>` literally).
+5. **Install monitor**: invoke the Monitor tool with these exact arguments:
+
+   - `description`: `📞 meeting:<name>` — static label shown as the notification title; the dynamic per-event content goes in the stdout line below.
+   - `persistent`: `true`
+   - `command`: see zsh script below.
 
    Notes on why each piece matters:
    - `setopt NULL_GLOB` — without it, zsh's default NOMATCH makes empty `*.md` globs print `no matches found` to stderr that even `2>/dev/null` on the command can't suppress (zsh emits the error before the redirection takes effect).
    - `stat -L` — follows symlinks so a write through the canonical path bumps mtime as seen via the view-symlink.
-   - **Per-room mtime tracking** — using a single global watermark would cause every room whose `当前发言权` already points at `<name>` to spuriously RING any time *any other* room's mtime advances. Track each room separately and only RING when that specific room's mtime increased.
+   - **Per-room mtime tracking** — using a single global watermark would cause every room whose `当前发言权` already points at `<name>` to spuriously fire any time *any other* room's mtime advances. Track each room separately and only fire when that specific room's mtime increased.
+   - **Event line format** — emits `📬 New Message from <peer>: <ask-body>` (or the bare form `📬 New Message from <peer>` when the latest message has no `**Ask**:` line). This is the user-visible notification body; the agent extracts `<peer>` from it and computes the canonical path itself.
 
 ```zsh
 zsh -c '
@@ -50,7 +55,12 @@ while true; do
         canonical="$room"
       fi
       if grep -qF "当前发言权: <name>" "$canonical" 2>/dev/null; then
-        echo "RING peer=${peer} canonical=$canonical"
+        ask=$(grep -F "**Ask**:" "$canonical" 2>/dev/null | tail -1 | sed -e "s/^[[:space:]]*\*\*Ask\*\*:[[:space:]]*//")
+        if [ -n "$ask" ]; then
+          echo "📬 New Message from ${peer}: ${ask}"
+        else
+          echo "📬 New Message from ${peer}"
+        fi
       fi
       grep -vF "${peer}=" "$STATE_FILE" > "${STATE_FILE}.tmp" 2>/dev/null || : > "${STATE_FILE}.tmp"
       echo "${peer}=${cur}" >> "${STATE_FILE}.tmp"
@@ -70,13 +80,14 @@ done
 
 7. **Confirm to user**: "Meeting registered as `<name>`. You can now /talkto <peer> or receive calls." (Do not mention tab rename — it is best-effort and silent.)
 
-## Behavior on incoming RING
+## Behavior on incoming new-message event
 
-When monitor emits `RING peer=<peer> canonical=<absolute-path>`:
+When monitor emits a line matching `📬 New Message from <peer>(: <ask>)?`:
 
-1. Use the `canonical=<path>` value from the monitor output, OR compute it yourself:
+1. **Extract `<peer>`** from the line (first token after "from", before `:` or end-of-line).
+2. **Compute canonical path** (monitor no longer includes it in the event line):
    - `sorted = sort([self, peer])` (lexicographic)
    - `canonical = ~/.claude/plugins/data/agent-meeting/rooms/canonical/${sorted[0]}--${sorted[1]}.md`
-2. **Read** the canonical path. The room file header contains the message protocol; follow it to compose your reply.
-3. **Write** the entire updated file back using the canonical path. Do NOT write through the view symlink at `rooms/<self>/<peer>.md` — the Write tool will refuse with "Refusing to write through symlink".
-4. After writing, the room's `当前发言权` line should read the peer's name (you flip it as part of the message).
+3. **Read** the canonical path. The room file header contains the message protocol; follow it to compose your reply.
+4. **Write** the entire updated file back using the canonical path. Do NOT write through the view symlink at `rooms/<self>/<peer>.md` — the Write tool will refuse with "Refusing to write through symlink".
+5. After writing, the room's `当前发言权` line should read the peer's name (you flip it as part of the message).
