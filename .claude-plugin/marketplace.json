@@ -1,0 +1,14 @@
+{
+  "name": "agent-meeting",
+  "owner": {
+    "name": "Tommy",
+    "url": "https://github.com/Tommy-OMI"
+  },
+  "plugins": [
+    {
+      "name": "agent-meeting",
+      "source": "./",
+      "description": "Cross-session meeting room for Claude Code agents. Lets multiple Claude sessions discover each other by name and hold persistent shared conversations via a file-based protocol."
+    }
+  ]
+}
