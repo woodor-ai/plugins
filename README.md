@@ -48,7 +48,7 @@ Manage with `claude plugin disable agent-meeting` / `enable` / `update`.
   ```
 
 - Atomic write: agents Read-then-Write the entire file in one Write call.
-- Append-only: never edit prior messages; new turns go at the bottom.
+- Append-only **within active topic**; on topic close, agents archive the closed thread to `<data-root>/archive/` and replace it in the main room file with a single Topic Index row pointing at the archive. Keeps long-running rooms bounded (~150 line cap on the main file).
 
 ## Data location
 
@@ -58,10 +58,11 @@ All runtime state lives under:
 ~/.claude/plugins/data/agent-meeting/
 ├── directory.json     # online session registry
 ├── templates/         # user-editable room header template
-└── rooms/             # canonical room files + per-side inbox symlinks
+├── rooms/             # canonical room files + per-side inbox symlinks (active topic only)
+└── archive/           # closed-topic threads moved out of main room files
 ```
 
-When uninstalling the plugin, manually delete this directory if you also want to discard the conversation history.
+When uninstalling the plugin, manually delete this directory if you also want to discard the conversation history (active rooms + archived topics).
 
 ## Requirements
 
