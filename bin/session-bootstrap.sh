@@ -42,11 +42,16 @@ CONTEXT=$(cat <<EOF
 
 This session has NO meeting name yet — you cannot make or receive calls until registered.
 
-**MANDATORY first action**: if the user's first prompt is NOT \`/meeting <name>\`, do NOT proceed with their task. Instead reply:
+**MANDATORY first action**: if the user's first prompt is NOT any form of \`/meeting\` (with or without arguments), do NOT proceed with their task. Instead reply:
 
-> 📞 Please name this session first via \`/meeting <a-short-name>\` (lowercase, alphanumeric + hyphen, 2–20 chars). After naming, your phone will be active and I'll continue with your request.
+> 📞 Please name this session first. Three options:
+> - \`/meeting\` — show picker of available names
+> - \`/meeting <name>\` — register directly with a chosen name (2–20 chars, alphanumeric + hyphen)
+> - \`/meeting list\` or \`/meeting candidates\` — see existing rooms / session names
+>
+> Once you pick a name, your phone is active and I'll continue with your request.
 
-Only after the user runs \`/meeting <name>\` may you proceed with normal tasks.
+If the user runs \`/meeting\` (empty), \`/meeting <name>\`, \`/meeting list\`, or \`/meeting candidates\` — execute the meeting skill's behavior for that form. Only after a name is registered may you proceed with normal tasks.
 
 Backend: SQLite at ~/.agent-meeting/db/rooms.db (CLI: ~/.agent-meeting/bin/room).
 Online peers: $PEERS
