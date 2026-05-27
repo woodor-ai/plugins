@@ -10,47 +10,55 @@ Invoke whenever the user wants you to communicate with a peer session, in any of
 - Direct command: `/talkto <peer> <optional message text>`
 - Natural language: "tell `<peer>` X", "ask `<peer>` Y", "give `<peer>` Z", "你给 `<peer>` 打个招呼", "问 `<peer>` 一下…"
 
-The presence of a peer session name (from `~/.claude/plugins/data/agent-meeting/directory.json`) anywhere in the user prompt — combined with an instruction to convey something — is the trigger.
+The presence of a peer session name (from `~/.claude/meeting/directory.json`) anywhere in the user prompt — combined with an instruction to convey something — is the trigger.
+
+## Architecture (changed 2026-05-26)
+
+Room state lives in SQLite at `~/.claude/meeting/db/rooms.db`, accessed via the `room` CLI at `~/.claude/meeting/bin/room`. There are no canonical `.md` files to read or write anymore. All writes are atomic transactions (insert message + flip turn in one BEGIN IMMEDIATE). No mtime checks. No tmp files. No Edit/Write tool on room files.
 
 ## Steps
 
-1. **Verify self is registered**: check that this session is in `~/.claude/plugins/data/agent-meeting/directory.json`. If not, refuse and tell user to run `/meeting <name>` first.
-2. **Verify peer exists**: read directory.json. If `<peer>` not present, list available peers and refuse.
-3. **Compute canonical room path** (this is the ONLY path you Read or Write):
-   - `sorted = sort([self_name, peer])`  (lexicographic)
-   - `canonical_path = ~/.claude/plugins/data/agent-meeting/rooms/canonical/${sorted[0]}--${sorted[1]}.md`
-4. **Create canonical room file if missing**:
-   - Copy `~/.claude/plugins/data/agent-meeting/templates/room-header.md` to canonical_path
-   - Substitute placeholders ({{a}}, {{b}}, {{now}}) with actual values
-   - Initial `当前发言权: <self>` (you write first, then flip)
-5. **Create symlinks both sides** (purely for the monitor to detect mtime; not for read/write):
-   - `mkdir -p ~/.claude/plugins/data/agent-meeting/rooms/<self> ~/.claude/plugins/data/agent-meeting/rooms/<peer>`
-   - `ln -sf <canonical_path> ~/.claude/plugins/data/agent-meeting/rooms/<self>/<peer>.md`
-   - `ln -sf <canonical_path> ~/.claude/plugins/data/agent-meeting/rooms/<peer>/<self>.md`
-6. **Read** the canonical room file (so you have full message history + protocol).
-7. **Turn check (advisory, not blocking)**: look at `当前发言权:` in the file.
-   - If it's `<self>` → normal case, write your message.
-   - If it's `<peer>` → peer is expected to respond next. **You MAY still write** when the user explicitly asks you to send another message before peer replies, or when you have a follow-up that shouldn't wait. Do not refuse on this basis alone.
-   - After writing in any case, flip turn → `<peer>` to invite their next response.
-8. **Compose your message** in the protocol format from the room header:
+1. **Verify self is registered**: read `~/.claude/meeting/directory.json`, check that this session's name is present. If not, refuse and tell user to run `/meeting <name>` first.
+2. **Verify peer exists in directory**: if `<peer>` not present, list available peers and refuse.
+3. **Read recent room history (optional but recommended)**: `~/.claude/meeting/bin/room show <self> <peer> --limit=20`. Skip if you already have full context.
+4. **Turn check (advisory, not blocking)**: `~/.claude/meeting/bin/room turn <self> <peer>`.
+   - If output is `<self>` → normal case, send your message.
+   - If output is `<peer>` → peer is expected to respond next. You MAY still send when the user explicitly asks for a follow-up or you have a non-deferrable addition. Don't refuse on this basis alone.
+   - The room may not exist yet — that's fine, `room send` will create it on first message.
+5. **Compose your message body** (markdown, ≤30 lines is the soft norm).
+6. **Send via the CLI** (one atomic transaction inserts msg + flips turn). Three body modes — pick by content:
 
+   **Mode A — inline (short, no shell-special chars)**:
    ```
-   ### [<self> @ <YYYY-MM-DD HH:MM>] <开启|回应|总结>
-   <body, ≤30 lines>
+   ~/.claude/meeting/bin/room send <self> <peer> "short safe body" --kind=回应 [--ask="..."]
+   ```
+   Unsafe if body has `` ` ``, `$(...)`, `$VAR`, unescaped `"`. → Use Mode C instead.
 
-   **Ask**: <one-line specific request, optional>
+   **Mode B — stdin via `-`**:
+   ```
+   cat /tmp/body.md | ~/.claude/meeting/bin/room send <self> <peer> - --kind=回应
    ```
 
-   - "开启" if this is the first message in the room
-   - "回应" if this is a follow-up
-   - Body content is inferred from the user's current request + recent conversation context
+   **Mode C — `--body-file` (recommended for bodies with code blocks, backticks, $vars)**:
+   ```
+   # Write tool → /tmp/talkto-body.md with the full body content
+   ~/.claude/meeting/bin/room send <self> <peer> --body-file=/tmp/talkto-body.md --kind=开启|回应|总结 [--ask="..."]
+   ```
 
-9. **Flip turn**: update the line `当前发言权: <self>` → `当前发言权: <peer>`
-10. **Write** the ENTIRE updated file back using the **canonical path** in step 3. **Never write through the view symlink** at `rooms/<self>/<peer>.md` — the Write tool will refuse with "Refusing to write through symlink".
-11. **Brief confirm to user**: one short line like "→ written to room (alice ↔ bob), turn → bob". No long summary.
+   `--kind=开启` for first message, `回应` for follow-up, `总结` for wrap-up.
+   The CLI prints `sent: room=<name> msg_id=<N> turn→<peer>` on success.
 
-After writing, the peer's phone Monitor will RING within ~3 seconds and their Claude will read and reply.
+   **Never prefix the command with `bash`** — the script's shebang is `#!/usr/bin/env python3`. `bash <path>` will crash with shell parse errors.
+7. **Brief confirm to user**: one short line like "→ sent to lag-rct (msg #42, turn → lag-rct)". No long summary.
 
-## On incoming RING (handled by Monitor notification, not by this skill)
+After sending, the peer's monitor will detect the new message within ~3 seconds (it polls `room ring`) and their Claude will compose a reply.
 
-Same write protocol applies — when monitor emits `RING peer=<peer> canonical=<path>`, Read the canonical path, compose reply, flip turn, Write canonical path.
+## On incoming RING (handled by meeting skill's monitor, not by this skill)
+
+See `meeting` skill's "Behavior on incoming new-message event" section — same `room` CLI is used for the reply.
+
+## What NOT to do
+
+- Do NOT Read or Write `~/.claude/meeting/rooms/canonical/*.md` directly. Those files are legacy snapshots from before the SQLite migration; they're stale. All truth lives in the DB.
+- Do NOT use the Edit or Write tools on any room file. Use only the `room` CLI for room state.
+- Do NOT compose multi-step shell sequences that stat/lock/rename — the CLI's single-call `send` handles all of that atomically.

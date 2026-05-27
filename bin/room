@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""
+meeting-room CLI backed by SQLite.
+
+Replaces the file-per-room storage (canonical/*.md) that suffered from:
+  - Edit/Write race conditions (no atomic locking)
+  - Lost-update on concurrent peer writes
+  - 150-line manual archive discipline that nobody followed
+  - Turn-flag parsing via grep
+  - Monitor mtime false positives (prefix matching bug)
+
+SQLite gives us atomic transactions, version-based optimistic concurrency,
+unlimited history with O(log N) reads, and clean query semantics.
+
+Database: ~/.claude/meeting/db/rooms.db (WAL mode for concurrent readers).
+
+Usage:
+  room init                                          # ensure db + schema
+  room send <self> <peer> <body> [--kind=X] [--ask=Y]
+  room read <self> <peer> [--limit=30] [--since=ID]
+  room show <self> <peer> [--limit=30]               # human-readable markdown render
+  room turn <self> <peer>                            # whose turn is it
+  room ring <self> --since <ID>                      # monitor query: new msgs in rooms where turn=self
+  room list                                          # all rooms
+
+All write operations are wrapped in BEGIN IMMEDIATE transactions, so two
+sessions writing the same room simultaneously serialize cleanly.
+"""
+
+import argparse
+import os
+import sqlite3
+import sys
+import time
+
+DB_PATH = os.path.expanduser("~/.claude/meeting/db/rooms.db")
+
+SCHEMA = """
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS rooms (
+  id INTEGER PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,           -- canonical name: sorted([a,b]).join('--')
+  participant_a TEXT NOT NULL,         -- lexicographically first
+  participant_b TEXT NOT NULL,
+  current_turn TEXT NOT NULL,          -- one of participant_a/b
+  created_at INTEGER NOT NULL          -- unix seconds
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL REFERENCES rooms(id),
+  sender TEXT NOT NULL,
+  kind TEXT NOT NULL,                  -- 开启|回应|总结
+  body TEXT NOT NULL,
+  ask TEXT,                            -- nullable; the **Ask** line of this msg
+  created_at INTEGER NOT NULL          -- unix seconds
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages(room_id, id);
+"""
+
+
+# ---------- connection ----------
+
+def connect():
+    db = sqlite3.connect(DB_PATH, isolation_level=None, timeout=30)
+    db.row_factory = sqlite3.Row
+    db.executescript("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+    return db
+
+
+def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    db = connect()
+    db.executescript(SCHEMA)
+    db.close()
+
+
+# ---------- helpers ----------
+
+def canonical_room_name(a: str, b: str) -> tuple[str, str, str]:
+    """Sort two participants lexicographically. Returns (name, a, b)."""
+    sa, sb = sorted([a, b])
+    return f"{sa}--{sb}", sa, sb
+
+
+def ensure_room(db, self_name: str, peer: str) -> sqlite3.Row:
+    """Get or create the room for self <-> peer."""
+    name, a, b = canonical_room_name(self_name, peer)
+    row = db.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
+    if row is None:
+        # First message into this room; creator becomes the initial turn-holder via send().
+        db.execute(
+            "INSERT INTO rooms (name, participant_a, participant_b, current_turn, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, a, b, self_name, int(time.time())),
+        )
+        row = db.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
+    return row
+
+
+# ---------- commands ----------
+
+def cmd_init(args):
+    init_db()
+    print(f"db ready: {DB_PATH}")
+
+
+def cmd_send(args):
+    """Insert a message; flip turn to peer atomically.
+
+    Body can be passed:
+      - inline: room send self peer "hello"
+      - from stdin: echo "hello" | room send self peer -
+      - from file: room send self peer --body-file=/tmp/reply.md
+    Stdin/file is the safe way when body contains backticks, $(...), or other
+    shell-special chars that would otherwise get interpreted before argv reaches us.
+    """
+    if args.body_file:
+        with open(args.body_file) as f:
+            body = f.read().rstrip("\n")
+    elif args.body == "-":
+        body = sys.stdin.read().rstrip("\n")
+    else:
+        body = args.body
+    if not body:
+        raise SystemExit("error: body is empty")
+
+    db = connect()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        room = ensure_room(db, args.self, args.peer)
+        # Validate that self is a participant.
+        if args.self not in (room["participant_a"], room["participant_b"]):
+            raise SystemExit(f"error: {args.self} is not a participant in room {room['name']}")
+        db.execute(
+            "INSERT INTO messages (room_id, sender, kind, body, ask, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (room["id"], args.self, args.kind, body, args.ask, int(time.time())),
+        )
+        # Flip turn to peer.
+        db.execute("UPDATE rooms SET current_turn=? WHERE id=?", (args.peer, room["id"]))
+        msg_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute("COMMIT")
+        print(f"sent: room={room['name']} msg_id={msg_id} turn→{args.peer}")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
+def cmd_read(args):
+    """Print messages as raw rows: id|created_at|sender|kind|ask|body."""
+    db = connect()
+    room = db.execute(
+        "SELECT * FROM rooms WHERE name=?",
+        (canonical_room_name(args.self, args.peer)[0],),
+    ).fetchone()
+    if room is None:
+        print(f"no such room: {args.self} <-> {args.peer}", file=sys.stderr)
+        sys.exit(1)
+    q = "SELECT * FROM messages WHERE room_id=? "
+    params = [room["id"]]
+    if args.since:
+        q += "AND id > ? "
+        params.append(args.since)
+    q += "ORDER BY id ASC "
+    if args.limit:
+        q += f"LIMIT {int(args.limit)}"
+    for row in db.execute(q, params):
+        ask = (row["ask"] or "").replace("\n", " ")
+        body = row["body"].replace("\n", "\\n")
+        print(f"{row['id']}\t{row['created_at']}\t{row['sender']}\t{row['kind']}\t{ask}\t{body}")
+    db.close()
+
+
+def cmd_show(args):
+    """Pretty markdown render of recent messages (for human viewing)."""
+    db = connect()
+    name = canonical_room_name(args.self, args.peer)[0]
+    room = db.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
+    if room is None:
+        print(f"no such room: {args.self} <-> {args.peer}", file=sys.stderr)
+        sys.exit(1)
+    print(f"# Room: {room['participant_a']} ↔ {room['participant_b']}")
+    print(f"Created: {time.strftime('%Y-%m-%d %H:%M', time.localtime(room['created_at']))}")
+    print(f"当前发言权: {room['current_turn']}\n---\n")
+    msgs = db.execute(
+        "SELECT * FROM messages WHERE room_id=? ORDER BY id DESC LIMIT ?",
+        (room["id"], args.limit),
+    ).fetchall()
+    for row in reversed(msgs):
+        ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
+        print(f"### [{row['sender']} @ {ts}] {row['kind']}")
+        print(row["body"])
+        if row["ask"]:
+            print(f"\n**Ask**: {row['ask']}")
+        print()
+    db.close()
+
+
+def cmd_turn(args):
+    db = connect()
+    name = canonical_room_name(args.self, args.peer)[0]
+    row = db.execute("SELECT current_turn FROM rooms WHERE name=?", (name,)).fetchone()
+    if row is None:
+        print(f"no such room: {args.self} <-> {args.peer}", file=sys.stderr)
+        sys.exit(1)
+    print(row["current_turn"])
+    db.close()
+
+
+def cmd_ring(args):
+    """Monitor query: for self, list new messages in rooms where turn=self.
+
+    Output: one line per message: <msg_id>\t<peer>\t<ask_or_empty>
+    Monitor uses this to track the cursor and emit notifications.
+    """
+    db = connect()
+    rows = db.execute(
+        """
+        SELECT m.id, m.sender, m.ask, r.participant_a, r.participant_b
+          FROM messages m
+          JOIN rooms r ON m.room_id = r.id
+         WHERE r.current_turn = ?
+           AND m.id > ?
+           AND m.sender != ?
+         ORDER BY m.id ASC
+        """,
+        (args.self, args.since, args.self),
+    ).fetchall()
+    for row in rows:
+        # The peer is whichever participant is not self.
+        peer = row["participant_a"] if row["sender"] == row["participant_a"] else row["participant_b"]
+        ask = (row["ask"] or "").replace("\n", " ").replace("\t", " ")
+        print(f"{row['id']}\t{peer}\t{ask}")
+    db.close()
+
+
+def cmd_list(args):
+    db = connect()
+    for row in db.execute("SELECT name, current_turn, created_at FROM rooms ORDER BY name"):
+        cnt = db.execute("SELECT COUNT(*) FROM messages WHERE room_id=(SELECT id FROM rooms WHERE name=?)",
+                         (row["name"],)).fetchone()[0]
+        print(f"{row['name']:50s} turn={row['current_turn']:20s} msgs={cnt}")
+    db.close()
+
+
+def cmd_candidates(args):
+    """List candidate session names with liveness:
+      online      = registered AND monitor process alive (per /tmp/meeting-<name>.monitor_pid)
+      stale       = registered in directory.json but monitor process gone
+      historical  = never in directory but appears as sender in DB
+    Output format (one per line): <status>\t<name>\t<info>
+
+    Liveness signal: the monitor zsh script writes its own pid to
+    /tmp/meeting-<name>.monitor_pid at startup, and trap-removes it on exit.
+    We check `kill -0 <monitor_pid>`. This is more reliable than the old
+    directory.json `pid` field, which was the short-lived registration shell's
+    pid (dead within milliseconds).
+    """
+    import json
+
+    directory_path = os.path.expanduser("~/.claude/meeting/directory.json")
+    directory = {}
+    if os.path.exists(directory_path):
+        with open(directory_path) as f:
+            directory = json.load(f)
+
+    def monitor_alive(name: str) -> tuple[bool, int]:
+        """Returns (alive, pid). pid=0 if pid file missing."""
+        pid_path = f"/tmp/meeting-{name}.monitor_pid"
+        if not os.path.exists(pid_path):
+            return False, 0
+        try:
+            with open(pid_path) as f:
+                pid = int(f.read().strip())
+        except (ValueError, OSError):
+            return False, 0
+        try:
+            os.kill(pid, 0)
+            return True, pid
+        except (OSError, ProcessLookupError):
+            return False, pid
+
+    db = connect()
+    db_senders = {r["sender"] for r in db.execute("SELECT DISTINCT sender FROM messages")}
+    db.close()
+
+    online_names = set()
+    stale_names = set()
+    stale_info = {}
+    for name in directory:
+        alive, pid = monitor_alive(name)
+        if alive:
+            online_names.add(name)
+        else:
+            stale_names.add(name)
+            stale_info[name] = f"monitor gone (last pid {pid or '?'})"
+
+    historical_names = db_senders - online_names - stale_names
+
+    for name in sorted(online_names):
+        cwd = directory[name].get("cwd", "")
+        print(f"online\t{name}\t{cwd}")
+    for name in sorted(stale_names):
+        print(f"stale\t{name}\t{stale_info[name]}")
+    for name in sorted(historical_names):
+        print(f"historical\t{name}\t(no longer registered)")
+
+
+# ---------- main ----------
+
+def main():
+    p = argparse.ArgumentParser(prog="room")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("init").set_defaults(func=cmd_init)
+
+    s = sub.add_parser("send", help="insert a message and flip turn")
+    s.add_argument("self", help="sender name (your registered meeting name)")
+    s.add_argument("peer", help="peer name")
+    s.add_argument("body", nargs="?", default=None,
+                   help="message body inline; or `-` to read stdin; ignored when --body-file given")
+    s.add_argument("--body-file", default=None,
+                   help="path to a file containing the body — use this for any body with backticks, $(...), or other shell-special chars")
+    s.add_argument("--kind", default="回应",
+                   help="message kind/header, typically 开启|回应|总结 but any string allowed")
+    s.add_argument("--ask", default=None, help="optional one-line ask")
+    s.set_defaults(func=cmd_send)
+
+    s = sub.add_parser("read", help="dump messages as TSV rows")
+    s.add_argument("self")
+    s.add_argument("peer")
+    s.add_argument("--limit", type=int, default=30)
+    s.add_argument("--since", type=int, default=0, help="only msgs with id > since")
+    s.set_defaults(func=cmd_read)
+
+    s = sub.add_parser("show", help="pretty markdown render")
+    s.add_argument("self")
+    s.add_argument("peer")
+    s.add_argument("--limit", type=int, default=30)
+    s.set_defaults(func=cmd_show)
+
+    s = sub.add_parser("turn", help="print current turn-holder")
+    s.add_argument("self")
+    s.add_argument("peer")
+    s.set_defaults(func=cmd_turn)
+
+    s = sub.add_parser("ring", help="monitor query: new msgs in rooms where turn=self")
+    s.add_argument("self")
+    s.add_argument("--since", type=int, default=0, help="only msgs with id > since")
+    s.set_defaults(func=cmd_ring)
+
+    sub.add_parser("list").set_defaults(func=cmd_list)
+
+    sub.add_parser("candidates",
+                   help="list candidate session names with online/stale/historical status").set_defaults(func=cmd_candidates)
+
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -8,7 +8,7 @@
     {
       "name": "agent-meeting",
       "source": "./",
-      "description": "Cross-session meeting room for Claude Code agents. Lets multiple Claude sessions discover each other by name and hold persistent shared conversations via a file-based protocol."
+      "description": "Cross-session meeting room for Claude Code agents. SQLite-backed: atomic writes, no race conditions, unlimited history. Sessions discover each other by name and hold persistent shared conversations."
     }
   ]
 }

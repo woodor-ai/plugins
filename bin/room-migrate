@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""
+One-shot migration: parse all existing canonical/*.md and archive/*.md files
+into the SQLite rooms.db.
+
+Idempotent: skips rooms that already exist in db (so safe to re-run).
+"""
+
+import glob
+import os
+import re
+import sqlite3
+import sys
+import time
+from datetime import datetime
+
+DB_PATH = os.path.expanduser("~/.claude/meeting/db/rooms.db")
+CANONICAL_DIR = os.path.expanduser("~/.claude/meeting/rooms/canonical")
+ARCHIVE_DIR = os.path.expanduser("~/.claude/meeting/archive")
+
+# ### [<sender> @ <timestamp>] <kind...>
+# Sender may contain hyphens/lowercase/alphanum. Timestamp may have optional " PDT"/" PST".
+MSG_HEADER_RE = re.compile(
+    r"^###\s+\[(?P<sender>[A-Za-z0-9_\-]+)\s+@\s+(?P<ts>[^\]]+?)\]\s*(?P<kind>.*?)\s*$"
+)
+ASK_RE = re.compile(r"^\*\*Ask\*\*:\s*(.+?)\s*$")
+ROOM_TITLE_RE = re.compile(r"^#.*?(?:Meeting )?Room[^:]*:\s*(\S+)\s*↔\s*(\S+)")
+TURN_RE = re.compile(r"^当前发言权:\s*(\S+)\s*$")
+
+
+def parse_timestamp(ts_str: str) -> int:
+    """Best-effort parse. Returns unix epoch seconds, falling back to file mtime base."""
+    ts_clean = re.sub(r"\s*(PDT|PST|UTC)\s*$", "", ts_str.strip())
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return int(datetime.strptime(ts_clean, fmt).timestamp())
+        except ValueError:
+            continue
+    return 0  # caller will substitute file mtime
+
+
+def parse_messages_from_content(content: str, fallback_ts: int):
+    """Extract messages from any markdown content. Doesn't require room title or marker."""
+    lines = content.split("\n")
+    messages = []
+    current = None
+
+    for line in lines:
+        h = MSG_HEADER_RE.match(line)
+        if h:
+            if current is not None:
+                messages.append(current)
+            current = {
+                "sender": h.group("sender"),
+                "ts_str": h.group("ts"),
+                "kind": h.group("kind") or "回应",
+                "body_lines": [],
+                "ask": None,
+            }
+        elif current is not None:
+            ask_m = ASK_RE.match(line)
+            if ask_m:
+                current["ask"] = ask_m.group(1)
+            else:
+                current["body_lines"].append(line)
+
+    if current is not None:
+        messages.append(current)
+
+    for msg in messages:
+        msg["body"] = "\n".join(msg["body_lines"]).strip()
+        del msg["body_lines"]
+        msg["created_at"] = parse_timestamp(msg["ts_str"]) or fallback_ts
+        del msg["ts_str"]
+
+    return messages
+
+
+def parse_room_file(path: str):
+    """Parse one canonical .md room file. Returns (a, b, current_turn, messages) or None."""
+    with open(path) as f:
+        content = f.read()
+
+    m = ROOM_TITLE_RE.search(content)
+    if not m:
+        return None
+    a, b = sorted([m.group(1), m.group(2)])
+
+    tm = TURN_RE.search(content)
+    turn = tm.group(1) if tm else a
+
+    messages = parse_messages_from_content(content, int(os.path.getmtime(path)))
+    return a, b, turn, messages
+
+
+def main():
+    if not os.path.exists(DB_PATH):
+        print(f"db missing: {DB_PATH}. Run 'room init' first.", file=sys.stderr)
+        sys.exit(1)
+
+    db = sqlite3.connect(DB_PATH, isolation_level=None)
+    db.row_factory = sqlite3.Row
+
+    # Process canonical files first.
+    canonical_paths = sorted(glob.glob(f"{CANONICAL_DIR}/*.md"))
+    print(f"-- canonical files: {len(canonical_paths)}")
+
+    db.execute("BEGIN")
+    try:
+        for path in canonical_paths:
+            result = parse_room_file(path)
+            if result is None:
+                print(f"  skip (no title): {os.path.basename(path)}")
+                continue
+            a, b, turn, msgs = result
+            name = f"{a}--{b}"
+
+            existing = db.execute("SELECT id FROM rooms WHERE name=?", (name,)).fetchone()
+            if existing:
+                print(f"  skip (already in db): {name}")
+                continue
+
+            created_at = msgs[0]["created_at"] if msgs else int(os.path.getmtime(path))
+            db.execute(
+                "INSERT INTO rooms (name, participant_a, participant_b, current_turn, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (name, a, b, turn, created_at),
+            )
+            room_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+            for msg in msgs:
+                db.execute(
+                    "INSERT INTO messages (room_id, sender, kind, body, ask, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (room_id, msg["sender"], msg["kind"], msg["body"], msg["ask"], msg["created_at"]),
+                )
+            print(f"  migrated: {name} ({len(msgs)} msgs)")
+
+        # Now process archive files. Archive files have the same room name pattern but with a date suffix.
+        # We extract the room name and append their messages to the existing room.
+        if os.path.isdir(ARCHIVE_DIR):
+            archive_paths = sorted(glob.glob(f"{ARCHIVE_DIR}/*.md"))
+            print(f"-- archive files: {len(archive_paths)}")
+            for path in archive_paths:
+                # filename pattern: <room-name>-<archive-id>.md  →  derive room by stripping trailing "-<date>"
+                base = os.path.basename(path).removesuffix(".md")
+                # heuristic: room name has exactly one "--" separator; archive id is everything after the last "-"
+                # e.g. lag-rct--lag-self-2026-05-26 → lag-rct--lag-self + date
+                # We strip the trailing date if present.
+                m = re.match(r"^(.+?--[A-Za-z0-9_\-]+?)-\d{4}-\d{2}-\d{2}.*$", base)
+                if not m:
+                    print(f"  skip archive (can't parse name): {base}")
+                    continue
+                room_name = m.group(1)
+                with open(path) as f:
+                    archive_content = f.read()
+                msgs = parse_messages_from_content(archive_content, int(os.path.getmtime(path)))
+                if not msgs:
+                    print(f"  skip archive (empty): {base}")
+                    continue
+                room_row = db.execute("SELECT id FROM rooms WHERE name=?", (room_name,)).fetchone()
+                if room_row is None:
+                    print(f"  skip archive (room not in db): {room_name}")
+                    continue
+                room_id = room_row["id"]
+                # Insert archive msgs only if no existing message in this room has same (sender,created_at,body[:60])
+                inserted = 0
+                for msg in msgs:
+                    dup = db.execute(
+                        "SELECT 1 FROM messages WHERE room_id=? AND sender=? AND created_at=? AND substr(body,1,60)=substr(?,1,60)",
+                        (room_id, msg["sender"], msg["created_at"], msg["body"]),
+                    ).fetchone()
+                    if dup:
+                        continue
+                    db.execute(
+                        "INSERT INTO messages (room_id, sender, kind, body, ask, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (room_id, msg["sender"], msg["kind"], msg["body"], msg["ask"], msg["created_at"]),
+                    )
+                    inserted += 1
+                print(f"  archive merged: {room_name} (+{inserted}/{len(msgs)} msgs)")
+
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+
+    # Summary
+    print("\n-- summary --")
+    for row in db.execute("SELECT name, current_turn, (SELECT COUNT(*) FROM messages m WHERE m.room_id=r.id) cnt FROM rooms r ORDER BY name"):
+        print(f"  {row['name']:50s} turn={row['current_turn']:25s} msgs={row['cnt']}")
+
+    db.close()
+
+
+if __name__ == "__main__":
+    main()
