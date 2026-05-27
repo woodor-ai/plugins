@@ -1,6 +1,7 @@
 ---
 name: meeting
 description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.agent-meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
+argument-hint: [list | candidates | <name>]
 ---
 
 ## Architecture (changed 2026-05-26)
