@@ -1,24 +1,28 @@
 #!/bin/bash
 # SessionStart hook for the agent-meeting plugin.
-# - Ensures the data dir + SQLite db exist
-# - Symlinks plugin bin/ into the data dir so SKILL.md can reference a stable path
-# - Emits JSON with hookSpecificOutput.additionalContext to be injected
+# Agent-neutral: works under both Claude Code and Codex CLI.
+# - Both agents provide CLAUDE_PLUGIN_ROOT (Codex provides it as a compatibility alias)
+# - Data lives at ~/.agent-meeting/ regardless of host agent
 set -e
 
-DATA_DIR="$HOME/.claude/meeting"
+DATA_DIR="$HOME/.agent-meeting"
 DIRECTORY="$DATA_DIR/directory.json"
 DB="$DATA_DIR/db/rooms.db"
 BIN_LINK="$DATA_DIR/bin"
+
+# Detect plugin install root. CLAUDE_PLUGIN_ROOT works on Claude Code natively
+# and on Codex via compatibility alias. PLUGIN_ROOT is Codex's native name.
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}"
 
 mkdir -p "$DATA_DIR" "$DATA_DIR/db"
 
 [ -f "$DIRECTORY" ] || echo '{}' > "$DIRECTORY"
 
-# Symlink plugin's bin/ into data dir → SKILL.md can hardcode ~/.claude/meeting/bin/room
-# regardless of where the plugin source lives. Update on every startup in case plugin
-# was reinstalled/moved.
-if [ -n "$CLAUDE_PLUGIN_ROOT" ] && [ -d "$CLAUDE_PLUGIN_ROOT/bin" ]; then
-  ln -sfn "$CLAUDE_PLUGIN_ROOT/bin" "$BIN_LINK"
+# Symlink plugin's bin/ into the data dir → SKILL.md can hardcode
+# ~/.agent-meeting/bin/room regardless of where the plugin source lives.
+# Refresh every startup in case plugin was reinstalled/moved.
+if [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT/bin" ]; then
+  ln -sfn "$PLUGIN_ROOT/bin" "$BIN_LINK"
 fi
 
 # Initialize SQLite schema (idempotent) so the very first /meeting call works.
@@ -29,7 +33,6 @@ fi
 # Online peers = directory entries whose monitor pid file shows a live process.
 PEERS=""
 if [ -x "$BIN_LINK/room" ]; then
-  # candidates output: <status>\t<name>\t<info>. Pull just online.
   PEERS=$("$BIN_LINK/room" candidates 2>/dev/null | awk -F'\t' '$1=="online" {print $2}' | paste -sd, - | sed 's/,/, /g')
 fi
 [ -z "$PEERS" ] && PEERS="(none online)"
@@ -45,11 +48,13 @@ This session has NO meeting name yet — you cannot make or receive calls until 
 
 Only after the user runs \`/meeting <name>\` may you proceed with normal tasks.
 
-Backend: SQLite at ~/.claude/meeting/db/rooms.db (CLI: ~/.claude/meeting/bin/room).
+Backend: SQLite at ~/.agent-meeting/db/rooms.db (CLI: ~/.agent-meeting/bin/room).
 Online peers: $PEERS
 EOF
 )
 
+# Claude Code SessionStart hook output format. Codex SessionStart consumes the
+# same shape (hookSpecificOutput.additionalContext is honored for context injection).
 jq -n --arg ctx "$CONTEXT" '{
   hookSpecificOutput: {
     hookEventName: "SessionStart",

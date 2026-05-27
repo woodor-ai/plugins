@@ -33,7 +33,11 @@ import sqlite3
 import sys
 import time
 
-DB_PATH = os.path.expanduser("~/.claude/meeting/db/rooms.db")
+# Data root is agent-neutral so the same plugin works under Claude Code, Codex,
+# or any other host. Override with MEETING_HOME env var when testing.
+MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
+DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
+DIRECTORY_PATH = os.path.join(MEETING_HOME, "directory.json")
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -264,7 +268,7 @@ def cmd_candidates(args):
     """
     import json
 
-    directory_path = os.path.expanduser("~/.claude/meeting/directory.json")
+    directory_path = DIRECTORY_PATH
     directory = {}
     if os.path.exists(directory_path):
         with open(directory_path) as f:

@@ -4,7 +4,7 @@ Cross-session meeting room for Claude Code agents — SQLite-backed.
 
 ## What it does
 
-Multiple Claude Code sessions talk to each other through a shared persistent meeting-room store — no network, no daemon, just a local SQLite database. Each session registers a short name (`alice`, `bob`, `lag-runtime`) and starts a monitor that polls the DB for incoming messages. When you type `/talkto bob what's the auth bug status?` in one tab (or natural-language like "ask bob about the auth bug" / "给 bob 打个招呼"), the current session inserts your message into the shared rooms table in one atomic transaction (insert + flip turn). Bob's session has a monitor polling `room ring` and wakes up within ~3 seconds to read and reply. Full conversation history stays in `~/.claude/meeting/db/rooms.db` and survives session restarts.
+Multiple Claude Code sessions talk to each other through a shared persistent meeting-room store — no network, no daemon, just a local SQLite database. Each session registers a short name (`alice`, `bob`, `lag-runtime`) and starts a monitor that polls the DB for incoming messages. When you type `/talkto bob what's the auth bug status?` in one tab (or natural-language like "ask bob about the auth bug" / "给 bob 打个招呼"), the current session inserts your message into the shared rooms table in one atomic transaction (insert + flip turn). Bob's session has a monitor polling `room ring` and wakes up within ~3 seconds to read and reply. Full conversation history stays in `~/.agent-meeting/db/rooms.db` and survives session restarts.
 
 Since v0.2.0, the backend is SQLite (was file-per-room markdown in v0.1.x). This kills the whole class of bugs the file backend had: Edit/Write race conditions, lost-update on concurrent writes, 150-line file size limits, manual archive discipline, mtime watcher false positives.
 
@@ -47,7 +47,7 @@ Manage with `claude plugin disable agent-meeting` / `enable` / `update`.
 
 ## `room` CLI
 
-The plugin installs a `room` CLI at `~/.claude/meeting/bin/room` (symlinked to `$CLAUDE_PLUGIN_ROOT/bin/room` by `SessionStart` hook). Used internally by the skills, but you can call it manually:
+The plugin installs a `room` CLI at `~/.agent-meeting/bin/room` (symlinked to `$CLAUDE_PLUGIN_ROOT/bin/room` by `SessionStart` hook). Used internally by the skills, but you can call it manually:
 
 ```
 room list                                            # all rooms
@@ -74,7 +74,7 @@ The CLI always uses `BEGIN IMMEDIATE` transactions for writes, so concurrent ses
 ## Data location
 
 ```
-~/.claude/meeting/
+~/.agent-meeting/
 ├── directory.json                # online session registry (name → pid, cwd, started_at)
 ├── db/
 │   └── rooms.db                  # SQLite (WAL mode), rooms + messages tables
@@ -84,15 +84,15 @@ The CLI always uses `BEGIN IMMEDIATE` transactions for writes, so concurrent ses
     └── session-bootstrap.sh      # SessionStart hook
 ```
 
-When uninstalling, delete `~/.claude/meeting/` if you also want to discard conversation history.
+When uninstalling, delete `~/.agent-meeting/` if you also want to discard conversation history.
 
 ## Migrating from v0.1.x (markdown files)
 
-If you have data from the file-based version under `~/.claude/plugins/data/agent-meeting/rooms/canonical/*.md` or `~/.claude/meeting/rooms/canonical/*.md`, run:
+If you have data from the file-based version under `~/.claude/plugins/data/agent-meeting/rooms/canonical/*.md` or `~/.agent-meeting/rooms/canonical/*.md`, run:
 
 ```
 room init                                  # create DB if not exists
-~/.claude/meeting/bin/room-migrate         # parse all .md files + import to DB
+~/.agent-meeting/bin/room-migrate         # parse all .md files + import to DB
 ```
 
 The migration is idempotent (skips rooms already in DB). Legacy `.md` files are not deleted — safe to keep as snapshot or remove manually after verification.

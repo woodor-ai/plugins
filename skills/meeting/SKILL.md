@@ -1,15 +1,15 @@
 ---
 name: meeting
-description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.claude/meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
+description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.agent-meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
 ---
 
 ## Architecture (changed 2026-05-26)
 
-Room storage moved from per-room markdown files to a single SQLite database at `~/.claude/meeting/db/rooms.db`. All reads and writes go through the `room` CLI at `~/.claude/meeting/bin/room`. This eliminates the entire class of bugs we were fighting: Edit/Write races, mtime check hacks, file size limits, manual archive discipline, monitor false positives.
+Room storage moved from per-room markdown files to a single SQLite database at `~/.agent-meeting/db/rooms.db`. All reads and writes go through the `room` CLI at `~/.agent-meeting/bin/room`. This eliminates the entire class of bugs we were fighting: Edit/Write races, mtime check hacks, file size limits, manual archive discipline, monitor false positives.
 
 You do NOT read or write canonical `.md` files anymore. The old `rooms/canonical/*.md` and view-symlink dirs are legacy/snapshot only — ignore them.
 
-Session-level registration (`~/.claude/meeting/directory.json`) is unchanged.
+Session-level registration (`~/.agent-meeting/directory.json`) is unchanged.
 
 ## `/meeting` subcommand dispatch
 
@@ -18,16 +18,16 @@ The first word after `/meeting` decides what to do:
 | Input | Action |
 |---|---|
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
-| `/meeting list` | Show all rooms (run `~/.claude/meeting/bin/room list`, display output) |
+| `/meeting list` | Show all rooms (run `~/.agent-meeting/bin/room list`, display output) |
 | `/meeting rooms` | Same as `list` |
-| `/meeting candidates` | Show session-name candidates with online/stale/historical status (run `~/.claude/meeting/bin/room candidates`, display formatted) |
+| `/meeting candidates` | Show session-name candidates with online/stale/historical status (run `~/.agent-meeting/bin/room candidates`, display formatted) |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
 Reserved words (`list`, `rooms`, `candidates`) cannot be used as session names — they go to the corresponding subcommand instead.
 
 ### Picker (when `/meeting` has no args)
 
-1. Run `~/.claude/meeting/bin/room candidates` to get session-name candidates. Output is TSV: `<status>\t<name>\t<info>` where status is one of:
+1. Run `~/.agent-meeting/bin/room candidates` to get session-name candidates. Output is TSV: `<status>\t<name>\t<info>` where status is one of:
    - `online` — registered AND monitor pid alive → picking would conflict with the running session (your registration would overwrite directory.json but their monitor keeps running).
    - `stale` — registered but monitor process gone (zombie entry) → safe to take over.
    - `historical` — never in directory but appeared as sender in DB at some point → safe, fully fresh registration.
@@ -45,9 +45,9 @@ Reserved words (`list`, `rooms`, `candidates`) cannot be used as session names �
 ## On `/meeting <name>`
 
 1. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20.
-2. **Check directory**: read `~/.claude/meeting/directory.json`. If `<name>` already exists with a different `pid`, refuse.
+2. **Check directory**: read `~/.agent-meeting/directory.json`. If `<name>` already exists with a different `pid`, refuse.
 3. **Register**: atomic jq + tmp + mv into directory.json (unchanged from before).
-4. **Initialize DB** (idempotent): `~/.claude/meeting/bin/room init`
+4. **Initialize DB** (idempotent): `~/.agent-meeting/bin/room init`
 5. **Install monitor**: invoke Monitor tool with:
    - `description`: `📞 meeting:<name>` (static, TUI banner can't be dynamic)
    - `persistent`: `true`
@@ -58,7 +58,7 @@ zsh -c '
 SELF="<name>"
 STATE_FILE="/tmp/meeting-<name>.last_msg_id"
 PID_FILE="/tmp/meeting-<name>.monitor_pid"
-ROOM_CLI="$HOME/.claude/meeting/bin/room"
+ROOM_CLI="$HOME/.agent-meeting/bin/room"
 
 # Write our pid as the liveness signal. room candidates checks this file via kill -0.
 # trap cleans it up when monitor exits (TaskStop / session end / SIGTERM).
@@ -94,25 +94,25 @@ When monitor emits a line matching `📬 New Message from <peer>(: <ask>)?`:
 
 1. **Extract `<peer>`** from the line (first token after "from", before `:` or end-of-line). Extract `<ask>` as text after `<peer>: ` (empty if absent).
 2. **Announce in chat (first thing in your response)**: output a single line `📬 New message from: <peer>, Title: <ask>` (omit `, Title: <ask>` when ask is empty). This MUST be the first text in your response, before any tool calls — it's what surfaces in the Claude Code TUI's main agent message area so the user can see who sent the message. The Monitor's own banner is static (`📞 meeting:<self>`) and can't show this.
-3. **Read recent history**: `~/.claude/meeting/bin/room show <self> <peer> --limit=20` to see context.
+3. **Read recent history**: `~/.agent-meeting/bin/room show <self> <peer> --limit=20` to see context.
 4. **Compose your reply** (body string; keep ≤30 lines per the room norm).
 5. **Send** the reply. Three body input modes — pick by content safety:
 
    **Mode A — inline (short shell-safe bodies only)**:
    ```
-   ~/.claude/meeting/bin/room send <self> <peer> "short safe body" --kind=回应 [--ask="..."]
+   ~/.agent-meeting/bin/room send <self> <peer> "short safe body" --kind=回应 [--ask="..."]
    ```
    Safe only if body has no `` ` ``, `$(...)`, `$VAR`, unescaped `"`, or `\`. Otherwise bash substitutes before argv reaches the CLI. **When in doubt → Mode C.**
 
    **Mode B — stdin via `-` sentinel** (for piped content):
    ```
-   cat /tmp/reply.md | ~/.claude/meeting/bin/room send <self> <peer> - --kind=回应
+   cat /tmp/reply.md | ~/.agent-meeting/bin/room send <self> <peer> - --kind=回应
    ```
 
    **Mode C — `--body-file` (recommended for anything non-trivial, e.g. contains backticks, code blocks, $vars)**:
    ```
    # First: Write tool → /tmp/reply-<peer>.md with the full body content
-   ~/.claude/meeting/bin/room send <self> <peer> --body-file=/tmp/reply-<peer>.md --kind=回应 [--ask="..."]
+   ~/.agent-meeting/bin/room send <self> <peer> --body-file=/tmp/reply-<peer>.md --kind=回应 [--ask="..."]
    ```
    Only mode immune to shell parsing — content preserved verbatim.
 
@@ -126,7 +126,7 @@ Do NOT use Read/Write/Edit tools on `rooms/canonical/*.md` — those files are l
 
 ## Useful read-only commands
 
-- `~/.claude/meeting/bin/room list` — all rooms + msg counts + current turns
-- `~/.claude/meeting/bin/room turn <self> <peer>` — just the current turn
-- `~/.claude/meeting/bin/room show <self> <peer> --limit=N` — pretty render
-- `~/.claude/meeting/bin/room read <self> <peer> --limit=N` — TSV rows for scripting
+- `~/.agent-meeting/bin/room list` — all rooms + msg counts + current turns
+- `~/.agent-meeting/bin/room turn <self> <peer>` — just the current turn
+- `~/.agent-meeting/bin/room show <self> <peer> --limit=N` — pretty render
+- `~/.agent-meeting/bin/room read <self> <peer> --limit=N` — TSV rows for scripting
