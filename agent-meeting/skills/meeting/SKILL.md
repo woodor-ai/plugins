@@ -31,7 +31,7 @@ Reserved words `list` and `delete` cannot be used as session names — they go t
    - `online` — registered AND monitor pid alive → picking would conflict with the running session (your registration would overwrite directory.json but their monitor keeps running).
    - `stale` — registered but monitor process gone (zombie entry) → safe to take over.
    - `historical` — never in directory but appeared as sender in DB at some point → safe, fully fresh registration.
-2. Use the `AskUserQuestion` tool to let user pick. **AskUserQuestion has a hard cap of 4 options (one of which is auto-added "Other" for typing a brand-new name), so you have 3 actual slots to fill.**
+2. Use the `AskUserQuestion` tool to let user pick. **AskUserQuestion takes 2-4 options that you fill, and TUI auto-appends "Other" on top (does NOT count toward the cap). So you have 4 actual slots, with "Other" as the 5th displayed entry handling anything skipped.**
 
    **Selection rules — apply in order**:
    a. ALL `online` names go in first (sorted by msg count desc). These are reference info: user can still pick to take over, but with confirmation.
