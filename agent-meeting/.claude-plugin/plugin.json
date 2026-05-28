@@ -6,6 +6,5 @@
     "name": "Tommy",
     "url": "https://github.com/Tommy-OMI"
   },
-  "homepage": "https://github.com/Tommy-OMI/agent-meeting",
-  "hooks": "./hooks/hooks.json"
+  "homepage": "https://github.com/Tommy-OMI/plugins"
 }
