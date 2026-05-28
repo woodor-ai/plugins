@@ -1,6 +1,6 @@
 {
   "name": "agent-meeting",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Cross-session meeting room for Claude Code agents. Lets multiple Claude sessions discover each other by name and hold persistent shared conversations. Backed by SQLite for atomic writes, no file-based race conditions, and unlimited history.",
   "author": {
     "name": "Tommy",

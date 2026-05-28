@@ -19,9 +19,9 @@ The first word after `/meeting` decides what to do:
 | Input | Action |
 |---|---|
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
-| `/meeting list` | Show all rooms (run `~/.agent-meeting/bin/room list`, display output) |
+| `/meeting list` | Show all rooms (run `~/.agent-meeting/bin/room list`, **paste output verbatim into your reply text** as a markdown table or fenced code block — do NOT just say "see above" or "如上" relying on the collapsed bash block; the user wants it visible in the main chat area without expanding) |
 | `/meeting rooms` | Same as `list` |
-| `/meeting candidates` | Show session-name candidates with online/stale/historical status (run `~/.agent-meeting/bin/room candidates`, display formatted) |
+| `/meeting candidates` | Show session-name candidates with online/stale/historical status (run `~/.agent-meeting/bin/room candidates`, **paste output verbatim into your reply text** — same rule as `list`) |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
 Reserved words (`list`, `rooms`, `candidates`) cannot be used as session names — they go to the corresponding subcommand instead.
