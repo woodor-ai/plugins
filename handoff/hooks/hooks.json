@@ -1,0 +1,43 @@
+{
+  "description": "Auto-pickup handoff-pending.md on session start (startup/resume/clear/compact). Emits content as additionalContext and atomically archives to docs/handoff/archive/.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

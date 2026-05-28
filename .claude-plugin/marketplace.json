@@ -1,5 +1,5 @@
 {
-  "name": "agent-meeting",
+  "name": "tommy-plugins",
   "owner": {
     "name": "Tommy",
     "url": "https://github.com/Tommy-OMI"
@@ -7,8 +7,18 @@
   "plugins": [
     {
       "name": "agent-meeting",
-      "source": "./",
+      "source": "./agent-meeting",
       "description": "Cross-session meeting room for Claude Code agents. SQLite-backed: atomic writes, no race conditions, unlimited history. Sessions discover each other by name and hold persistent shared conversations."
+    },
+    {
+      "name": "init-agents",
+      "source": "./init-agents",
+      "description": "Initialize three project-level subagent profiles (explore/rd/planner) tiered by model cost. Replaces ad-hoc use of built-in Explore/Plan/general-purpose agents with a deliberate cheap→expensive cascade."
+    },
+    {
+      "name": "handoff",
+      "source": "./handoff",
+      "description": "Session-end handoff cards with auto-pickup. Write a 50-line cue card at session end; next session's SessionStart hook auto-loads it and archives to docs/handoff/archive/. Zero re-typing needed to resume work."
     }
   ]
 }
