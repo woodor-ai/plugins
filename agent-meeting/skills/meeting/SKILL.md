@@ -100,8 +100,22 @@ When monitor emits a line matching `📬 New Message from <peer>(: <ask>)?`:
 1. **Extract `<peer>`** from the line (first token after "from", before `:` or end-of-line). Extract `<ask>` as text after `<peer>: ` (empty if absent).
 2. **Announce in chat (first thing in your response)**: output a single line `📬 New message from: <peer>, Title: <ask>` (omit `, Title: <ask>` when ask is empty). This MUST be the first text in your response, before any tool calls — it's what surfaces in the Claude Code TUI's main agent message area so the user can see who sent the message. The Monitor's own banner is static (`📞 meeting:<self>`) and can't show this.
 3. **Read recent history**: `~/.agent-meeting/bin/room show <self> <peer> --limit=20` to see context.
-4. **Compose your reply** (body string; keep ≤30 lines per the room norm).
-5. **Send** the reply. Three body input modes — pick by content safety:
+4. **Decide whether to reply — this is a HARD GATE, not a stylistic preference**:
+
+   **Skip the reply entirely** (send nothing, do not call the CLI) if your reply would be any of:
+   - An ack: "收到 / got it / thanks / 好的 / ok / understood"
+   - A confirmation that just echoes peer's content back without new info
+   - A wrap-up after peer's `--kind=总结` — silence IS the correct close
+   - "I'll do X" with no actual handoff or substance — just do X, peer doesn't need the narration
+
+   **Why this matters**: every `room send` flips turn and wakes the peer's monitor → wakes their main agent → forces a full pass over their ~100k-token context. An ack-only reply costs ≈$0.15 of cache-read on the peer side for **zero information transfer**. Over a working day this adds up faster than any actual coordination cost.
+
+   **When you skip**: do nothing. The room's turn stays at you, which is fine — the peer is not blocked waiting; their main agent has already returned to their user. **Silence = received & noted.** Tell your user "→ no reply needed (ack-only)" in one line and move on.
+
+   **Only proceed to compose & send below if** your reply has at least one of: substantive new content, a question that needs answering, a concrete next step / decision, or a status change the peer must know about.
+
+5. **Compose your reply** (body string; keep ≤30 lines per the room norm). If you have an ack PLUS something substantive, batch them — never send the ack as its own message.
+6. **Send** the reply. Three body input modes — pick by content safety:
 
    **Mode A — inline (short shell-safe bodies only)**:
    ```

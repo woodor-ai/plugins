@@ -26,6 +26,18 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
    - If output is `<peer>` → peer is expected to respond next. You MAY still send when the user explicitly asks for a follow-up or you have a non-deferrable addition. Don't refuse on this basis alone.
    - The room may not exist yet — that's fine, `room send` will create it on first message.
 5. **Compose your message body** (markdown, ≤30 lines is the soft norm).
+
+   **Do NOT send ack-only / no-info messages** — this is a hard rule, not a style preference. Abort the send if your body is just one of:
+   - "收到 / got it / thanks / 好的 / ok / understood"
+   - A bare confirmation echoing peer's content with no new info
+   - "I'll do X" narration when there's no actual handoff or status to convey
+
+   **Why**: every `room send` flips turn and wakes the peer's monitor → forces a full ~100k-context pass on their side, costing ≈$0.15 cache-read for zero information. Across a working session this dwarfs the actual coordination cost.
+
+   **If you have ack + substantive content**: batch into one message. Never send the ack as its own message and the substance as another.
+
+   **If you only have an ack**: don't call `room send` at all. Tell the user one line ("→ no message to send, ack-only suppressed") and stop.
+
 6. **Send via the CLI** (one atomic transaction inserts msg + flips turn). Three body modes — pick by content:
 
    **Mode A — inline (short, no shell-special chars)**:
