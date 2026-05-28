@@ -217,6 +217,34 @@ def cmd_turn(args):
     db.close()
 
 
+def cmd_delete(args):
+    """Delete a room (and all its messages) atomically.
+
+    Hard delete — no soft-delete / archive. The caller (SKILL.md) is responsible
+    for confirming with the user before invoking this.
+    """
+    name = canonical_room_name(args.self, args.peer)[0]
+    db = connect()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        row = db.execute("SELECT id FROM rooms WHERE name=?", (name,)).fetchone()
+        if row is None:
+            db.execute("ROLLBACK")
+            print(f"no such room: {name}", file=sys.stderr)
+            sys.exit(1)
+        room_id = row["id"]
+        msg_cnt = db.execute("SELECT COUNT(*) c FROM messages WHERE room_id=?", (room_id,)).fetchone()["c"]
+        db.execute("DELETE FROM messages WHERE room_id=?", (room_id,))
+        db.execute("DELETE FROM rooms WHERE id=?", (room_id,))
+        db.execute("COMMIT")
+        print(f"deleted: room={name} ({msg_cnt} msgs purged)")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
 def cmd_ring(args):
     """Monitor query: for self, list new messages in rooms where turn=self.
 
@@ -346,6 +374,11 @@ def main():
 
     sub.add_parser("list",
                    help="list all session names with status (online/stale/historical) + msg count").set_defaults(func=cmd_list)
+
+    s = sub.add_parser("delete", help="delete a room and all its messages (hard delete, atomic)")
+    s.add_argument("self")
+    s.add_argument("peer")
+    s.set_defaults(func=cmd_delete)
 
     args = p.parse_args()
     args.func(args)

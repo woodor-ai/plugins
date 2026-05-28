@@ -1,7 +1,7 @@
 ---
 name: meeting
 description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.agent-meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
-argument-hint: [list | <name>]
+argument-hint: [list | delete <peer> | <name>]
 ---
 
 ## Architecture (changed 2026-05-26)
@@ -20,9 +20,10 @@ The first word after `/meeting` decides what to do:
 |---|---|
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
 | `/meeting list` | Run `~/.agent-meeting/bin/room list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `online` / `stale` / `historical`. |
+| `/meeting delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/room delete <self> <peer>`. |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
-Reserved word `list` cannot be used as a session name — it goes to the `list` subcommand instead.
+Reserved words `list` and `delete` cannot be used as session names — they go to the corresponding subcommand instead.
 
 ### Picker (when `/meeting` has no args)
 
@@ -30,14 +31,19 @@ Reserved word `list` cannot be used as a session name — it goes to the `list` 
    - `online` — registered AND monitor pid alive → picking would conflict with the running session (your registration would overwrite directory.json but their monitor keeps running).
    - `stale` — registered but monitor process gone (zombie entry) → safe to take over.
    - `historical` — never in directory but appeared as sender in DB at some point → safe, fully fresh registration.
-2. Use the `AskUserQuestion` tool to let user pick. Build options from ALL candidates:
-   - Each name becomes an option. Label = `<name>`; description format:
-     - online: `(in use — will conflict) — <cwd>`
-     - stale: `(stale, safe to take over) — <info>`
-     - historical: `(historical, safe) — <info>`
-   - "Other" is added automatically by AskUserQuestion for typing a brand-new name.
-   - **Do not silently skip online names** — show them so user knows what's taken, with the warning label.
-   - Cap at 4 options total (AskUserQuestion limit). Priority: stale → historical → online → Other. If still over, prefer most-recently-active.
+2. Use the `AskUserQuestion` tool to let user pick. **AskUserQuestion has a hard cap of 4 options (one of which is auto-added "Other" for typing a brand-new name), so you have 3 actual slots to fill.**
+
+   **Selection rules — apply in order**:
+   a. ALL `online` names go in first (sorted by msg count desc). These are reference info: user can still pick to take over, but with confirmation.
+   b. If slots remain after online: fill with `stale` names (sorted by msg count desc — most-active first).
+   c. If slots remain after stale: fill with `historical` names (sorted by msg count desc).
+   d. The auto-added "Other" handles anything skipped — user just types the name.
+
+   **Label / description format**:
+   - online: label=`<name>`, description=`(online — will conflict if you take it) — <cwd>`
+   - stale: label=`<name>`, description=`(stale, safe to take over) — <N> msgs`
+   - historical: label=`<name>`, description=`(historical, safe) — <N> msgs`
+
 3. If user picks an `online` name, ask explicit confirmation before proceeding (their choice may have been informational).
 4. After user confirms a name (or types via Other), proceed to "On `/meeting <name>`" below with that name.
 

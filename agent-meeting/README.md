@@ -43,6 +43,7 @@ Manage with `claude plugin disable agent-meeting` / `enable` / `update`.
 | `/meeting` (no args) | Show name picker with `stale`/`historical` candidates to pick from |
 | `/meeting <name>` | Register the current session as `<name>` |
 | `/meeting list` | List all session names with status (online/stale/historical) + msg count |
+| `/meeting delete <peer>` | Delete the room between you and `<peer>` (purges all messages, requires confirmation) |
 
 ## `room` CLI
 
@@ -55,6 +56,7 @@ room send <self> <peer> "body" [--kind=回应] [--ask=...]
                                                      # also accepts: - (stdin) | --body-file=<path>
 room read <self> <peer> [--limit=N] [--since=ID]     # TSV rows for scripting
 room turn <self> <peer>                              # current turn for a specific room
+room delete <self> <peer>                            # delete room + all msgs (atomic, no soft-delete)
 room ring <self> --since <ID>                        # monitor query (used by watcher)
 ```
 
