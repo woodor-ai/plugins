@@ -1,7 +1,7 @@
 ---
 name: meeting
 description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.agent-meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
-argument-hint: [list | candidates | <name>]
+argument-hint: [list | <name>]
 ---
 
 ## Architecture (changed 2026-05-26)
@@ -19,16 +19,14 @@ The first word after `/meeting` decides what to do:
 | Input | Action |
 |---|---|
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
-| `/meeting list` | Show all rooms (run `~/.agent-meeting/bin/room list`, **paste output verbatim into your reply text** as a markdown table or fenced code block — do NOT just say "see above" or "如上" relying on the collapsed bash block; the user wants it visible in the main chat area without expanding) |
-| `/meeting rooms` | Same as `list` |
-| `/meeting candidates` | Show session-name candidates with online/stale/historical status (run `~/.agent-meeting/bin/room candidates`, **paste output verbatim into your reply text** — same rule as `list`) |
+| `/meeting list` | Run `~/.agent-meeting/bin/room list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `online` / `stale` / `historical`. |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
-Reserved words (`list`, `rooms`, `candidates`) cannot be used as session names — they go to the corresponding subcommand instead.
+Reserved word `list` cannot be used as a session name — it goes to the `list` subcommand instead.
 
 ### Picker (when `/meeting` has no args)
 
-1. Run `~/.agent-meeting/bin/room candidates` to get session-name candidates. Output is TSV: `<status>\t<name>\t<info>` where status is one of:
+1. Run `~/.agent-meeting/bin/room list` to get session-name candidates. Output is TSV: `<status>\t<name>\t<msgs>` where status is one of:
    - `online` — registered AND monitor pid alive → picking would conflict with the running session (your registration would overwrite directory.json but their monitor keeps running).
    - `stale` — registered but monitor process gone (zombie entry) → safe to take over.
    - `historical` — never in directory but appeared as sender in DB at some point → safe, fully fresh registration.
@@ -61,7 +59,7 @@ STATE_FILE="/tmp/meeting-<name>.last_msg_id"
 PID_FILE="/tmp/meeting-<name>.monitor_pid"
 ROOM_CLI="$HOME/.agent-meeting/bin/room"
 
-# Write our pid as the liveness signal. room candidates checks this file via kill -0.
+# Write our pid as the liveness signal. room list checks this file via kill -0.
 # trap cleans it up when monitor exits (TaskStop / session end / SIGTERM).
 echo $$ > "$PID_FILE"
 trap "rm -f $PID_FILE" EXIT INT TERM
@@ -127,7 +125,7 @@ Do NOT use Read/Write/Edit tools on `rooms/canonical/*.md` — those files are l
 
 ## Useful read-only commands
 
-- `~/.agent-meeting/bin/room list` — all rooms + msg counts + current turns
-- `~/.agent-meeting/bin/room turn <self> <peer>` — just the current turn
+- `~/.agent-meeting/bin/room list` — all session names with status (online/stale/historical) + msg count
+- `~/.agent-meeting/bin/room turn <self> <peer>` — current turn for a specific room
 - `~/.agent-meeting/bin/room show <self> <peer> --limit=N` — pretty render
 - `~/.agent-meeting/bin/room read <self> <peer> --limit=N` — TSV rows for scripting

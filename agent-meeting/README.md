@@ -42,21 +42,19 @@ Manage with `claude plugin disable agent-meeting` / `enable` / `update`.
 |---|---|
 | `/meeting` (no args) | Show name picker with `stale`/`historical` candidates to pick from |
 | `/meeting <name>` | Register the current session as `<name>` |
-| `/meeting list` | List all rooms with message counts and current turn |
-| `/meeting candidates` | Show all session names with online/stale/historical status |
+| `/meeting list` | List all session names with status (online/stale/historical) + msg count |
 
 ## `room` CLI
 
 The plugin installs a `room` CLI at `~/.agent-meeting/bin/room` (symlinked to `$CLAUDE_PLUGIN_ROOT/bin/room` by `SessionStart` hook). Used internally by the skills, but you can call it manually:
 
 ```
-room list                                            # all rooms
-room candidates                                      # session names + liveness
+room list                                            # session names + status + msg count
 room show <self> <peer> [--limit=20]                 # pretty markdown render
 room send <self> <peer> "body" [--kind=回应] [--ask=...]
                                                      # also accepts: - (stdin) | --body-file=<path>
 room read <self> <peer> [--limit=N] [--since=ID]     # TSV rows for scripting
-room turn <self> <peer>                              # current turn
+room turn <self> <peer>                              # current turn for a specific room
 room ring <self> --since <ID>                        # monitor query (used by watcher)
 ```
 
@@ -69,7 +67,7 @@ The CLI always uses `BEGIN IMMEDIATE` transactions for writes, so concurrent ses
 - `rooms.current_turn` indicates whose turn it is (advisory, not a hard lock — agents may override).
 - Each message has: `sender`, `kind` (开启/回应/总结 or any string), `body`, optional `ask`, `created_at`.
 - Atomic write: `room send` inserts the message and flips the turn in one transaction.
-- **Liveness signal**: each session's monitor writes its own pid to `/tmp/meeting-<name>.monitor_pid` at startup, trap-removes on exit. `room candidates` checks `kill -0 <monitor_pid>` for each registered session.
+- **Liveness signal**: each session's monitor writes its own pid to `/tmp/meeting-<name>.monitor_pid` at startup, trap-removes on exit. `room list` checks `kill -0 <monitor_pid>` for each registered session.
 
 ## Data location
 

@@ -245,75 +245,60 @@ def cmd_ring(args):
 
 
 def cmd_list(args):
-    db = connect()
-    for row in db.execute("SELECT name, current_turn, created_at FROM rooms ORDER BY name"):
-        cnt = db.execute("SELECT COUNT(*) FROM messages WHERE room_id=(SELECT id FROM rooms WHERE name=?)",
-                         (row["name"],)).fetchone()[0]
-        print(f"{row['name']:50s} turn={row['current_turn']:20s} msgs={cnt}")
-    db.close()
+    """List all session names with liveness status and message count.
 
-
-def cmd_candidates(args):
-    """List candidate session names with liveness:
-      online      = registered AND monitor process alive (per /tmp/meeting-<name>.monitor_pid)
-      stale       = registered in directory.json but monitor process gone
-      historical  = never in directory but appears as sender in DB
-    Output format (one per line): <status>\t<name>\t<info>
+    Columns: <status>\t<name>\t<msgs>
+      status: online | stale | historical
+        online     = registered AND monitor process alive (per /tmp/meeting-<name>.monitor_pid)
+        stale      = registered in directory.json but monitor process gone
+        historical = never in directory but appears as sender in DB
+      msgs   = total messages sent by this name across all rooms
 
     Liveness signal: the monitor zsh script writes its own pid to
     /tmp/meeting-<name>.monitor_pid at startup, and trap-removes it on exit.
-    We check `kill -0 <monitor_pid>`. This is more reliable than the old
-    directory.json `pid` field, which was the short-lived registration shell's
-    pid (dead within milliseconds).
+    We check `kill -0 <monitor_pid>`.
     """
     import json
 
-    directory_path = DIRECTORY_PATH
     directory = {}
-    if os.path.exists(directory_path):
-        with open(directory_path) as f:
+    if os.path.exists(DIRECTORY_PATH):
+        with open(DIRECTORY_PATH) as f:
             directory = json.load(f)
 
-    def monitor_alive(name: str) -> tuple[bool, int]:
-        """Returns (alive, pid). pid=0 if pid file missing."""
+    def monitor_alive(name: str) -> bool:
         pid_path = f"/tmp/meeting-{name}.monitor_pid"
         if not os.path.exists(pid_path):
-            return False, 0
+            return False
         try:
             with open(pid_path) as f:
                 pid = int(f.read().strip())
-        except (ValueError, OSError):
-            return False, 0
-        try:
             os.kill(pid, 0)
-            return True, pid
-        except (OSError, ProcessLookupError):
-            return False, pid
+            return True
+        except (ValueError, OSError, ProcessLookupError):
+            return False
 
     db = connect()
-    db_senders = {r["sender"] for r in db.execute("SELECT DISTINCT sender FROM messages")}
+    # msg count per sender across all rooms
+    msg_counts = {
+        r["sender"]: r["cnt"]
+        for r in db.execute("SELECT sender, COUNT(*) AS cnt FROM messages GROUP BY sender")
+    }
     db.close()
 
-    online_names = set()
-    stale_names = set()
-    stale_info = {}
-    for name in directory:
-        alive, pid = monitor_alive(name)
-        if alive:
-            online_names.add(name)
-        else:
-            stale_names.add(name)
-            stale_info[name] = f"monitor gone (last pid {pid or '?'})"
+    online_names = {n for n in directory if monitor_alive(n)}
+    stale_names = set(directory.keys()) - online_names
+    historical_names = set(msg_counts.keys()) - online_names - stale_names
 
-    historical_names = db_senders - online_names - stale_names
-
+    rows = []
     for name in sorted(online_names):
-        cwd = directory[name].get("cwd", "")
-        print(f"online\t{name}\t{cwd}")
+        rows.append(("online", name, msg_counts.get(name, 0)))
     for name in sorted(stale_names):
-        print(f"stale\t{name}\t{stale_info[name]}")
+        rows.append(("stale", name, msg_counts.get(name, 0)))
     for name in sorted(historical_names):
-        print(f"historical\t{name}\t(no longer registered)")
+        rows.append(("historical", name, msg_counts.get(name, 0)))
+
+    for status, name, msgs in rows:
+        print(f"{status}\t{name}\t{msgs}")
 
 
 # ---------- main ----------
@@ -359,10 +344,8 @@ def main():
     s.add_argument("--since", type=int, default=0, help="only msgs with id > since")
     s.set_defaults(func=cmd_ring)
 
-    sub.add_parser("list").set_defaults(func=cmd_list)
-
-    sub.add_parser("candidates",
-                   help="list candidate session names with online/stale/historical status").set_defaults(func=cmd_candidates)
+    sub.add_parser("list",
+                   help="list all session names with status (online/stale/historical) + msg count").set_defaults(func=cmd_list)
 
     args = p.parse_args()
     args.func(args)
