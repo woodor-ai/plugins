@@ -40,9 +40,9 @@ Manage with `claude plugin disable agent-meeting` / `enable` / `update`.
 
 | Command | Action |
 |---|---|
-| `/meeting` (no args) | Show name picker with `stale`/`historical` candidates to pick from |
+| `/meeting` (no args) | Show name picker with `empty`/`historical` candidates to pick from |
 | `/meeting <name>` | Register the current session as `<name>` |
-| `/meeting list` | List all session names with status (online/stale/historical) + msg count |
+| `/meeting list` | List all session names with status (empty/online/historical) + msg count |
 | `/meeting delete <peer>` | Delete the room between you and `<peer>` (purges all messages, requires confirmation) |
 
 ## `room` CLI

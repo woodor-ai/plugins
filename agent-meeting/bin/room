@@ -276,9 +276,9 @@ def cmd_list(args):
     """List all session names with liveness status and message count.
 
     Columns: <status>\t<name>\t<msgs>
-      status: online | stale | historical
+      status: online | empty | historical
         online     = registered AND monitor process alive (per /tmp/meeting-<name>.monitor_pid)
-        stale      = registered in directory.json but monitor process gone
+        empty      = registered in directory.json but monitor process gone
         historical = never in directory but appears as sender in DB
       msgs   = total messages sent by this name across all rooms
 
@@ -314,14 +314,14 @@ def cmd_list(args):
     db.close()
 
     online_names = {n for n in directory if monitor_alive(n)}
-    stale_names = set(directory.keys()) - online_names
-    historical_names = set(msg_counts.keys()) - online_names - stale_names
+    empty_names = set(directory.keys()) - online_names
+    historical_names = set(msg_counts.keys()) - online_names - empty_names
 
     rows = []
     for name in sorted(online_names):
         rows.append(("online", name, msg_counts.get(name, 0)))
-    for name in sorted(stale_names):
-        rows.append(("stale", name, msg_counts.get(name, 0)))
+    for name in sorted(empty_names):
+        rows.append(("empty", name, msg_counts.get(name, 0)))
     for name in sorted(historical_names):
         rows.append(("historical", name, msg_counts.get(name, 0)))
 
@@ -373,7 +373,7 @@ def main():
     s.set_defaults(func=cmd_ring)
 
     sub.add_parser("list",
-                   help="list all session names with status (online/stale/historical) + msg count").set_defaults(func=cmd_list)
+                   help="list all session names with status (online/empty/historical) + msg count").set_defaults(func=cmd_list)
 
     s = sub.add_parser("delete", help="delete a room and all its messages (hard delete, atomic)")
     s.add_argument("self")

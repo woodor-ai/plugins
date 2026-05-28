@@ -19,7 +19,7 @@ The first word after `/meeting` decides what to do:
 | Input | Action |
 |---|---|
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
-| `/meeting list` | Run `~/.agent-meeting/bin/room list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `online` / `stale` / `historical`. |
+| `/meeting list` | Run `~/.agent-meeting/bin/room list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `empty` / `online` / `historical`. |
 | `/meeting delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/room delete <self> <peer>`. |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
@@ -28,20 +28,20 @@ Reserved words `list` and `delete` cannot be used as session names — they go t
 ### Picker (when `/meeting` has no args)
 
 1. Run `~/.agent-meeting/bin/room list` to get session-name candidates. Output is TSV: `<status>\t<name>\t<msgs>` where status is one of:
+   - `empty` — registered before but monitor is gone (no live session owns it now) → **safe to take over**, has historical msg context.
    - `online` — registered AND monitor pid alive → picking would conflict with the running session (your registration would overwrite directory.json but their monitor keeps running).
-   - `stale` — registered but monitor process gone (zombie entry) → safe to take over.
    - `historical` — never in directory but appeared as sender in DB at some point → safe, fully fresh registration.
 2. Use the `AskUserQuestion` tool to let user pick. **AskUserQuestion takes 2-4 options that you fill, and TUI auto-appends "Other" on top (does NOT count toward the cap). So you have 4 actual slots, with "Other" as the 5th displayed entry handling anything skipped.**
 
-   **Selection rules — apply in order**:
-   a. ALL `online` names go in first (sorted by msg count desc). These are reference info: user can still pick to take over, but with confirmation.
-   b. If slots remain after online: fill with `stale` names (sorted by msg count desc — most-active first).
-   c. If slots remain after stale: fill with `historical` names (sorted by msg count desc).
+   **Selection rules — apply in order** (empty first because they're the most likely "I want my old name back" candidates):
+   a. ALL `empty` names go in first (sorted by msg count desc — most-active first). These are the recommended take-over candidates.
+   b. If slots remain after empty: fill with `online` names (sorted by msg count desc). Reference info — user can still pick to take over with confirmation.
+   c. If slots remain after online: fill with `historical` names (sorted by msg count desc).
    d. The auto-added "Other" handles anything skipped — user just types the name.
 
    **Label / description format**:
+   - empty: label=`<name>`, description=`(empty, safe to take over) — <N> msgs`
    - online: label=`<name>`, description=`(online — will conflict if you take it) — <cwd>`
-   - stale: label=`<name>`, description=`(stale, safe to take over) — <N> msgs`
    - historical: label=`<name>`, description=`(historical, safe) — <N> msgs`
 
 3. If user picks an `online` name, ask explicit confirmation before proceeding (their choice may have been informational).
