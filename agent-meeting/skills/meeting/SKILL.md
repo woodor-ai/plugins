@@ -64,13 +64,21 @@ SELF="<name>"
 STATE_FILE="/tmp/meeting-<name>.last_msg_id"
 PID_FILE="/tmp/meeting-<name>.monitor_pid"
 ROOM_CLI="$HOME/.agent-meeting/bin/room"
+DB="$HOME/.agent-meeting/db/rooms.db"
 
 # Write our pid as the liveness signal. room list checks this file via kill -0.
 # trap cleans it up when monitor exits (TaskStop / session end / SIGTERM).
 echo $$ > "$PID_FILE"
 trap "rm -f $PID_FILE" EXIT INT TERM
 
-LAST=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
+# Seed cursor: first ever launch → start at current max msg id (skip historical
+# flood). Subsequent launches → resume from saved cursor.
+if [ -f "$STATE_FILE" ]; then
+  LAST=$(cat "$STATE_FILE")
+else
+  LAST=$(sqlite3 "$DB" "SELECT COALESCE(MAX(id),0) FROM messages" 2>/dev/null || echo 0)
+  echo "$LAST" > "$STATE_FILE"
+fi
 echo "[meeting <name>] monitor started (sqlite, last_msg_id=$LAST, monitor_pid=$$)"
 while true; do
   # Poll DB for new messages in rooms where current_turn=self and sender!=self.
