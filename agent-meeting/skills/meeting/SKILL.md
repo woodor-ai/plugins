@@ -67,9 +67,11 @@ ROOM_CLI="$HOME/.agent-meeting/bin/room"
 DB="$HOME/.agent-meeting/db/rooms.db"
 
 # Write our pid as the liveness signal. room list checks this file via kill -0.
-# trap cleans it up when monitor exits (TaskStop / session end / SIGTERM).
+# On exit (TaskStop / session end / SIGTERM), session-cleanup removes BOTH
+# the pid file AND the directory.json entry for this name — no `empty`
+# zombie state left behind by clean exits.
 echo $$ > "$PID_FILE"
-trap "rm -f $PID_FILE" EXIT INT TERM
+trap "$HOME/.agent-meeting/bin/session-cleanup $SELF" EXIT INT TERM
 
 # Seed cursor: first ever launch → start at current max msg id (skip historical
 # flood). Subsequent launches → resume from saved cursor.
