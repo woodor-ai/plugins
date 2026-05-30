@@ -103,7 +103,8 @@ You are a hands-on development agent. Your job is to write correct, minimal code
 name: planner
 description: Strategic planning and critical analysis agent. Use for high-level work — designing implementation plans for non-trivial features, evaluating architectural trade-offs, reviewing whether a proposed approach is sound, root-cause analysis of complex bugs spanning multiple subsystems, deciding scope of a refactor PR. NOT for writing code (use rd) and NOT for pure lookups (use explore). Worth the cost only when the question is "which direction" rather than "how to type it out".
 tools: Read, Glob, Grep, WebFetch, WebSearch, Bash, TodoWrite
-model: claude-opus-4-7
+model: claude-opus-4-8
+reasoningEffort: high
 color: purple
 ---
 
