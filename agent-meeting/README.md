@@ -83,7 +83,7 @@ Edit `~/.agent-meeting/config.json` (auto-created on first session, defaults to 
 { "is_host": true }
 ```
 
-On next Claude Code session start, the SessionStart hook auto-launches `meeting-daemon` on port 8765, publishes mDNS service `_agent-meeting._tcp.local.`, and keeps it running as long as the OS is up. The daemon survives Claude Code restarts (it's a detached background process tracked via pidfile).
+On next Claude Code session start, the SessionStart hook installs a LaunchAgent at `~/Library/LaunchAgents/com.tommy.agent-meeting.plist` and registers it with `launchctl bootstrap`. From then on, macOS launchd manages the daemon: auto-starts at user login, restarts it if it crashes (KeepAlive=true), survives OS reboots. Setup is one-shot — you only need to flip `is_host: true` and start a Claude session once.
 
 **Setup client machines** (e.g. Windows or another Mac):
 

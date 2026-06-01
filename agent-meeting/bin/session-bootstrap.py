@@ -37,7 +37,12 @@ PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("PLUGI
 TMP = Path(tempfile.gettempdir())
 DAEMON_PID_FILE = TMP / "meeting-daemon.pid"
 
+IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform.startswith("win")
+IS_LINUX = sys.platform.startswith("linux")
+
+LAUNCHD_LABEL = "com.tommy.agent-meeting"
+LAUNCHD_PLIST = HOME / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 
 
 def log(msg: str):
@@ -140,6 +145,7 @@ def daemon_running() -> bool:
 
 
 def launch_daemon():
+    """Session-bound daemon launch (Linux / Windows). Mac uses launchd instead."""
     daemon_path = PLUGIN_ROOT / "bin" / "meeting-daemon"
     if not daemon_path.exists():
         log(f"daemon script missing: {daemon_path}")
@@ -167,6 +173,98 @@ def launch_daemon():
         )
     DAEMON_PID_FILE.write_text(str(proc.pid))
     log(f"daemon launched pid={proc.pid}, log={log_file}")
+
+
+# ---------- 4b. launchd integration (Mac host only) ----------
+
+def kill_bootstrap_daemon():
+    """If a previous bootstrap-launched daemon is running, kill it.
+    Mac launchd is about to take over — two daemons on :8765 = conflict."""
+    if not DAEMON_PID_FILE.exists():
+        return
+    try:
+        pid = int(DAEMON_PID_FILE.read_text().strip())
+        os.kill(pid, 15)  # SIGTERM
+        time.sleep(0.5)
+    except (ValueError, OSError):
+        pass
+    try:
+        DAEMON_PID_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def ensure_launchd():
+    """Install ~/Library/LaunchAgents/<label>.plist and load it. Idempotent:
+    - Write fresh plist every time (paths may change if plugin reinstalls).
+    - If already loaded with the same paths, no-op.
+    - If loaded but plist content changed, bootout + bootstrap to pick up new ProgramArguments.
+    macOS handles RunAtLoad + KeepAlive so the daemon survives reboots and crashes.
+    """
+    import plistlib
+
+    LAUNCHD_PLIST.parent.mkdir(parents=True, exist_ok=True)
+
+    daemon_path = PLUGIN_ROOT / "bin" / "meeting-daemon"
+    if not daemon_path.exists():
+        log(f"daemon script missing: {daemon_path}")
+        return
+    py = venv_python()
+    log_file = TMP / "meeting-daemon.log"
+
+    plist = {
+        "Label": LAUNCHD_LABEL,
+        "ProgramArguments": [str(py), str(daemon_path), "--port", "8765"],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(log_file),
+        "StandardErrorPath": str(log_file),
+        "ProcessType": "Background",
+    }
+    new_bytes = plistlib.dumps(plist)
+    old_bytes = LAUNCHD_PLIST.read_bytes() if LAUNCHD_PLIST.exists() else b""
+    plist_changed = new_bytes != old_bytes
+    if plist_changed:
+        LAUNCHD_PLIST.write_bytes(new_bytes)
+
+    # Is it currently loaded?
+    uid = os.getuid()
+    domain_target = f"gui/{uid}"
+    listed = subprocess.run(
+        ["launchctl", "print", f"{domain_target}/{LAUNCHD_LABEL}"],
+        capture_output=True,
+    ).returncode == 0
+
+    if listed and not plist_changed:
+        log(f"launchd already manages {LAUNCHD_LABEL}")
+        return
+
+    if listed and plist_changed:
+        # Bootout to pick up the new plist
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain_target}/{LAUNCHD_LABEL}"],
+            capture_output=True,
+        )
+
+    # Kill any session-bound daemon so port 8765 is free
+    kill_bootstrap_daemon()
+
+    r = subprocess.run(
+        ["launchctl", "bootstrap", domain_target, str(LAUNCHD_PLIST)],
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        log(f"launchd loaded {LAUNCHD_LABEL} (auto-start on boot, KeepAlive on)")
+    else:
+        # Fallback to legacy syntax
+        r2 = subprocess.run(
+            ["launchctl", "load", "-w", str(LAUNCHD_PLIST)],
+            capture_output=True, text=True,
+        )
+        if r2.returncode == 0:
+            log(f"launchd loaded via legacy syntax: {LAUNCHD_LABEL}")
+        else:
+            log(f"launchd bootstrap failed: {r.stderr.strip() or r2.stderr.strip()}")
 
 
 # ---------- 5. context emission ----------
@@ -229,8 +327,11 @@ def main():
         ensure_zeroconf()
         cfg = load_or_create_config()
 
-        if cfg.get("is_host") and not daemon_running():
-            launch_daemon()
+        if cfg.get("is_host"):
+            if IS_MAC:
+                ensure_launchd()  # plist + KeepAlive — survives reboots
+            elif not daemon_running():
+                launch_daemon()   # Linux / Windows: session-bound for now
 
         emit_context(cfg)
     except Exception as e:
