@@ -57,25 +57,47 @@ def ensure_layout():
     if not DIRECTORY.exists():
         DIRECTORY.write_text("{}")
 
-    # Symlink plugin bin/ into data dir for stable path in SKILL.md.
-    # On Windows, plain symlinks need admin or developer mode; fall back to junction or skip.
-    if PLUGIN_ROOT and (PLUGIN_ROOT / "bin").is_dir():
-        try:
-            if BIN_LINK.exists() or BIN_LINK.is_symlink():
-                if BIN_LINK.is_symlink():
-                    BIN_LINK.unlink()
-                # If a real dir somehow exists, leave it alone — don't destroy data.
-            if not BIN_LINK.exists():
-                if IS_WINDOWS:
-                    # Junction works without admin
-                    subprocess.run(
-                        ["cmd", "/c", "mklink", "/J", str(BIN_LINK), str(PLUGIN_ROOT / "bin")],
-                        check=False, capture_output=True,
-                    )
-                else:
-                    BIN_LINK.symlink_to(PLUGIN_ROOT / "bin")
-        except Exception as e:
-            log(f"could not link bin/: {e}")
+    # ~/.agent-meeting/bin must be a symlink → the current plugin's bin/ so that
+    # SKILL.md / monitor.py can reference one stable path (~/.agent-meeting/bin/meeting)
+    # regardless of which cache version is active. Plugin upgrades change PLUGIN_ROOT;
+    # this resync makes the stable path follow the latest code automatically.
+    #
+    # This is IDEMPOTENT and SELF-HEALING: if bin/ got corrupted into a real directory
+    # (e.g. someone cp'd files in, or an old `ln -sfn target dir` nested a bin/bin),
+    # we move the junk aside and rebuild the symlink. The data dir never legitimately
+    # contains a real bin/ — all user state is in db/, directory.json, config.json.
+    if not PLUGIN_ROOT or not (PLUGIN_ROOT / "bin").is_dir():
+        return
+
+    desired = (PLUGIN_ROOT / "bin").resolve()
+    try:
+        # Already correct? no-op.
+        if BIN_LINK.is_symlink() and BIN_LINK.resolve() == desired:
+            return
+
+        # Anything else occupying the path must go.
+        if BIN_LINK.is_symlink():
+            BIN_LINK.unlink()
+        elif BIN_LINK.is_dir():
+            # Real directory (pollution). Move aside instead of deleting, just in case.
+            import shutil
+            bak = BIN_LINK.with_name(f"bin.corrupt-{int(time.time())}")
+            shutil.move(str(BIN_LINK), str(bak))
+            log(f"moved corrupted bin/ aside → {bak.name}")
+        elif BIN_LINK.exists():
+            BIN_LINK.unlink()
+
+        if IS_WINDOWS:
+            # Junction works without admin / developer mode.
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(BIN_LINK), str(desired)],
+                check=False, capture_output=True,
+            )
+        else:
+            BIN_LINK.symlink_to(desired)
+        log(f"linked bin/ → {desired}")
+    except Exception as e:
+        log(f"could not link bin/: {e}")
 
 
 # ---------- 2. venv + zeroconf ----------
