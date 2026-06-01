@@ -22,6 +22,8 @@ Usage:
   meeting turn <self> <peer>                            # whose turn is it
   meeting ring <self> --since <ID>                      # monitor query: new msgs in rooms where turn=self
   meeting list                                          # all rooms
+  meeting register <name> --cwd <cwd>                   # register session in central sessions table
+  meeting unregister <name>                             # remove session from central sessions table
 
 All write operations are wrapped in BEGIN IMMEDIATE transactions, so two
 sessions writing the same room simultaneously serialize cleanly.
@@ -44,13 +46,16 @@ import urllib.request
 # or any other host. Override with MEETING_HOME env var when testing.
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
 DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
-DIRECTORY_PATH = os.path.join(MEETING_HOME, "directory.json")
 
 # Discovery cache: avoid 1-2s mDNS browse on every CLI call (monitor polls ring/3s).
 HOST_CACHE = os.path.join(tempfile.gettempdir(), "meeting-host.cache")
 HOST_CACHE_TTL = 60  # seconds
 MDNS_BROWSE_TIMEOUT = 1.5  # seconds
 SERVICE_TYPE = "_agent-meeting._tcp.local."
+
+# A session is considered online if last_seen is within this many seconds.
+# monitor polls /ring every 3s, so 4 missed heartbeats = 12s.
+ONLINE_THRESHOLD = 12
 
 
 # ---------- LAN discovery (mDNS + HTTP client) ----------
@@ -205,6 +210,14 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages(room_id, id);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  name TEXT PRIMARY KEY,
+  cwd TEXT,
+  host TEXT,
+  registered_at TEXT,
+  last_seen REAL                        -- epoch seconds (float); heartbeat via /ring
+);
 """
 
 
@@ -221,6 +234,24 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = connect()
     db.executescript(SCHEMA)
+    # One-time migration: import directory.json into sessions if sessions is empty.
+    directory_path = os.path.join(MEETING_HOME, "directory.json")
+    if os.path.exists(directory_path):
+        count = db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        if count == 0:
+            try:
+                with open(directory_path) as f:
+                    directory = json.load(f)
+                for name, info in directory.items():
+                    db.execute(
+                        "INSERT OR IGNORE INTO sessions (name, cwd, host, registered_at, last_seen) "
+                        "VALUES (?, ?, ?, ?, 0)",
+                        (name, info.get("cwd"), info.get("host"),
+                         str(info.get("registered_at", ""))),
+                    )
+                db.execute("COMMIT") if False else None  # isolation_level=None = autocommit
+            except Exception:
+                pass
     db.close()
 
 
@@ -230,37 +261,6 @@ def canonical_room_name(a: str, b: str) -> tuple[str, str, str]:
     """Sort two participants lexicographically. Returns (name, a, b)."""
     sa, sb = sorted([a, b])
     return f"{sa}--{sb}", sa, sb
-
-
-def pid_alive(pid: int) -> bool:
-    if sys.platform == "win32":
-        import ctypes
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        exit_code = ctypes.c_ulong(0)
-        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return exit_code.value == 259  # STILL_ACTIVE
-    else:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return False
-        return True
-
-
-def monitor_alive(name: str) -> bool:
-    pid_path = os.path.join(tempfile.gettempdir(), f"meeting-{name}.monitor_pid")
-    if not os.path.exists(pid_path):
-        return False
-    try:
-        with open(pid_path) as f:
-            pid = int(f.read().strip())
-        return pid_alive(pid)
-    except (ValueError, OSError):
-        return False
 
 
 def ensure_room(db, self_name: str, peer: str) -> sqlite3.Row:
@@ -495,62 +495,69 @@ def cmd_ring(args):
 
 
 def cmd_register(args):
-    """Atomically add/update this session in directory.json.
+    """Register this session in the central sessions table.
 
-    Schema: {name: {cwd, host, registered_at}}
-    Conflict: if name exists AND its monitor is still alive, refuse (unless --force).
+    Via daemon (HTTP POST /register) when a daemon is reachable, otherwise
+    writes directly to the local SQLite sessions table.
+
+    Conflict: if name already exists and last_seen is within ONLINE_THRESHOLD
+    seconds, refuse unless --force.
     """
     name = args.name
     cwd = args.cwd
+    host_name = socket.gethostname()
+    now = time.time()
 
-    os.makedirs(os.path.dirname(DIRECTORY_PATH), exist_ok=True)
-    # Load existing
-    directory = {}
-    if os.path.exists(DIRECTORY_PATH):
-        try:
-            with open(DIRECTORY_PATH) as f:
-                directory = json.load(f)
-        except Exception:
-            directory = {}
-
-    # Conflict check
-    if name in directory and not args.force:
-        if monitor_alive(name):
-            print(f"error: '{name}' is already registered and its monitor is still running. "
-                  f"Use --force to override.", file=sys.stderr)
+    host = discover_host()
+    if host:
+        payload = {"name": name, "cwd": cwd, "force": args.force}
+        r = http("POST", host, "/register", body=payload)
+        if r.get("error"):
+            print(r["error"], file=sys.stderr)
             sys.exit(1)
+        print(f"registered: {name} (cwd={cwd}, host={host_name})")
+        return
 
-    directory[name] = {
-        "cwd": cwd,
-        "host": socket.gethostname(),
-        "registered_at": int(time.time()),
-    }
-
-    # Atomic write via tmp + os.replace
-    tmp_path = DIRECTORY_PATH + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(directory, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, DIRECTORY_PATH)
-    print(f"registered: {name} (cwd={cwd}, host={socket.gethostname()})")
+    # Local fallback: write directly to sessions table.
+    db = connect()
+    existing = db.execute("SELECT last_seen FROM sessions WHERE name=?", (name,)).fetchone()
+    if existing and not args.force:
+        last_seen = existing["last_seen"] or 0
+        if now - last_seen <= ONLINE_THRESHOLD:
+            print(
+                f"error: '{name}' is already registered and its monitor is still running. "
+                f"Use --force to override.",
+                file=sys.stderr,
+            )
+            db.close()
+            sys.exit(1)
+    db.execute(
+        "INSERT INTO sessions (name, cwd, host, registered_at, last_seen) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET cwd=excluded.cwd, host=excluded.host, "
+        "registered_at=excluded.registered_at, last_seen=excluded.last_seen",
+        (name, cwd, host_name, str(int(now)), now),
+    )
+    db.close()
+    print(f"registered: {name} (cwd={cwd}, host={host_name})")
 
 
 def cmd_unregister(args):
-    """Atomically remove a session from directory.json. Silent if not present."""
+    """Remove a session from the central sessions table. Silent if not present."""
     name = args.name
-    if not os.path.exists(DIRECTORY_PATH):
+
+    host = discover_host()
+    if host:
+        r = http("POST", host, "/unregister", body={"name": name})
+        if r.get("error"):
+            print(r["error"], file=sys.stderr)
+            sys.exit(1)
+        print(f"unregistered: {name}")
         return
-    try:
-        with open(DIRECTORY_PATH) as f:
-            directory = json.load(f)
-    except Exception:
-        return
-    if name not in directory:
-        return
-    del directory[name]
-    tmp_path = DIRECTORY_PATH + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(directory, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, DIRECTORY_PATH)
+
+    # Local fallback.
+    db = connect()
+    db.execute("DELETE FROM sessions WHERE name=?", (name,))
+    db.close()
     print(f"unregistered: {name}")
 
 
@@ -637,14 +644,10 @@ def cmd_list(args):
 
     Columns: <status>\t<name>\t<msgs>
       status: online | empty | historical
-        online     = registered AND monitor process alive (per <tmpdir>/meeting-<name>.monitor_pid)
-        empty      = registered in directory.json but monitor process gone
-        historical = never in directory but appears as sender in DB
+        online     = in sessions table AND last_seen within ONLINE_THRESHOLD seconds
+        empty      = in sessions table but last_seen expired (> ONLINE_THRESHOLD seconds ago)
+        historical = sender appears in messages but not in sessions table
       msgs   = total messages sent by this name across all rooms
-
-    Liveness signal: the monitor writes its own pid to
-    <tmpdir>/meeting-<name>.monitor_pid at startup, and removes it on exit.
-    We check process liveness via pid_alive() (cross-platform).
     """
     host = discover_host()
     if host:
@@ -654,29 +657,33 @@ def cmd_list(args):
             print(f"{r['status']}\t{r['name']}\t{r['msgs']}")
         return
 
-    directory = {}
-    if os.path.exists(DIRECTORY_PATH):
-        with open(DIRECTORY_PATH) as f:
-            directory = json.load(f)
-
     db = connect()
+    now = time.time()
     # msg count per sender across all rooms
     msg_counts = {
         r["sender"]: r["cnt"]
         for r in db.execute("SELECT sender, COUNT(*) AS cnt FROM messages GROUP BY sender")
     }
+    sessions = db.execute("SELECT name, last_seen FROM sessions").fetchall()
     db.close()
 
-    online_names = {n for n in directory if monitor_alive(n)}
-    empty_names = set(directory.keys()) - online_names
+    online_names = set()
+    empty_names = set()
+    for s in sessions:
+        last_seen = s["last_seen"] or 0
+        if now - last_seen <= ONLINE_THRESHOLD:
+            online_names.add(s["name"])
+        else:
+            empty_names.add(s["name"])
+
     historical_names = set(msg_counts.keys()) - online_names - empty_names
 
     rows = []
-    for name in sorted(online_names):
+    for name in sorted(online_names, key=lambda n: -msg_counts.get(n, 0)):
         rows.append(("online", name, msg_counts.get(name, 0)))
-    for name in sorted(empty_names):
+    for name in sorted(empty_names, key=lambda n: -msg_counts.get(n, 0)):
         rows.append(("empty", name, msg_counts.get(name, 0)))
-    for name in sorted(historical_names):
+    for name in sorted(historical_names, key=lambda n: -msg_counts.get(n, 0)):
         rows.append(("historical", name, msg_counts.get(name, 0)))
 
     for status, name, msgs in rows:
@@ -740,7 +747,7 @@ def main():
     s.set_defaults(func=cmd_daemon)
 
     s = sub.add_parser("register",
-                       help="atomically add/update this session in directory.json")
+                       help="register this session in the central sessions table (via daemon or local SQLite)")
     s.add_argument("name", help="session name to register")
     s.add_argument("--cwd", required=True, help="working directory of this session")
     s.add_argument("--force", action="store_true",
@@ -748,7 +755,7 @@ def main():
     s.set_defaults(func=cmd_register)
 
     s = sub.add_parser("unregister",
-                       help="atomically remove a session from directory.json (silent if not present)")
+                       help="remove this session from the central sessions table (via daemon or local SQLite)")
     s.add_argument("name", help="session name to unregister")
     s.set_defaults(func=cmd_unregister)
 

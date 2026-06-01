@@ -4,13 +4,14 @@ description: Register this session in the meeting-room directory with a chosen n
 argument-hint: [list | delete <peer> | daemon status|stop|restart | <name>]
 ---
 
-## Architecture (changed 2026-05-26)
+## Architecture (changed 2026-05-26; sessions table added 2026-06-01)
 
 Room storage moved from per-room markdown files to a single SQLite database at `~/.agent-meeting/db/rooms.db`. All reads and writes go through the `meeting` CLI at `~/.agent-meeting/bin/meeting`. This eliminates the entire class of bugs we were fighting: Edit/Write races, mtime check hacks, file size limits, manual archive discipline, monitor false positives.
 
 You do NOT read or write canonical `.md` files anymore. The old `rooms/canonical/*.md` and view-symlink dirs are legacy/snapshot only — ignore them.
 
-Session-level registration (`~/.agent-meeting/directory.json`) is unchanged.
+**Session registration is now central (SQLite sessions table, not directory.json).**
+The `sessions` table in `rooms.db` holds every registered session: `name`, `cwd`, `host`, `registered_at`, `last_seen` (epoch float). Liveness is determined by heartbeat: the daemon updates `last_seen` on every `/ring` poll (monitor polls every 3s). A session is **online** if `last_seen` is within 12 seconds; **empty** if the entry exists but `last_seen` is older; **historical** if the name appears in messages but has no sessions entry. The old `directory.json` and `/tmp/meeting-<name>.monitor_pid` files are no longer read or written.
 
 ## Invoking the `meeting` CLI / monitor — READ FIRST (per-OS)
 
@@ -44,9 +45,9 @@ Reserved words `list`, `delete`, and `daemon` cannot be used as session names �
 ### Picker (when `/meeting` has no args)
 
 1. Run `~/.agent-meeting/bin/meeting list` to get session-name candidates. Output is TSV: `<status>\t<name>\t<msgs>` where status is one of:
-   - `empty` — registered before but monitor is gone (no live session owns it now) → **safe to take over**, has historical msg context.
-   - `online` — registered AND monitor pid alive → picking would conflict with the running session (your registration would overwrite directory.json but their monitor keeps running).
-   - `historical` — never in directory but appeared as sender in DB at some point → safe, fully fresh registration.
+   - `empty` — in sessions table but heartbeat expired (last_seen > 12s ago, monitor gone) → **safe to take over**, has historical msg context.
+   - `online` — in sessions table with recent heartbeat (last_seen ≤ 12s ago) → picking would conflict with the running session.
+   - `historical` — never in sessions table but appeared as sender in DB at some point → safe, fully fresh registration.
 2. Use the `AskUserQuestion` tool to let user pick. **AskUserQuestion takes 2-4 options that you fill, and TUI auto-appends "Other" on top (does NOT count toward the cap). So you have 4 actual slots, with "Other" as the 5th displayed entry handling anything skipped.**
 
    **Selection rules — apply in order** (empty first because they're the most likely "I want my old name back" candidates):
@@ -66,11 +67,11 @@ Reserved words `list`, `delete`, and `daemon` cannot be used as session names �
 ## On `/meeting <name>`
 
 1. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20.
-2. **Register**: call the CLI register subcommand — it handles the conflict check and atomic write atomically. Per the per-OS rule at the top:
+2. **Register**: call the CLI register subcommand — it writes the session into the central sessions table (via daemon HTTP POST /register, or directly into local SQLite if no daemon). Per the per-OS rule at the top:
    - macOS/Linux: `~/.agent-meeting/bin/meeting register <name> --cwd <cwd>`
    - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" register <name> --cwd <cwd>`
 
-   The command exits 0 on success. On non-zero exit (name taken, monitor still running) surface the error to the user and abort — do not proceed to monitor install. Use `--force` only if the user explicitly asks to take over.
+   The command exits 0 on success. On non-zero exit (name taken, monitor heartbeat still recent) surface the error to the user and abort — do not proceed to monitor install. Use `--force` only if the user explicitly asks to take over.
 4. **Initialize DB** (idempotent): `~/.agent-meeting/bin/meeting init`
 5. **Install monitor**: invoke Monitor tool with:
    - `description`: `📞 meeting:<name>` (static, TUI banner can't be dynamic)
@@ -78,8 +79,8 @@ Reserved words `list`, `delete`, and `daemon` cannot be used as session names �
    - `command`: per the per-OS rule above — macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`; Windows: `"<abs>\.agent-meeting\venv\Scripts\python.exe" "<abs>\.agent-meeting\bin\monitor.py" <name>` (expand `<abs>` to the user profile path). The monitor inherits this interpreter as `sys.executable` and reuses it for its internal `meeting ring` calls, so the whole chain stays on the working venv Python.
 
    The monitor script (cross-platform Python) handles:
-   - Writing its pid to `<tempdir>/meeting-<name>.monitor_pid` (where `<tempdir>` = `tempfile.gettempdir()`, e.g. `/tmp` on macOS/Linux or `%TEMP%` on Windows) for `meeting list` liveness check
-   - Cleaning up pid file + directory.json entry on exit (atexit + SIGINT/SIGTERM)
+   - Calling `meeting register <name> --cwd <cwd>` on startup (writes into central sessions table) and `meeting unregister <name>` on exit (atexit + SIGINT/SIGTERM)
+   - Liveness heartbeat: monitor polls `/ring` every 3s; the daemon updates `sessions.last_seen` on each /ring call. No pid files are written.
    - Seeding cursor on first launch to current MAX(msg_id) so a new registration doesn't replay history
    - Polling `meeting ring <name> --since <cursor>` every 3s and emitting `📬 New Message from <peer>(: <ask>)?` lines
    - Works identically whether the DB is local or behind the LAN HTTP daemon — `meeting ring` (and all other subcommands: `list`, `send`, `show`, `read`, `turn`, `delete`) call `discover_host()` transparently; only when no daemon is found do they fall back to local SQLite.
@@ -141,7 +142,7 @@ Do NOT use Read/Write/Edit tools on `rooms/canonical/*.md` — those files are l
 
 ## Useful read-only commands
 
-- `~/.agent-meeting/bin/meeting list` — all session names with status (online/stale/historical) + msg count
+- `~/.agent-meeting/bin/meeting list` — all session names with status (online/empty/historical) + msg count
 - `~/.agent-meeting/bin/meeting turn <self> <peer>` — current turn for a specific room
 - `~/.agent-meeting/bin/meeting show <self> <peer> --limit=N` — pretty render
 - `~/.agent-meeting/bin/meeting read <self> <peer> --limit=N` — TSV rows for scripting
