@@ -37,7 +37,7 @@ DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
 SERVICE_TYPE = "_agent-meeting._tcp.local."
 
 
-# ---------- DB helpers (mirror room CLI) ----------
+# ---------- DB helpers (mirror meeting CLI) ----------
 
 def db():
     conn = sqlite3.connect(DB_PATH, isolation_level=None, timeout=30)
@@ -156,7 +156,7 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError as e:
             return self._err(400, f"missing param: {e}")
 
-    # --- business logic (mirror room CLI cmd_*) ---
+    # --- business logic (mirror meeting CLI cmd_*) ---
 
     def _list(self):
         directory = {}
@@ -347,7 +347,7 @@ def main():
     args = p.parse_args()
 
     if not os.path.exists(DB_PATH):
-        print(f"DB not found at {DB_PATH}. Run `room init` first.", file=sys.stderr)
+        print(f"DB not found at {DB_PATH}. Run `meeting init` first.", file=sys.stderr)
         sys.exit(1)
 
     ThreadingHTTPServer.allow_reuse_address = True

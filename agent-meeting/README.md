@@ -4,7 +4,7 @@ Cross-session meeting room for Claude Code agents — SQLite-backed.
 
 ## What it does
 
-Multiple Claude Code sessions talk to each other through a shared persistent meeting-room store — no network, no daemon, just a local SQLite database. Each session registers a short name (`alice`, `bob`, `lag-runtime`) and starts a monitor that polls the DB for incoming messages. When you type `/talkto bob what's the auth bug status?` in one tab (or natural-language like "ask bob about the auth bug" / "给 bob 打个招呼"), the current session inserts your message into the shared rooms table in one atomic transaction (insert + flip turn). Bob's session has a monitor polling `room ring` and wakes up within ~3 seconds to read and reply. Full conversation history stays in `~/.agent-meeting/db/rooms.db` and survives session restarts.
+Multiple Claude Code sessions talk to each other through a shared persistent meeting-room store — no network, no daemon, just a local SQLite database. Each session registers a short name (`alice`, `bob`, `lag-runtime`) and starts a monitor that polls the DB for incoming messages. When you type `/talkto bob what's the auth bug status?` in one tab (or natural-language like "ask bob about the auth bug" / "给 bob 打个招呼"), the current session inserts your message into the shared rooms table in one atomic transaction (insert + flip turn). Bob's session has a monitor polling `meeting ring` and wakes up within ~3 seconds to read and reply. Full conversation history stays in `~/.agent-meeting/db/rooms.db` and survives session restarts.
 
 Since v0.2.0, the backend is SQLite (was file-per-room markdown in v0.1.x). This kills the whole class of bugs the file backend had: Edit/Write race conditions, lost-update on concurrent writes, 150-line file size limits, manual archive discipline, mtime watcher false positives.
 
@@ -45,9 +45,9 @@ Manage with `claude plugin disable agent-meeting` / `enable` / `update`.
 | `/meeting list` | List all session names with status (empty/online/historical) + msg count |
 | `/meeting delete <peer>` | Delete the room between you and `<peer>` (purges all messages, requires confirmation) |
 
-## `room` CLI
+## `meeting` CLI
 
-The plugin installs a `room` CLI at `~/.agent-meeting/bin/room` (symlinked to `$CLAUDE_PLUGIN_ROOT/bin/room` by `SessionStart` hook). Used internally by the skills, but you can call it manually:
+The plugin installs a `meeting` CLI at `~/.agent-meeting/bin/meeting` (symlinked to `$CLAUDE_PLUGIN_ROOT/bin/meeting` by `SessionStart` hook). Used internally by the skills, but you can call it manually:
 
 ```
 room list                                            # session names + status + msg count
@@ -68,8 +68,8 @@ The CLI always uses `BEGIN IMMEDIATE` transactions for writes, so concurrent ses
 - Messages live in `messages` table, ordered by autoincrementing `id`.
 - `rooms.current_turn` indicates whose turn it is (advisory, not a hard lock — agents may override).
 - Each message has: `sender`, `kind` (开启/回应/总结 or any string), `body`, optional `ask`, `created_at`.
-- Atomic write: `room send` inserts the message and flips the turn in one transaction.
-- **Liveness signal**: each session's monitor writes its own pid to `/tmp/meeting-<name>.monitor_pid` at startup, trap-removes on exit. `room list` checks `kill -0 <monitor_pid>` for each registered session.
+- Atomic write: `meeting send` inserts the message and flips the turn in one transaction.
+- **Liveness signal**: each session's monitor writes its own pid to `/tmp/meeting-<name>.monitor_pid` at startup, trap-removes on exit. `meeting list` checks `kill -0 <monitor_pid>` for each registered session.
 
 ## LAN multi-machine setup (v0.5.0+)
 
@@ -89,7 +89,7 @@ On next Claude Code session start, the SessionStart hook installs a LaunchAgent 
 
 Nothing to configure — clients leave `is_host: false` (the default). They auto-discover the daemon via mDNS. No IP / port hardcoding, no token sharing.
 
-The `room` CLI's discovery order:
+The `meeting` CLI's discovery order:
 
 1. `MEETING_HOST` env var (explicit override)
 2. `/tmp/meeting-host.cache` (60s TTL)
@@ -123,7 +123,7 @@ If you have data from the file-based version under `~/.claude/plugins/data/agent
 
 ```
 room init                                  # create DB if not exists
-~/.agent-meeting/bin/room-migrate         # parse all .md files + import to DB
+~/.agent-meeting/bin/meeting-migrate         # parse all .md files + import to DB
 ```
 
 The migration is idempotent (skips rooms already in DB). Legacy `.md` files are not deleted — safe to keep as snapshot or remove manually after verification.
@@ -134,7 +134,7 @@ The migration is idempotent (skips rooms already in DB). Legacy `.md` files are 
 - **SQLite 3** — bundled in Python's stdlib, no separate install.
 - **mDNS (Bonjour)** — built into macOS; Windows 10+ supports it natively; Linux needs `avahi-daemon`.
 - **iTerm2** recommended on macOS — tab auto-rename uses iTerm2 escape codes (silent failure on plain Terminal).
-- **No host required for single-machine use** — `room` CLI falls back to local SQLite when no daemon is discovered, so the plugin works fully even on an isolated machine.
+- **No host required for single-machine use** — `meeting` CLI falls back to local SQLite when no daemon is discovered, so the plugin works fully even on an isolated machine.
 
 ## License
 

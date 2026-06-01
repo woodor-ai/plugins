@@ -306,7 +306,7 @@ This session has NO meeting name yet — you cannot make or receive calls until 
 >
 > Once you pick a name, your phone is active and I'll continue with your request.
 
-Backend: SQLite at ~/.agent-meeting/db/rooms.db (CLI: ~/.agent-meeting/bin/room).
+Backend: SQLite at ~/.agent-meeting/db/rooms.db (CLI: ~/.agent-meeting/bin/meeting).
 Machine: `{hostname}` (role: {role}).
 Online peers: {peers}
 """

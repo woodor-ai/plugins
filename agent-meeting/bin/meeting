@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-meeting-room CLI backed by SQLite.
+meeting-meeting CLI backed by SQLite.
 
 Replaces the file-per-room storage (canonical/*.md) that suffered from:
   - Edit/Write race conditions (no atomic locking)
@@ -15,13 +15,13 @@ unlimited history with O(log N) reads, and clean query semantics.
 Database: ~/.claude/meeting/db/rooms.db (WAL mode for concurrent readers).
 
 Usage:
-  room init                                          # ensure db + schema
-  room send <self> <peer> <body> [--kind=X] [--ask=Y]
-  room read <self> <peer> [--limit=30] [--since=ID]
-  room show <self> <peer> [--limit=30]               # human-readable markdown render
-  room turn <self> <peer>                            # whose turn is it
-  room ring <self> --since <ID>                      # monitor query: new msgs in rooms where turn=self
-  room list                                          # all rooms
+  meeting init                                          # ensure db + schema
+  meeting send <self> <peer> <body> [--kind=X] [--ask=Y]
+  meeting read <self> <peer> [--limit=30] [--since=ID]
+  meeting show <self> <peer> [--limit=30]               # human-readable markdown render
+  meeting turn <self> <peer>                            # whose turn is it
+  meeting ring <self> --since <ID>                      # monitor query: new msgs in rooms where turn=self
+  meeting list                                          # all rooms
 
 All write operations are wrapped in BEGIN IMMEDIATE transactions, so two
 sessions writing the same room simultaneously serialize cleanly.
@@ -489,7 +489,7 @@ def cmd_list(args):
 # ---------- main ----------
 
 def main():
-    p = argparse.ArgumentParser(prog="room")
+    p = argparse.ArgumentParser(prog="meeting")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init").set_defaults(func=cmd_init)
