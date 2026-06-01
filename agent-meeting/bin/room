@@ -28,16 +28,133 @@ sessions writing the same room simultaneously serialize cleanly.
 """
 
 import argparse
+import json
 import os
+import socket
 import sqlite3
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 # Data root is agent-neutral so the same plugin works under Claude Code, Codex,
 # or any other host. Override with MEETING_HOME env var when testing.
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
 DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
 DIRECTORY_PATH = os.path.join(MEETING_HOME, "directory.json")
+CONFIG_PATH = os.path.join(MEETING_HOME, "config.json")
+
+# Discovery cache: avoid 1-2s mDNS browse on every CLI call (monitor polls ring/3s).
+HOST_CACHE = "/tmp/meeting-host.cache"
+HOST_CACHE_TTL = 60  # seconds
+MDNS_BROWSE_TIMEOUT = 1.5  # seconds
+SERVICE_TYPE = "_agent-meeting._tcp.local."
+
+
+# ---------- LAN discovery (mDNS + HTTP client) ----------
+
+def _local_token() -> str:
+    """Read shared token from local config.json (same on host + clients).
+    Empty string means 'no auth required' (test mode)."""
+    if not os.path.exists(CONFIG_PATH):
+        return ""
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f).get("token", "")
+    except Exception:
+        return ""
+
+
+def discover_host() -> tuple[str, str] | None:
+    """Find a remote daemon to talk to. Returns (base_url, token) or None.
+
+    Resolution order:
+      1. MEETING_HOST env var (e.g. http://10.0.0.114:8765) — manual override.
+      2. /tmp/meeting-host.cache — recently discovered URL, valid for HOST_CACHE_TTL.
+      3. mDNS browse for _agent-meeting._tcp.local. (1.5s).
+      4. None → caller falls back to local SQLite (works only on the host machine).
+    """
+    if os.environ.get("MEETING_HOST"):
+        return os.environ["MEETING_HOST"].rstrip("/"), _local_token()
+
+    if os.path.exists(HOST_CACHE):
+        try:
+            with open(HOST_CACHE) as f:
+                cache = json.load(f)
+            if cache.get("expires", 0) > time.time() and cache.get("url"):
+                return cache["url"], cache.get("token", "")
+        except Exception:
+            pass
+
+    try:
+        from zeroconf import IPVersion, ServiceBrowser, ServiceListener, Zeroconf
+    except ImportError:
+        return None
+
+    found_url = []
+
+    class _L(ServiceListener):
+        def add_service(self, zc, type_, name):
+            info = zc.get_service_info(type_, name, timeout=int(MDNS_BROWSE_TIMEOUT * 1000))
+            if info and info.addresses:
+                ip = socket.inet_ntoa(info.addresses[0])
+                found_url.append(f"http://{ip}:{info.port}")
+
+        def update_service(self, *a): pass
+        def remove_service(self, *a): pass
+
+    try:
+        zc = Zeroconf(ip_version=IPVersion.V4Only)
+        ServiceBrowser(zc, SERVICE_TYPE, _L())
+        time.sleep(MDNS_BROWSE_TIMEOUT)
+        zc.close()
+    except Exception:
+        return None
+
+    if not found_url:
+        return None
+
+    url, token = found_url[0], _local_token()
+    try:
+        with open(HOST_CACHE, "w") as f:
+            json.dump({"url": url, "token": token, "expires": time.time() + HOST_CACHE_TTL}, f)
+    except Exception:
+        pass
+    return url, token
+
+
+def http(method: str, host_url: str, token: str, path: str,
+         params: dict | None = None, body: dict | None = None):
+    """Call the daemon. Returns parsed JSON or raw text. Raises on non-2xx."""
+    url = host_url + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    headers = {}
+    if token:
+        headers["X-Meeting-Token"] = token
+    data = None
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+    req = urllib.request.Request(url, method=method, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            ct = resp.headers.get("Content-Type", "")
+            raw = resp.read()
+            if "application/json" in ct:
+                return json.loads(raw.decode("utf-8"))
+            return raw.decode("utf-8")
+    except urllib.error.HTTPError as e:
+        err = e.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"daemon error: HTTP {e.code}: {err}")
+    except urllib.error.URLError as e:
+        # Discovery cache may point at a dead daemon — invalidate so next call rediscovers.
+        try:
+            os.remove(HOST_CACHE)
+        except Exception:
+            pass
+        raise SystemExit(f"daemon unreachable at {host_url}: {e.reason}")
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -132,6 +249,16 @@ def cmd_send(args):
     if not body:
         raise SystemExit("error: body is empty")
 
+    host = discover_host()
+    if host:
+        url, token = host
+        payload = {"self": args.self, "peer": args.peer, "body": body, "kind": args.kind}
+        if args.ask:
+            payload["ask"] = args.ask
+        r = http("POST", url, token, "/send", body=payload)
+        print(f"sent: room={r['room']} msg_id={r['msg_id']} turn→{r['turn']}")
+        return
+
     db = connect()
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -158,6 +285,17 @@ def cmd_send(args):
 
 def cmd_read(args):
     """Print messages as raw rows: id|created_at|sender|kind|ask|body."""
+    host = discover_host()
+    if host:
+        url, token = host
+        rows = http("GET", url, token, "/read",
+                    params={"self": args.self, "peer": args.peer, "limit": args.limit, "since": args.since})
+        for r in rows:
+            ask = (r.get("ask") or "").replace("\n", " ")
+            body = r["body"].replace("\n", "\\n")
+            print(f"{r['id']}\t{r['created_at']}\t{r['sender']}\t{r['kind']}\t{ask}\t{body}")
+        return
+
     db = connect()
     room = db.execute(
         "SELECT * FROM rooms WHERE name=?",
@@ -183,6 +321,14 @@ def cmd_read(args):
 
 def cmd_show(args):
     """Pretty markdown render of recent messages (for human viewing)."""
+    host = discover_host()
+    if host:
+        url, token = host
+        text = http("GET", url, token, "/show",
+                    params={"self": args.self, "peer": args.peer, "limit": args.limit})
+        sys.stdout.write(text)
+        return
+
     db = connect()
     name = canonical_room_name(args.self, args.peer)[0]
     room = db.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
@@ -207,6 +353,12 @@ def cmd_show(args):
 
 
 def cmd_turn(args):
+    host = discover_host()
+    if host:
+        url, token = host
+        r = http("GET", url, token, "/turn", params={"self": args.self, "peer": args.peer})
+        print(r["turn"])
+        return
     db = connect()
     name = canonical_room_name(args.self, args.peer)[0]
     row = db.execute("SELECT current_turn FROM rooms WHERE name=?", (name,)).fetchone()
@@ -223,6 +375,12 @@ def cmd_delete(args):
     Hard delete — no soft-delete / archive. The caller (SKILL.md) is responsible
     for confirming with the user before invoking this.
     """
+    host = discover_host()
+    if host:
+        url, token = host
+        r = http("DELETE", url, token, "/room", params={"self": args.self, "peer": args.peer})
+        print(f"deleted: room={r['room']} ({r['msg_count']} msgs purged)")
+        return
     name = canonical_room_name(args.self, args.peer)[0]
     db = connect()
     db.execute("BEGIN IMMEDIATE")
@@ -251,6 +409,14 @@ def cmd_ring(args):
     Output: one line per message: <msg_id>\t<peer>\t<ask_or_empty>
     Monitor uses this to track the cursor and emit notifications.
     """
+    host = discover_host()
+    if host:
+        url, token = host
+        rows = http("GET", url, token, "/ring", params={"self": args.self, "since": args.since})
+        for r in rows:
+            ask = (r.get("ask") or "").replace("\n", " ").replace("\t", " ")
+            print(f"{r['id']}\t{r['peer']}\t{ask}")
+        return
     db = connect()
     rows = db.execute(
         """
@@ -286,7 +452,13 @@ def cmd_list(args):
     /tmp/meeting-<name>.monitor_pid at startup, and trap-removes it on exit.
     We check `kill -0 <monitor_pid>`.
     """
-    import json
+    host = discover_host()
+    if host:
+        url, token = host
+        rows = http("GET", url, token, "/list")
+        for r in rows:
+            print(f"{r['status']}\t{r['name']}\t{r['msgs']}")
+        return
 
     directory = {}
     if os.path.exists(DIRECTORY_PATH):

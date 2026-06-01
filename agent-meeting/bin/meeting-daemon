@@ -1,0 +1,409 @@
+#!/usr/bin/env python3
+"""
+meeting-daemon — HTTP+mDNS server for LAN-wide agent-meeting.
+
+Single-host model: this process owns the SQLite DB. Other machines on the
+LAN discover us via mDNS (_agent-meeting._tcp.local.) and hit our HTTP API
+to do all room operations (register / send / read / show / turn / ring /
+list / delete) — no direct DB access from clients.
+
+Localhost clients also go through HTTP (uniform code path; localhost RTT
+is <1ms so the cost is negligible).
+
+Auth: shared token in `X-Meeting-Token` header. Token lives in
+~/.agent-meeting/config.json. Generated on first run if missing.
+
+Usage:
+  meeting-daemon [--port 8765] [--bind 0.0.0.0]
+
+Run forever; stop with SIGINT/SIGTERM (mDNS unregister + clean shutdown).
+"""
+
+import argparse
+import json
+import os
+import secrets
+import signal
+import socket
+import sqlite3
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
+DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
+CONFIG_PATH = os.path.join(MEETING_HOME, "config.json")
+SERVICE_TYPE = "_agent-meeting._tcp.local."
+
+
+# ---------- config / token ----------
+
+def load_or_create_config() -> dict:
+    """Load config.json; create with random token if absent."""
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    cfg = {
+        "token": secrets.token_urlsafe(32),
+        "created_at": int(time.time()),
+    }
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.chmod(CONFIG_PATH, 0o600)
+    return cfg
+
+
+# ---------- DB helpers (mirror room CLI) ----------
+
+def db():
+    conn = sqlite3.connect(DB_PATH, isolation_level=None, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.executescript("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+    return conn
+
+
+def canonical_room_name(a: str, b: str):
+    sa, sb = sorted([a, b])
+    return f"{sa}--{sb}", sa, sb
+
+
+def ensure_room(conn, self_name: str, peer: str):
+    name, a, b = canonical_room_name(self_name, peer)
+    row = conn.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO rooms (name, participant_a, participant_b, current_turn, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, a, b, self_name, int(time.time())),
+        )
+        row = conn.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
+    return row
+
+
+# ---------- HTTP handlers ----------
+
+class Handler(BaseHTTPRequestHandler):
+    # Hide default request log — replace with one-liner.
+    def log_message(self, fmt, *args):
+        sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
+
+    # --- auth ---
+
+    def authorized(self) -> bool:
+        token = self.headers.get("X-Meeting-Token", "")
+        return secrets.compare_digest(token, self.server.token)
+
+    # --- response helpers ---
+
+    def _json(self, status: int, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _text(self, status: int, body: str):
+        data = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _err(self, status, msg):
+        self._json(status, {"error": msg})
+
+    def _query(self):
+        return parse_qs(urlparse(self.path).query)
+
+    def _read_json_body(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        if not n:
+            return {}
+        return json.loads(self.rfile.read(n).decode("utf-8"))
+
+    # --- routes ---
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path == "/health":
+            return self._json(200, {
+                "ok": True,
+                "host": socket.gethostname(),
+                "version": "0.5.0-poc",
+            })
+        if not self.authorized():
+            return self._err(401, "missing or invalid X-Meeting-Token")
+        q = self._query()
+        try:
+            if path == "/list":
+                return self._json(200, self._list())
+            if path == "/turn":
+                return self._json(200, {"turn": self._turn(q["self"][0], q["peer"][0])})
+            if path == "/show":
+                return self._text(200, self._show(q["self"][0], q["peer"][0], int(q.get("limit", ["20"])[0])))
+            if path == "/read":
+                return self._json(200, self._read(q["self"][0], q["peer"][0],
+                                                  int(q.get("limit", ["30"])[0]),
+                                                  int(q.get("since", ["0"])[0])))
+            if path == "/ring":
+                return self._json(200, self._ring(q["self"][0], int(q.get("since", ["0"])[0])))
+            return self._err(404, f"no such GET route: {path}")
+        except KeyError as e:
+            return self._err(400, f"missing param: {e}")
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if not self.authorized():
+            return self._err(401, "missing or invalid X-Meeting-Token")
+        body = self._read_json_body()
+        try:
+            if path == "/send":
+                result = self._send(
+                    body["self"], body["peer"], body["body"],
+                    body.get("kind", "回应"),
+                    body.get("ask"),
+                )
+                return self._json(200, result)
+            return self._err(404, f"no such POST route: {path}")
+        except KeyError as e:
+            return self._err(400, f"missing param: {e}")
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        if not self.authorized():
+            return self._err(401, "missing or invalid X-Meeting-Token")
+        q = self._query()
+        try:
+            if path == "/room":
+                return self._json(200, self._delete(q["self"][0], q["peer"][0]))
+            return self._err(404, f"no such DELETE route: {path}")
+        except KeyError as e:
+            return self._err(400, f"missing param: {e}")
+
+    # --- business logic (mirror room CLI cmd_*) ---
+
+    def _list(self):
+        directory = {}
+        directory_path = os.path.join(MEETING_HOME, "directory.json")
+        if os.path.exists(directory_path):
+            with open(directory_path) as f:
+                directory = json.load(f)
+
+        def monitor_alive(name):
+            pid_path = f"/tmp/meeting-{name}.monitor_pid"
+            if not os.path.exists(pid_path):
+                return False
+            try:
+                with open(pid_path) as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, 0)
+                return True
+            except (ValueError, OSError, ProcessLookupError):
+                return False
+
+        with db() as conn:
+            msg_counts = {
+                r["sender"]: r["cnt"]
+                for r in conn.execute("SELECT sender, COUNT(*) AS cnt FROM messages GROUP BY sender")
+            }
+        online = {n for n in directory if monitor_alive(n)}
+        empty = set(directory.keys()) - online
+        historical = set(msg_counts.keys()) - online - empty
+
+        rows = []
+        for n in sorted(online):
+            rows.append({"status": "online", "name": n, "msgs": msg_counts.get(n, 0)})
+        for n in sorted(empty):
+            rows.append({"status": "empty", "name": n, "msgs": msg_counts.get(n, 0)})
+        for n in sorted(historical):
+            rows.append({"status": "historical", "name": n, "msgs": msg_counts.get(n, 0)})
+        return rows
+
+    def _turn(self, self_name, peer):
+        name = canonical_room_name(self_name, peer)[0]
+        with db() as conn:
+            row = conn.execute("SELECT current_turn FROM rooms WHERE name=?", (name,)).fetchone()
+            if row is None:
+                raise KeyError(f"no such room: {name}")
+            return row["current_turn"]
+
+    def _show(self, self_name, peer, limit):
+        name = canonical_room_name(self_name, peer)[0]
+        with db() as conn:
+            room = conn.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
+            if room is None:
+                raise KeyError(f"no such room: {name}")
+            msgs = conn.execute(
+                "SELECT * FROM messages WHERE room_id=? ORDER BY id DESC LIMIT ?",
+                (room["id"], limit),
+            ).fetchall()
+        lines = [f"# Room: {room['participant_a']} ↔ {room['participant_b']}",
+                 f"Created: {time.strftime('%Y-%m-%d %H:%M', time.localtime(room['created_at']))}",
+                 f"当前发言权: {room['current_turn']}\n---\n"]
+        for row in reversed(msgs):
+            ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
+            lines.append(f"### [{row['sender']} @ {ts}] {row['kind']}")
+            lines.append(row["body"])
+            if row["ask"]:
+                lines.append(f"\n**Ask**: {row['ask']}")
+            lines.append("")
+        return "\n".join(lines)
+
+    def _read(self, self_name, peer, limit, since):
+        name = canonical_room_name(self_name, peer)[0]
+        with db() as conn:
+            room = conn.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
+            if room is None:
+                raise KeyError(f"no such room: {name}")
+            q = "SELECT * FROM messages WHERE room_id=? "
+            params = [room["id"]]
+            if since:
+                q += "AND id > ? "
+                params.append(since)
+            q += "ORDER BY id ASC "
+            if limit:
+                q += f"LIMIT {int(limit)}"
+            rows = conn.execute(q, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def _ring(self, self_name, since):
+        with db() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.sender, m.ask, r.participant_a, r.participant_b
+                  FROM messages m
+                  JOIN rooms r ON m.room_id = r.id
+                 WHERE r.current_turn = ?
+                   AND m.id > ?
+                   AND m.sender != ?
+                 ORDER BY m.id ASC
+                """,
+                (self_name, since, self_name),
+            ).fetchall()
+        out = []
+        for r in rows:
+            peer = r["participant_a"] if r["sender"] == r["participant_a"] else r["participant_b"]
+            out.append({"id": r["id"], "peer": peer, "ask": r["ask"] or ""})
+        return out
+
+    def _send(self, self_name, peer, body, kind, ask):
+        if not body:
+            raise KeyError("body empty")
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                room = ensure_room(conn, self_name, peer)
+                if self_name not in (room["participant_a"], room["participant_b"]):
+                    raise ValueError(f"{self_name} not a participant of {room['name']}")
+                conn.execute(
+                    "INSERT INTO messages (room_id, sender, kind, body, ask, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (room["id"], self_name, kind, body, ask, int(time.time())),
+                )
+                conn.execute("UPDATE rooms SET current_turn=? WHERE id=?", (peer, room["id"]))
+                msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                conn.execute("COMMIT")
+                return {"msg_id": msg_id, "room": room["name"], "turn": peer}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def _delete(self, self_name, peer):
+        name = canonical_room_name(self_name, peer)[0]
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute("SELECT id FROM rooms WHERE name=?", (name,)).fetchone()
+                if row is None:
+                    conn.execute("ROLLBACK")
+                    raise KeyError(f"no such room: {name}")
+                room_id = row["id"]
+                cnt = conn.execute("SELECT COUNT(*) c FROM messages WHERE room_id=?", (room_id,)).fetchone()["c"]
+                conn.execute("DELETE FROM messages WHERE room_id=?", (room_id,))
+                conn.execute("DELETE FROM rooms WHERE id=?", (room_id,))
+                conn.execute("COMMIT")
+                return {"deleted": True, "room": name, "msg_count": cnt}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+
+# ---------- mDNS ----------
+
+def publish_mdns(port: int):
+    """Register this daemon as _agent-meeting._tcp.local. Returns ServiceInfo
+    so caller can unregister on shutdown."""
+    from zeroconf import IPVersion, ServiceInfo, Zeroconf
+
+    zc = Zeroconf(ip_version=IPVersion.V4Only)
+    hostname = socket.gethostname().replace(".local", "")
+    instance = f"{hostname}-meeting"
+    # Get a real LAN IP (not 127.0.0.1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    finally:
+        s.close()
+
+    info = ServiceInfo(
+        SERVICE_TYPE,
+        f"{instance}.{SERVICE_TYPE}",
+        addresses=[socket.inet_aton(ip)],
+        port=port,
+        properties={
+            b"version": b"0.5.0-poc",
+            b"host": hostname.encode("utf-8"),
+        },
+        server=f"{hostname}.local.",
+    )
+    zc.register_service(info)
+    print(f"[mDNS] published {instance} → {ip}:{port}", flush=True)
+    return zc, info
+
+
+# ---------- main ----------
+
+def main():
+    p = argparse.ArgumentParser(prog="meeting-daemon")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--bind", default="0.0.0.0")
+    args = p.parse_args()
+
+    if not os.path.exists(DB_PATH):
+        print(f"DB not found at {DB_PATH}. Run `room init` first.", file=sys.stderr)
+        sys.exit(1)
+
+    cfg = load_or_create_config()
+    print(f"[config] token loaded ({len(cfg['token'])} chars) from {CONFIG_PATH}", flush=True)
+
+    ThreadingHTTPServer.allow_reuse_address = True
+    server = ThreadingHTTPServer((args.bind, args.port), Handler)
+    server.token = cfg["token"]
+
+    zc, info = publish_mdns(args.port)
+
+    def shutdown(sig, _frame):
+        print(f"\n[shutdown] received signal {sig}, unpublishing mDNS + stopping HTTP", flush=True)
+        try:
+            zc.unregister_service(info)
+        except Exception:
+            pass
+        zc.close()
+        server.shutdown()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
+    print(f"[http] listening on {args.bind}:{args.port}", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
