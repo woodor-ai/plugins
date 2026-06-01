@@ -10,8 +10,9 @@ list / delete) — no direct DB access from clients.
 Localhost clients also go through HTTP (uniform code path; localhost RTT
 is <1ms so the cost is negligible).
 
-Auth: shared token in `X-Meeting-Token` header. Token lives in
-~/.agent-meeting/config.json. Generated on first run if missing.
+No auth: meant for trusted LANs. Any device that can reach :8765 can
+operate on the room data. If you need access control, gate at the network
+layer (firewall, VLAN) rather than in this daemon.
 
 Usage:
   meeting-daemon [--port 8765] [--bind 0.0.0.0]
@@ -22,7 +23,6 @@ Run forever; stop with SIGINT/SIGTERM (mDNS unregister + clean shutdown).
 import argparse
 import json
 import os
-import secrets
 import signal
 import socket
 import sqlite3
@@ -34,26 +34,7 @@ from urllib.parse import parse_qs, urlparse
 
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
 DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
-CONFIG_PATH = os.path.join(MEETING_HOME, "config.json")
 SERVICE_TYPE = "_agent-meeting._tcp.local."
-
-
-# ---------- config / token ----------
-
-def load_or_create_config() -> dict:
-    """Load config.json; create with random token if absent."""
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH) as f:
-            return json.load(f)
-    cfg = {
-        "token": secrets.token_urlsafe(32),
-        "created_at": int(time.time()),
-    }
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
-    os.chmod(CONFIG_PATH, 0o600)
-    return cfg
 
 
 # ---------- DB helpers (mirror room CLI) ----------
@@ -91,10 +72,6 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
 
     # --- auth ---
-
-    def authorized(self) -> bool:
-        token = self.headers.get("X-Meeting-Token", "")
-        return secrets.compare_digest(token, self.server.token)
 
     # --- response helpers ---
 
@@ -136,8 +113,6 @@ class Handler(BaseHTTPRequestHandler):
                 "host": socket.gethostname(),
                 "version": "0.5.0-poc",
             })
-        if not self.authorized():
-            return self._err(401, "missing or invalid X-Meeting-Token")
         q = self._query()
         try:
             if path == "/list":
@@ -158,8 +133,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if not self.authorized():
-            return self._err(401, "missing or invalid X-Meeting-Token")
         body = self._read_json_body()
         try:
             if path == "/send":
@@ -175,8 +148,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
-        if not self.authorized():
-            return self._err(401, "missing or invalid X-Meeting-Token")
         q = self._query()
         try:
             if path == "/room":
@@ -379,12 +350,8 @@ def main():
         print(f"DB not found at {DB_PATH}. Run `room init` first.", file=sys.stderr)
         sys.exit(1)
 
-    cfg = load_or_create_config()
-    print(f"[config] token loaded ({len(cfg['token'])} chars) from {CONFIG_PATH}", flush=True)
-
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
-    server.token = cfg["token"]
 
     zc, info = publish_mdns(args.port)
 

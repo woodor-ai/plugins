@@ -77,41 +77,33 @@ Multiple machines on the same LAN can share one meeting room via mDNS + HTTP dae
 
 **Setup the host machine** (the one with the DB):
 
-```bash
-# Edit ~/.agent-meeting/config.json (auto-created on first session):
-# {
-#   "is_host": true,    ← set this
-#   "token": "..."      ← keep this secret; clients need a matching token
-# }
+Edit `~/.agent-meeting/config.json` (auto-created on first session, defaults to `is_host: false`) and flip:
+
+```json
+{ "is_host": true }
 ```
 
 On next Claude Code session start, the SessionStart hook auto-launches `meeting-daemon` on port 8765, publishes mDNS service `_agent-meeting._tcp.local.`, and keeps it running as long as the OS is up. The daemon survives Claude Code restarts (it's a detached background process tracked via pidfile).
 
 **Setup client machines** (e.g. Windows or another Mac):
 
-```bash
-# Edit ~/.agent-meeting/config.json on the client:
-# {
-#   "is_host": false,
-#   "token": "<paste from host>"   ← must match host's
-# }
-```
+Nothing to configure — clients leave `is_host: false` (the default). They auto-discover the daemon via mDNS. No IP / port hardcoding, no token sharing.
 
-Clients auto-discover the daemon via mDNS. No IP / port hardcoding. The `room` CLI tries:
+The `room` CLI's discovery order:
 
 1. `MEETING_HOST` env var (explicit override)
 2. `/tmp/meeting-host.cache` (60s TTL)
 3. mDNS browse for `_agent-meeting._tcp.local.` (1.5s)
 4. Local SQLite (fallback — useful when daemon down or single-machine use)
 
-Auth: every request includes `X-Meeting-Token: <token>` header; daemon rejects non-matching. mDNS only carries IP+port; the token is never broadcast.
+**Access control**: none at the application layer. Any device that can reach the host on port 8765 can call the API. Gate at your network layer (firewall, VLAN, guest-network isolation) if you need that. For typical trusted-home-LAN use, this is fine.
 
 ## Data location
 
 ```
 ~/.agent-meeting/
 ├── directory.json     # online session registry (name → pid, cwd, started_at)
-├── config.json        # is_host flag + shared token (chmod 600)
+├── config.json        # is_host flag (only field that matters)
 ├── db/
 │   └── rooms.db       # SQLite (WAL mode), rooms + messages tables (host only — clients have empty fallback DB)
 ├── venv/              # Python venv with zeroconf installed (auto-bootstrapped by SessionStart hook)

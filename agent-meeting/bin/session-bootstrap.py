@@ -5,8 +5,8 @@ SessionStart hook for agent-meeting plugin. Cross-platform (macOS / Windows / Li
 Responsibilities (idempotent — runs every SessionStart):
   1. Ensure ~/.agent-meeting/ structure exists (db/, bin link)
   2. Ensure venv at ~/.agent-meeting/venv with zeroconf installed
-  3. Read ~/.agent-meeting/config.json (auto-create with random token if missing).
-     The `is_host` flag determines whether this machine launches the daemon.
+  3. Read ~/.agent-meeting/config.json (auto-create if missing). The `is_host`
+     flag determines whether this machine launches the daemon.
   4. If is_host=true and daemon not already running → spawn meeting-daemon
      detached as a background process. Tracks pid in /tmp/meeting-daemon.pid
      (on Windows: %TEMP%\\meeting-daemon.pid).
@@ -17,7 +17,6 @@ Replaces the bash session-bootstrap.sh — that one only worked on POSIX.
 
 import json
 import os
-import secrets
 import socket
 import subprocess
 import sys
@@ -100,7 +99,7 @@ def ensure_zeroconf():
     subprocess.run([str(py), "-m", "pip", "install", "--quiet", "zeroconf"], check=True)
 
 
-# ---------- 3. config + token ----------
+# ---------- 3. config ----------
 
 def load_or_create_config() -> dict:
     if CONFIG.exists():
@@ -110,7 +109,6 @@ def load_or_create_config() -> dict:
             log("config.json malformed, recreating")
     cfg = {
         "is_host": False,  # default: not a host. User flips to True on the machine that owns the DB.
-        "token": secrets.token_urlsafe(32),
         "created_at": int(time.time()),
     }
     CONFIG.write_text(json.dumps(cfg, indent=2))

@@ -43,7 +43,6 @@ import urllib.request
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
 DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
 DIRECTORY_PATH = os.path.join(MEETING_HOME, "directory.json")
-CONFIG_PATH = os.path.join(MEETING_HOME, "config.json")
 
 # Discovery cache: avoid 1-2s mDNS browse on every CLI call (monitor polls ring/3s).
 HOST_CACHE = "/tmp/meeting-host.cache"
@@ -54,20 +53,8 @@ SERVICE_TYPE = "_agent-meeting._tcp.local."
 
 # ---------- LAN discovery (mDNS + HTTP client) ----------
 
-def _local_token() -> str:
-    """Read shared token from local config.json (same on host + clients).
-    Empty string means 'no auth required' (test mode)."""
-    if not os.path.exists(CONFIG_PATH):
-        return ""
-    try:
-        with open(CONFIG_PATH) as f:
-            return json.load(f).get("token", "")
-    except Exception:
-        return ""
-
-
-def discover_host() -> tuple[str, str] | None:
-    """Find a remote daemon to talk to. Returns (base_url, token) or None.
+def discover_host() -> str | None:
+    """Find a remote daemon to talk to. Returns base URL or None.
 
     Resolution order:
       1. MEETING_HOST env var (e.g. http://10.0.0.114:8765) — manual override.
@@ -76,14 +63,14 @@ def discover_host() -> tuple[str, str] | None:
       4. None → caller falls back to local SQLite (works only on the host machine).
     """
     if os.environ.get("MEETING_HOST"):
-        return os.environ["MEETING_HOST"].rstrip("/"), _local_token()
+        return os.environ["MEETING_HOST"].rstrip("/")
 
     if os.path.exists(HOST_CACHE):
         try:
             with open(HOST_CACHE) as f:
                 cache = json.load(f)
             if cache.get("expires", 0) > time.time() and cache.get("url"):
-                return cache["url"], cache.get("token", "")
+                return cache["url"]
         except Exception:
             pass
 
@@ -115,24 +102,22 @@ def discover_host() -> tuple[str, str] | None:
     if not found_url:
         return None
 
-    url, token = found_url[0], _local_token()
+    url = found_url[0]
     try:
         with open(HOST_CACHE, "w") as f:
-            json.dump({"url": url, "token": token, "expires": time.time() + HOST_CACHE_TTL}, f)
+            json.dump({"url": url, "expires": time.time() + HOST_CACHE_TTL}, f)
     except Exception:
         pass
-    return url, token
+    return url
 
 
-def http(method: str, host_url: str, token: str, path: str,
+def http(method: str, host_url: str, path: str,
          params: dict | None = None, body: dict | None = None):
     """Call the daemon. Returns parsed JSON or raw text. Raises on non-2xx."""
     url = host_url + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
     headers = {}
-    if token:
-        headers["X-Meeting-Token"] = token
     data = None
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -251,11 +236,11 @@ def cmd_send(args):
 
     host = discover_host()
     if host:
-        url, token = host
+        url = host
         payload = {"self": args.self, "peer": args.peer, "body": body, "kind": args.kind}
         if args.ask:
             payload["ask"] = args.ask
-        r = http("POST", url, token, "/send", body=payload)
+        r = http("POST", url, "/send", body=payload)
         print(f"sent: room={r['room']} msg_id={r['msg_id']} turn→{r['turn']}")
         return
 
@@ -287,8 +272,8 @@ def cmd_read(args):
     """Print messages as raw rows: id|created_at|sender|kind|ask|body."""
     host = discover_host()
     if host:
-        url, token = host
-        rows = http("GET", url, token, "/read",
+        url = host
+        rows = http("GET", url, "/read",
                     params={"self": args.self, "peer": args.peer, "limit": args.limit, "since": args.since})
         for r in rows:
             ask = (r.get("ask") or "").replace("\n", " ")
@@ -323,8 +308,8 @@ def cmd_show(args):
     """Pretty markdown render of recent messages (for human viewing)."""
     host = discover_host()
     if host:
-        url, token = host
-        text = http("GET", url, token, "/show",
+        url = host
+        text = http("GET", url, "/show",
                     params={"self": args.self, "peer": args.peer, "limit": args.limit})
         sys.stdout.write(text)
         return
@@ -355,8 +340,8 @@ def cmd_show(args):
 def cmd_turn(args):
     host = discover_host()
     if host:
-        url, token = host
-        r = http("GET", url, token, "/turn", params={"self": args.self, "peer": args.peer})
+        url = host
+        r = http("GET", url, "/turn", params={"self": args.self, "peer": args.peer})
         print(r["turn"])
         return
     db = connect()
@@ -377,8 +362,8 @@ def cmd_delete(args):
     """
     host = discover_host()
     if host:
-        url, token = host
-        r = http("DELETE", url, token, "/room", params={"self": args.self, "peer": args.peer})
+        url = host
+        r = http("DELETE", url, "/room", params={"self": args.self, "peer": args.peer})
         print(f"deleted: room={r['room']} ({r['msg_count']} msgs purged)")
         return
     name = canonical_room_name(args.self, args.peer)[0]
@@ -411,8 +396,8 @@ def cmd_ring(args):
     """
     host = discover_host()
     if host:
-        url, token = host
-        rows = http("GET", url, token, "/ring", params={"self": args.self, "since": args.since})
+        url = host
+        rows = http("GET", url, "/ring", params={"self": args.self, "since": args.since})
         for r in rows:
             ask = (r.get("ask") or "").replace("\n", " ").replace("\t", " ")
             print(f"{r['id']}\t{r['peer']}\t{ask}")
@@ -454,8 +439,8 @@ def cmd_list(args):
     """
     host = discover_host()
     if host:
-        url, token = host
-        rows = http("GET", url, token, "/list")
+        url = host
+        rows = http("GET", url, "/list")
         for r in rows:
             print(f"{r['status']}\t{r['name']}\t{r['msgs']}")
         return
