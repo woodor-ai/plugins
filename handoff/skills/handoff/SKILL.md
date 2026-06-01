@@ -19,7 +19,7 @@ allowed-tools:
 ## 配套架构（plugin 自带，无需用户配置）
 
 - **写入**：本 skill（session 结束时主 agent 调）
-- **读取 + 归档**：plugin 的 `hooks/hooks.json` 注册的 SessionStart hook（startup / resume / clear / compact 四种触发都覆盖）→ `bin/handoff-pickup.sh` 检测 + atomic mv
+- **读取 + 归档**：plugin 的 `hooks/hooks.json` 注册的 SessionStart hook（startup / resume / clear / compact 四种触发都覆盖）→ `bin/handoff-pickup.py` 检测 + atomic rename
 - **位置**：`<project>/.claude/handoff-pending.md`（单文件，last-write-wins，无并发预期）
 - **归档**：`<project>/docs/handoff/archive/handoff-<YYYY-MM-DD-HHMMSS>.md`
 
