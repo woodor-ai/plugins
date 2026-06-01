@@ -50,14 +50,16 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
 
    **Mode B — stdin via `-`**:
    ```
-   cat /tmp/body.md | ~/.agent-meeting/bin/meeting send <self> <peer> - --kind=回应
+   cat "$TMPDIR/body.md" | ~/.agent-meeting/bin/meeting send <self> <peer> - --kind=回应
    ```
+   (macOS/Linux: `$TMPDIR` or `/tmp`; Windows: `%TEMP%` — use an absolute path)
 
    **Mode C — `--body-file` (recommended for bodies with code blocks, backticks, $vars)**:
    ```
-   # Write tool → /tmp/talkto-body.md with the full body content
-   ~/.agent-meeting/bin/meeting send <self> <peer> --body-file=/tmp/talkto-body.md --kind=开启|回应|总结 [--ask="..."]
+   # Write tool → <tmpdir>/talkto-body.md with the full body content
+   ~/.agent-meeting/bin/meeting send <self> <peer> --body-file=<tmpdir>/talkto-body.md --kind=开启|回应|总结 [--ask="..."]
    ```
+   (`<tmpdir>` = `/tmp` on macOS/Linux, `%TEMP%` on Windows)
 
    `--kind=开启` for first message, `回应` for follow-up, `总结` for wrap-up.
    The CLI prints `sent: room=<name> msg_id=<N> turn→<peer>` on success.

@@ -78,11 +78,11 @@ Reserved words `list`, `delete`, and `daemon` cannot be used as session names �
    - `command`: per the per-OS rule above — macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`; Windows: `"<abs>\.agent-meeting\venv\Scripts\python.exe" "<abs>\.agent-meeting\bin\monitor.py" <name>` (expand `<abs>` to the user profile path). The monitor inherits this interpreter as `sys.executable` and reuses it for its internal `meeting ring` calls, so the whole chain stays on the working venv Python.
 
    The monitor script (cross-platform Python) handles:
-   - Writing its pid to `/tmp/meeting-<name>.monitor_pid` for `meeting list` liveness check
+   - Writing its pid to `<tempdir>/meeting-<name>.monitor_pid` (where `<tempdir>` = `tempfile.gettempdir()`, e.g. `/tmp` on macOS/Linux or `%TEMP%` on Windows) for `meeting list` liveness check
    - Cleaning up pid file + directory.json entry on exit (atexit + SIGINT/SIGTERM)
    - Seeding cursor on first launch to current MAX(msg_id) so a new registration doesn't replay history
    - Polling `meeting ring <name> --since <cursor>` every 3s and emitting `📬 New Message from <peer>(: <ask>)?` lines
-   - Works identically whether the DB is local or behind the LAN HTTP daemon — `meeting ring` does the discovery transparently.
+   - Works identically whether the DB is local or behind the LAN HTTP daemon — `meeting ring` (and all other subcommands: `list`, `send`, `show`, `read`, `turn`, `delete`) call `discover_host()` transparently; only when no daemon is found do they fall back to local SQLite.
 
 6. **Update terminal tab title (best-effort)**: `{ printf '\033]0;%s\a' "<name>" > /dev/tty; } 2>/dev/null || true`
 7. **Confirm to user**: "Meeting registered as `<name>`. You can now /talkto <peer> or receive calls."
@@ -119,14 +119,16 @@ When monitor emits a line matching `📬 New Message from <peer>(: <ask>)?`:
 
    **Mode B — stdin via `-` sentinel** (for piped content):
    ```
-   cat /tmp/reply.md | ~/.agent-meeting/bin/meeting send <self> <peer> - --kind=回应
+   cat "$TMPDIR/reply.md" | ~/.agent-meeting/bin/meeting send <self> <peer> - --kind=回应
    ```
+   (macOS/Linux: `$TMPDIR` or `/tmp`; Windows: `%TEMP%` — use an absolute path)
 
    **Mode C — `--body-file` (recommended for anything non-trivial, e.g. contains backticks, code blocks, $vars)**:
    ```
-   # First: Write tool → /tmp/reply-<peer>.md with the full body content
-   ~/.agent-meeting/bin/meeting send <self> <peer> --body-file=/tmp/reply-<peer>.md --kind=回应 [--ask="..."]
+   # First: Write tool → <tmpdir>/reply-<peer>.md with the full body content
+   ~/.agent-meeting/bin/meeting send <self> <peer> --body-file=<tmpdir>/reply-<peer>.md --kind=回应 [--ask="..."]
    ```
+   (`<tmpdir>` = `/tmp` on macOS/Linux, `%TEMP%` on Windows)
    Only mode immune to shell parsing — content preserved verbatim.
 
    The CLI does one atomic transaction (insert + flip turn). No race.

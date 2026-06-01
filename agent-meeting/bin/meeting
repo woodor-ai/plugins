@@ -28,6 +28,7 @@ sessions writing the same room simultaneously serialize cleanly.
 """
 
 import argparse
+import http.client as _http_client
 import json
 import os
 import socket
@@ -92,13 +93,17 @@ def discover_host() -> str | None:
         def update_service(self, *a): pass
         def remove_service(self, *a): pass
 
-    try:
-        zc = Zeroconf(ip_version=IPVersion.V4Only)
-        ServiceBrowser(zc, SERVICE_TYPE, _L())
-        time.sleep(MDNS_BROWSE_TIMEOUT)
-        zc.close()
-    except Exception:
-        return None
+    # Retry up to 2 times so cold-start mDNS has up to ~3x 1.5s ≈ 4.5s total.
+    for _attempt in range(3):
+        try:
+            zc = Zeroconf(ip_version=IPVersion.V4Only)
+            ServiceBrowser(zc, SERVICE_TYPE, _L())
+            time.sleep(MDNS_BROWSE_TIMEOUT)
+            zc.close()
+        except Exception:
+            return None
+        if found_url:
+            break
 
     if not found_url:
         return None
@@ -112,9 +117,16 @@ def discover_host() -> str | None:
     return url
 
 
-def http(method: str, host_url: str, path: str,
-         params: dict | None = None, body: dict | None = None):
-    """Call the daemon. Returns parsed JSON or raw text. Raises on non-2xx."""
+def _invalidate_host_cache():
+    try:
+        os.remove(HOST_CACHE)
+    except Exception:
+        pass
+
+
+def _http_once(method: str, host_url: str, path: str,
+               params: dict | None, body: dict | None):
+    """Single HTTP attempt. Returns parsed JSON or raw text. Raises on non-2xx."""
     url = host_url + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -124,23 +136,50 @@ def http(method: str, host_url: str, path: str,
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"
     req = urllib.request.Request(url, method=method, data=data, headers=headers)
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        ct = resp.headers.get("Content-Type", "")
+        raw = resp.read()
+        if "application/json" in ct:
+            return json.loads(raw.decode("utf-8"))
+        return raw.decode("utf-8")
+
+
+def http(method: str, host_url: str, path: str,
+         params: dict | None = None, body: dict | None = None):
+    """Call the daemon. Returns parsed JSON or raw text. Raises on non-2xx.
+
+    Catches broken-connection errors (RemoteDisconnected, IncompleteRead,
+    socket.timeout, ConnectionError) in addition to HTTPError/URLError.
+    On a broken-connection error: invalidate host cache, retry once. If the
+    retry also fails, fall back to local SQLite (caller detects None return).
+    """
+    _BROKEN = (
+        _http_client.RemoteDisconnected,
+        _http_client.IncompleteRead,
+        ConnectionError,
+        socket.timeout,
+        TimeoutError,
+    )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            ct = resp.headers.get("Content-Type", "")
-            raw = resp.read()
-            if "application/json" in ct:
-                return json.loads(raw.decode("utf-8"))
-            return raw.decode("utf-8")
+        return _http_once(method, host_url, path, params, body)
     except urllib.error.HTTPError as e:
         err = e.read().decode("utf-8", errors="replace")
         raise SystemExit(f"daemon error: HTTP {e.code}: {err}")
     except urllib.error.URLError as e:
-        # Discovery cache may point at a dead daemon — invalidate so next call rediscovers.
-        try:
-            os.remove(HOST_CACHE)
-        except Exception:
-            pass
+        _invalidate_host_cache()
         raise SystemExit(f"daemon unreachable at {host_url}: {e.reason}")
+    except _BROKEN as e:
+        # Daemon responded but connection died mid-flight (e.g. FD exhaustion
+        # on the server side). Invalidate cache and retry once with a freshly
+        # discovered host.
+        _invalidate_host_cache()
+        new_host = discover_host()
+        if new_host is None:
+            raise SystemExit(f"daemon connection broken and no daemon found on retry: {e}")
+        try:
+            return _http_once(method, new_host, path, params, body)
+        except Exception as e2:
+            raise SystemExit(f"daemon unreachable after retry: {e2}") from e2
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
