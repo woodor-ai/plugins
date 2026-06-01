@@ -1,7 +1,7 @@
 ---
 name: meeting
 description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.agent-meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
-argument-hint: [list | delete <peer> | <name>]
+argument-hint: [list | delete <peer> | daemon status|stop|restart | <name>]
 ---
 
 ## Architecture (changed 2026-05-26)
@@ -21,9 +21,12 @@ The first word after `/meeting` decides what to do:
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
 | `/meeting list` | Run `~/.agent-meeting/bin/meeting list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `empty` / `online` / `historical`. |
 | `/meeting delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/meeting delete <self> <peer>`. |
+| `/meeting daemon status` | Run `~/.agent-meeting/bin/meeting daemon status` and paste the output. Shows launchd registration / pid / paths for the LAN-sharing daemon (Mac host only). |
+| `/meeting daemon stop` | Run `~/.agent-meeting/bin/meeting daemon stop`. SIGTERMs the daemon and waits for clean shutdown. Note: next Claude SessionStart with is_host=true will reinstall + relaunch it. |
+| `/meeting daemon restart` | Run `~/.agent-meeting/bin/meeting daemon restart`. Atomic kill+respawn via `launchctl kickstart -k`. Use this to force-pickup a daemon code change without reopening Claude. |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
-Reserved words `list` and `delete` cannot be used as session names — they go to the corresponding subcommand instead.
+Reserved words `list`, `delete`, and `daemon` cannot be used as session names — they go to the corresponding subcommand instead.
 
 ### Picker (when `/meeting` has no args)
 
