@@ -56,49 +56,14 @@ Reserved words `list` and `delete` cannot be used as session names — they go t
 5. **Install monitor**: invoke Monitor tool with:
    - `description`: `📞 meeting:<name>` (static, TUI banner can't be dynamic)
    - `persistent`: `true`
-   - `command`: the zsh script below
+   - `command`: `python3 ~/.agent-meeting/bin/monitor.py <name>`
 
-```zsh
-zsh -c '
-SELF="<name>"
-STATE_FILE="/tmp/meeting-<name>.last_msg_id"
-PID_FILE="/tmp/meeting-<name>.monitor_pid"
-ROOM_CLI="$HOME/.agent-meeting/bin/room"
-DB="$HOME/.agent-meeting/db/rooms.db"
-
-# Write our pid as the liveness signal. room list checks this file via kill -0.
-# On exit (TaskStop / session end / SIGTERM), session-cleanup removes BOTH
-# the pid file AND the directory.json entry for this name — no `empty`
-# zombie state left behind by clean exits.
-echo $$ > "$PID_FILE"
-trap "$HOME/.agent-meeting/bin/session-cleanup $SELF" EXIT INT TERM
-
-# Seed cursor: first ever launch → start at current max msg id (skip historical
-# flood). Subsequent launches → resume from saved cursor.
-if [ -f "$STATE_FILE" ]; then
-  LAST=$(cat "$STATE_FILE")
-else
-  LAST=$(sqlite3 "$DB" "SELECT COALESCE(MAX(id),0) FROM messages" 2>/dev/null || echo 0)
-  echo "$LAST" > "$STATE_FILE"
-fi
-echo "[meeting <name>] monitor started (sqlite, last_msg_id=$LAST, monitor_pid=$$)"
-while true; do
-  # Poll DB for new messages in rooms where current_turn=self and sender!=self.
-  # Output format: <id>\t<peer>\t<ask>
-  while IFS=$'\''\t'\'' read -r id peer ask; do
-    [ -z "$id" ] && continue
-    if [ -n "$ask" ]; then
-      echo "📬 New Message from ${peer}: ${ask}"
-    else
-      echo "📬 New Message from ${peer}"
-    fi
-    echo "$id" > "$STATE_FILE"
-    LAST="$id"
-  done < <("$ROOM_CLI" ring "$SELF" --since "$LAST")
-  sleep 3
-done
-'
-```
+   The monitor script (cross-platform Python) handles:
+   - Writing its pid to `/tmp/meeting-<name>.monitor_pid` for `room list` liveness check
+   - Cleaning up pid file + directory.json entry on exit (atexit + SIGINT/SIGTERM)
+   - Seeding cursor on first launch to current MAX(msg_id) so a new registration doesn't replay history
+   - Polling `room ring <name> --since <cursor>` every 3s and emitting `📬 New Message from <peer>(: <ask>)?` lines
+   - Works identically whether the DB is local or behind the LAN HTTP daemon — `room ring` does the discovery transparently.
 
 6. **Update terminal tab title (best-effort)**: `{ printf '\033]0;%s\a' "<name>" > /dev/tty; } 2>/dev/null || true`
 7. **Confirm to user**: "Meeting registered as `<name>`. You can now /talkto <peer> or receive calls."

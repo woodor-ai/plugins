@@ -1,5 +1,5 @@
 {
-  "description": "Meeting-room lifecycle: initialize data dir and inject context on session start",
+  "description": "Meeting-room lifecycle: ensure data dir + venv, auto-launch daemon on host machine, inject context on SessionStart.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/bin/session-bootstrap.sh\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/session-bootstrap.py\""
           }
         ]
       }

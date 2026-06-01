@@ -71,17 +71,56 @@ The CLI always uses `BEGIN IMMEDIATE` transactions for writes, so concurrent ses
 - Atomic write: `room send` inserts the message and flips the turn in one transaction.
 - **Liveness signal**: each session's monitor writes its own pid to `/tmp/meeting-<name>.monitor_pid` at startup, trap-removes on exit. `room list` checks `kill -0 <monitor_pid>` for each registered session.
 
+## LAN multi-machine setup (v0.5.0+)
+
+Multiple machines on the same LAN can share one meeting room via mDNS + HTTP daemon. One machine holds the SQLite DB ("host"); others discover it automatically.
+
+**Setup the host machine** (the one with the DB):
+
+```bash
+# Edit ~/.agent-meeting/config.json (auto-created on first session):
+# {
+#   "is_host": true,    ← set this
+#   "token": "..."      ← keep this secret; clients need a matching token
+# }
+```
+
+On next Claude Code session start, the SessionStart hook auto-launches `meeting-daemon` on port 8765, publishes mDNS service `_agent-meeting._tcp.local.`, and keeps it running as long as the OS is up. The daemon survives Claude Code restarts (it's a detached background process tracked via pidfile).
+
+**Setup client machines** (e.g. Windows or another Mac):
+
+```bash
+# Edit ~/.agent-meeting/config.json on the client:
+# {
+#   "is_host": false,
+#   "token": "<paste from host>"   ← must match host's
+# }
+```
+
+Clients auto-discover the daemon via mDNS. No IP / port hardcoding. The `room` CLI tries:
+
+1. `MEETING_HOST` env var (explicit override)
+2. `/tmp/meeting-host.cache` (60s TTL)
+3. mDNS browse for `_agent-meeting._tcp.local.` (1.5s)
+4. Local SQLite (fallback — useful when daemon down or single-machine use)
+
+Auth: every request includes `X-Meeting-Token: <token>` header; daemon rejects non-matching. mDNS only carries IP+port; the token is never broadcast.
+
 ## Data location
 
 ```
 ~/.agent-meeting/
-├── directory.json                # online session registry (name → pid, cwd, started_at)
+├── directory.json     # online session registry (name → pid, cwd, started_at)
+├── config.json        # is_host flag + shared token (chmod 600)
 ├── db/
-│   └── rooms.db                  # SQLite (WAL mode), rooms + messages tables
-└── bin/                          # symlink → $CLAUDE_PLUGIN_ROOT/bin (set by SessionStart hook)
-    ├── room                      # main CLI
-    ├── room-migrate              # one-shot import from legacy markdown rooms
-    └── session-bootstrap.sh      # SessionStart hook
+│   └── rooms.db       # SQLite (WAL mode), rooms + messages tables (host only — clients have empty fallback DB)
+├── venv/              # Python venv with zeroconf installed (auto-bootstrapped by SessionStart hook)
+└── bin/               # symlink → $CLAUDE_PLUGIN_ROOT/bin (or junction on Windows)
+    ├── room                    # main CLI (LAN-aware: HTTP if remote daemon found, local SQLite otherwise)
+    ├── meeting-daemon          # HTTP+mDNS server (host machine only)
+    ├── monitor.py              # cross-platform per-session message watcher
+    ├── room-migrate            # legacy .md → SQLite importer (v0.1.x → v0.2.x migration)
+    └── session-bootstrap.py    # SessionStart hook (Python, cross-platform)
 ```
 
 When uninstalling, delete `~/.agent-meeting/` if you also want to discard conversation history.
@@ -99,9 +138,11 @@ The migration is idempotent (skips rooms already in DB). Legacy `.md` files are 
 
 ## Requirements
 
-- **macOS** — uses BSD `stat -L -f %m`. Linux support needs minor `stat` syntax changes.
-- **sqlite3** — built into macOS; `python3` for the CLI (also bundled with macOS).
-- **iTerm2** recommended — terminal tab auto-rename uses iTerm2 escape sequences (silent failure on others).
+- **Python 3.9+** — for CLI, daemon, monitor, and SessionStart hook. Bundled on macOS; install on Windows via python.org or `winget install Python`.
+- **SQLite 3** — bundled in Python's stdlib, no separate install.
+- **mDNS (Bonjour)** — built into macOS; Windows 10+ supports it natively; Linux needs `avahi-daemon`.
+- **iTerm2** recommended on macOS — tab auto-rename uses iTerm2 escape codes (silent failure on plain Terminal).
+- **No host required for single-machine use** — `room` CLI falls back to local SQLite when no daemon is discovered, so the plugin works fully even on an isolated machine.
 
 ## License
 

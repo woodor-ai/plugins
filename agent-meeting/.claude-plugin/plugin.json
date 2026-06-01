@@ -1,7 +1,7 @@
 {
   "name": "agent-meeting",
-  "version": "0.5.0-alpha",
-  "description": "Cross-session meeting room for Claude Code agents. Lets multiple Claude sessions discover each other by name and hold persistent shared conversations. Backed by SQLite for atomic writes, no file-based race conditions, and unlimited history.",
+  "version": "0.5.0",
+  "description": "Cross-session meeting room for Claude Code agents. SQLite-backed with LAN multi-machine support via mDNS + HTTP daemon. Sessions discover each other automatically across machines.",
   "author": {
     "name": "Tommy",
     "url": "https://github.com/Tommy-OMI"
