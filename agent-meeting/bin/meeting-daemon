@@ -27,6 +27,7 @@ import signal
 import socket
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -165,16 +166,33 @@ class Handler(BaseHTTPRequestHandler):
             with open(directory_path) as f:
                 directory = json.load(f)
 
+        def pid_alive(pid: int) -> bool:
+            if sys.platform == "win32":
+                import ctypes
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                if not handle:
+                    return False
+                exit_code = ctypes.c_ulong(0)
+                ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return exit_code.value == 259  # STILL_ACTIVE
+            else:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    return False
+                return True
+
         def monitor_alive(name):
-            pid_path = f"/tmp/meeting-{name}.monitor_pid"
+            pid_path = os.path.join(tempfile.gettempdir(), f"meeting-{name}.monitor_pid")
             if not os.path.exists(pid_path):
                 return False
             try:
                 with open(pid_path) as f:
                     pid = int(f.read().strip())
-                os.kill(pid, 0)
-                return True
-            except (ValueError, OSError, ProcessLookupError):
+                return pid_alive(pid)
+            except (ValueError, OSError):
                 return False
 
         with db() as conn:

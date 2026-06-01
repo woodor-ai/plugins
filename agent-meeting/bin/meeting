@@ -33,6 +33,7 @@ import os
 import socket
 import sqlite3
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -45,7 +46,7 @@ DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
 DIRECTORY_PATH = os.path.join(MEETING_HOME, "directory.json")
 
 # Discovery cache: avoid 1-2s mDNS browse on every CLI call (monitor polls ring/3s).
-HOST_CACHE = "/tmp/meeting-host.cache"
+HOST_CACHE = os.path.join(tempfile.gettempdir(), "meeting-host.cache")
 HOST_CACHE_TTL = 60  # seconds
 MDNS_BROWSE_TIMEOUT = 1.5  # seconds
 SERVICE_TYPE = "_agent-meeting._tcp.local."
@@ -190,6 +191,37 @@ def canonical_room_name(a: str, b: str) -> tuple[str, str, str]:
     """Sort two participants lexicographically. Returns (name, a, b)."""
     sa, sb = sorted([a, b])
     return f"{sa}--{sb}", sa, sb
+
+
+def pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        exit_code = ctypes.c_ulong(0)
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return exit_code.value == 259  # STILL_ACTIVE
+    else:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+
+def monitor_alive(name: str) -> bool:
+    pid_path = os.path.join(tempfile.gettempdir(), f"meeting-{name}.monitor_pid")
+    if not os.path.exists(pid_path):
+        return False
+    try:
+        with open(pid_path) as f:
+            pid = int(f.read().strip())
+        return pid_alive(pid)
+    except (ValueError, OSError):
+        return False
 
 
 def ensure_room(db, self_name: str, peer: str) -> sqlite3.Row:
@@ -423,6 +455,66 @@ def cmd_ring(args):
     db.close()
 
 
+def cmd_register(args):
+    """Atomically add/update this session in directory.json.
+
+    Schema: {name: {cwd, host, registered_at}}
+    Conflict: if name exists AND its monitor is still alive, refuse (unless --force).
+    """
+    name = args.name
+    cwd = args.cwd
+
+    os.makedirs(os.path.dirname(DIRECTORY_PATH), exist_ok=True)
+    # Load existing
+    directory = {}
+    if os.path.exists(DIRECTORY_PATH):
+        try:
+            with open(DIRECTORY_PATH) as f:
+                directory = json.load(f)
+        except Exception:
+            directory = {}
+
+    # Conflict check
+    if name in directory and not args.force:
+        if monitor_alive(name):
+            print(f"error: '{name}' is already registered and its monitor is still running. "
+                  f"Use --force to override.", file=sys.stderr)
+            sys.exit(1)
+
+    directory[name] = {
+        "cwd": cwd,
+        "host": socket.gethostname(),
+        "registered_at": int(time.time()),
+    }
+
+    # Atomic write via tmp + os.replace
+    tmp_path = DIRECTORY_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(directory, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, DIRECTORY_PATH)
+    print(f"registered: {name} (cwd={cwd}, host={socket.gethostname()})")
+
+
+def cmd_unregister(args):
+    """Atomically remove a session from directory.json. Silent if not present."""
+    name = args.name
+    if not os.path.exists(DIRECTORY_PATH):
+        return
+    try:
+        with open(DIRECTORY_PATH) as f:
+            directory = json.load(f)
+    except Exception:
+        return
+    if name not in directory:
+        return
+    del directory[name]
+    tmp_path = DIRECTORY_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(directory, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, DIRECTORY_PATH)
+    print(f"unregistered: {name}")
+
+
 LAUNCHD_LABEL = "com.tommy.agent-meeting"
 
 
@@ -506,14 +598,14 @@ def cmd_list(args):
 
     Columns: <status>\t<name>\t<msgs>
       status: online | empty | historical
-        online     = registered AND monitor process alive (per /tmp/meeting-<name>.monitor_pid)
+        online     = registered AND monitor process alive (per <tmpdir>/meeting-<name>.monitor_pid)
         empty      = registered in directory.json but monitor process gone
         historical = never in directory but appears as sender in DB
       msgs   = total messages sent by this name across all rooms
 
-    Liveness signal: the monitor zsh script writes its own pid to
-    /tmp/meeting-<name>.monitor_pid at startup, and trap-removes it on exit.
-    We check `kill -0 <monitor_pid>`.
+    Liveness signal: the monitor writes its own pid to
+    <tmpdir>/meeting-<name>.monitor_pid at startup, and removes it on exit.
+    We check process liveness via pid_alive() (cross-platform).
     """
     host = discover_host()
     if host:
@@ -527,18 +619,6 @@ def cmd_list(args):
     if os.path.exists(DIRECTORY_PATH):
         with open(DIRECTORY_PATH) as f:
             directory = json.load(f)
-
-    def monitor_alive(name: str) -> bool:
-        pid_path = f"/tmp/meeting-{name}.monitor_pid"
-        if not os.path.exists(pid_path):
-            return False
-        try:
-            with open(pid_path) as f:
-                pid = int(f.read().strip())
-            os.kill(pid, 0)
-            return True
-        except (ValueError, OSError, ProcessLookupError):
-            return False
 
     db = connect()
     # msg count per sender across all rooms
@@ -619,6 +699,19 @@ def main():
                        help="manage the local meeting daemon (Mac launchd; Linux/Windows daemon is session-bound and unmanaged)")
     s.add_argument("action", choices=["status", "stop", "restart"])
     s.set_defaults(func=cmd_daemon)
+
+    s = sub.add_parser("register",
+                       help="atomically add/update this session in directory.json")
+    s.add_argument("name", help="session name to register")
+    s.add_argument("--cwd", required=True, help="working directory of this session")
+    s.add_argument("--force", action="store_true",
+                   help="override even if monitor is still running")
+    s.set_defaults(func=cmd_register)
+
+    s = sub.add_parser("unregister",
+                       help="atomically remove a session from directory.json (silent if not present)")
+    s.add_argument("name", help="session name to unregister")
+    s.set_defaults(func=cmd_unregister)
 
     args = p.parse_args()
     args.func(args)

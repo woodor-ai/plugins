@@ -148,6 +148,25 @@ def load_or_create_config() -> dict:
 
 # ---------- 4. daemon launch ----------
 
+def pid_alive(pid: int) -> bool:
+    if IS_WINDOWS:
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        exit_code = ctypes.c_ulong(0)
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return exit_code.value == 259  # STILL_ACTIVE
+    else:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+
 def daemon_running() -> bool:
     if not DAEMON_PID_FILE.exists():
         return False
@@ -155,15 +174,7 @@ def daemon_running() -> bool:
         pid = int(DAEMON_PID_FILE.read_text().strip())
     except Exception:
         return False
-    try:
-        if IS_WINDOWS:
-            # On Windows there's no kill -0; use os.kill(pid, 0) which raises OSError if dead
-            os.kill(pid, 0)
-        else:
-            os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    return pid_alive(pid)
 
 
 def launch_daemon():
@@ -304,8 +315,8 @@ def online_peers_str() -> str:
             if pid_file.exists():
                 try:
                     pid = int(pid_file.read_text().strip())
-                    os.kill(pid, 0)
-                    online.append(name)
+                    if pid_alive(pid):
+                        online.append(name)
                 except (ValueError, OSError):
                     pass
     return ", ".join(online) if online else "(none online)"

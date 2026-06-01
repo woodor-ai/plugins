@@ -16,6 +16,8 @@ The presence of a peer session name (from `~/.agent-meeting/directory.json`) any
 
 Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `meeting` CLI at `~/.agent-meeting/bin/meeting`. There are no canonical `.md` files to read or write anymore. All writes are atomic transactions (insert message + flip turn in one BEGIN IMMEDIATE). No mtime checks. No tmp files. No Edit/Write tool on room files.
 
+**CLI invocation is per-OS** (see the `meeting` skill's "Invoking the `meeting` CLI / monitor" section): macOS/Linux call `~/.agent-meeting/bin/meeting …` directly; **Windows** must prefix with the venv Python — `"<abs>\.agent-meeting\venv\Scripts\python.exe" "<abs>\.agent-meeting\bin\meeting" …` — because the script is extensionless (no shebang support) and bare `python3` is a broken Store stub. The examples below use the macOS/Linux form; rewrite for Windows.
+
 ## Steps
 
 1. **Verify self is registered**: read `~/.agent-meeting/directory.json`, check that this session's name is present. If not, refuse and tell user to run `/meeting <name>` first.
@@ -60,7 +62,7 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
    `--kind=开启` for first message, `回应` for follow-up, `总结` for wrap-up.
    The CLI prints `sent: room=<name> msg_id=<N> turn→<peer>` on success.
 
-   **Never prefix the command with `bash`** — the script's shebang is `#!/usr/bin/env python3`. `bash <path>` will crash with shell parse errors.
+   **Never prefix the command with `bash`** — the script's shebang is `#!/usr/bin/env python3`. `bash <path>` will crash with shell parse errors. On Windows, prefix with the venv Python instead (per the per-OS rule above).
 7. **Brief confirm to user**: one short line like "→ sent to lag-rct (msg #42, turn → lag-rct)". No long summary.
 
 After sending, the peer's monitor will detect the new message within ~3 seconds (it polls `meeting ring`) and their Claude will compose a reply.

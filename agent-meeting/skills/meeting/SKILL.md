@@ -12,6 +12,19 @@ You do NOT read or write canonical `.md` files anymore. The old `rooms/canonical
 
 Session-level registration (`~/.agent-meeting/directory.json`) is unchanged.
 
+## Invoking the `meeting` CLI / monitor — READ FIRST (per-OS)
+
+`bin/meeting`, `bin/meeting-daemon`, and `bin/monitor.py` are Python scripts. **How you launch them depends on the OS** — detect the platform once and apply this everywhere below:
+
+- **macOS / Linux**: call the scripts directly — they're executable with a `#!/usr/bin/env python3` shebang:
+  - CLI: `~/.agent-meeting/bin/meeting <args>`
+  - monitor command: `python3 ~/.agent-meeting/bin/monitor.py <name>`
+- **Windows**: shebangs do **not** work and a bare `python3` resolves to a non-functional Microsoft Store stub. Always go through the bootstrap-created **venv Python** (it exists after SessionStart and carries `zeroconf` for LAN discovery). Expand `$HOME` to the real absolute path yourself when handing the command to a tool:
+  - CLI: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" <args>`
+  - monitor command: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\monitor.py" <name>`
+
+Every example below shows the macOS/Linux form `~/.agent-meeting/bin/meeting …`. On Windows, mentally rewrite it to the venv-Python form above (absolute paths, quoted).
+
 ## `/meeting` subcommand dispatch
 
 The first word after `/meeting` decides what to do:
@@ -53,13 +66,16 @@ Reserved words `list`, `delete`, and `daemon` cannot be used as session names �
 ## On `/meeting <name>`
 
 1. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20.
-2. **Check directory**: read `~/.agent-meeting/directory.json`. If `<name>` already exists with a different `pid`, refuse.
-3. **Register**: atomic jq + tmp + mv into directory.json (unchanged from before).
+2. **Register**: call the CLI register subcommand — it handles the conflict check and atomic write atomically. Per the per-OS rule at the top:
+   - macOS/Linux: `~/.agent-meeting/bin/meeting register <name> --cwd <cwd>`
+   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" register <name> --cwd <cwd>`
+
+   The command exits 0 on success. On non-zero exit (name taken, monitor still running) surface the error to the user and abort — do not proceed to monitor install. Use `--force` only if the user explicitly asks to take over.
 4. **Initialize DB** (idempotent): `~/.agent-meeting/bin/meeting init`
 5. **Install monitor**: invoke Monitor tool with:
    - `description`: `📞 meeting:<name>` (static, TUI banner can't be dynamic)
    - `persistent`: `true`
-   - `command`: `python3 ~/.agent-meeting/bin/monitor.py <name>`
+   - `command`: per the per-OS rule above — macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`; Windows: `"<abs>\.agent-meeting\venv\Scripts\python.exe" "<abs>\.agent-meeting\bin\monitor.py" <name>` (expand `<abs>` to the user profile path). The monitor inherits this interpreter as `sys.executable` and reuses it for its internal `meeting ring` calls, so the whole chain stays on the working venv Python.
 
    The monitor script (cross-platform Python) handles:
    - Writing its pid to `/tmp/meeting-<name>.monitor_pid` for `meeting list` liveness check
@@ -115,7 +131,7 @@ When monitor emits a line matching `📬 New Message from <peer>(: <ask>)?`:
 
    The CLI does one atomic transaction (insert + flip turn). No race.
 
-   **Do NOT prefix with `bash` — the script's shebang is `#!/usr/bin/env python3`. `bash <path>` will parse it as a shell script and crash.**
+   **Do NOT prefix with `bash` — the script's shebang is `#!/usr/bin/env python3`. `bash <path>` will parse it as a shell script and crash.** On Windows you instead prefix with the venv Python per the per-OS rule at the top (the shebang is ignored there).
 
 No mtime checks, no tmp files, no atomic-rename dances — SQLite handles all of it via `BEGIN IMMEDIATE`.
 

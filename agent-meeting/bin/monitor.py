@@ -86,8 +86,14 @@ PID_FILE.write_text(str(os.getpid()))
 def call_ring(since: int) -> list[tuple[int, str, str]]:
     """Returns list of (id, peer, ask)."""
     try:
+        # Invoke the CLI through the *current* interpreter, not the bare script
+        # path. The script is extensionless with a `#!/usr/bin/env python3`
+        # shebang — fine on POSIX, but Windows has no shebang support and bare
+        # `python3` there is a non-functional Microsoft Store stub. sys.executable
+        # is whatever launched this monitor (the venv python on Windows), which is
+        # guaranteed to run the CLI and to have zeroconf available.
         r = subprocess.run(
-            [str(MEETING_CLI), "ring", SELF, "--since", str(since)],
+            [sys.executable, str(MEETING_CLI), "ring", SELF, "--since", str(since)],
             capture_output=True, text=True, timeout=15,
         )
     except subprocess.TimeoutExpired:
