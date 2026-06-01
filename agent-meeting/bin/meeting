@@ -423,6 +423,84 @@ def cmd_ring(args):
     db.close()
 
 
+LAUNCHD_LABEL = "com.tommy.agent-meeting"
+
+
+def cmd_daemon(args):
+    """Manage the local meeting-daemon.
+
+    Mac: drives the launchd LaunchAgent (com.tommy.agent-meeting). All ops are
+    idempotent. SessionStart hook will reinstall/restart the daemon on next
+    Claude session if is_host=true, so `stop` is effectively "pause until next
+    Claude restart" unless you also set is_host=false in config.json.
+
+    Linux/Windows: not implemented — the daemon there is session-bound and dies
+    with the SessionStart hook's parent shell. We print an error instead of
+    pretending to manage it.
+    """
+    import platform
+    import subprocess as sp
+    if platform.system() != "Darwin":
+        print("daemon mgmt currently mac-only (Linux/Windows daemon is session-bound)", file=sys.stderr)
+        sys.exit(1)
+
+    uid = os.getuid()
+    domain = f"gui/{uid}"
+    target = f"{domain}/{LAUNCHD_LABEL}"
+    plist = os.path.expanduser(f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist")
+
+    if args.action == "status":
+        r = sp.run(["launchctl", "print", target], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"daemon: not registered with launchd ({LAUNCHD_LABEL})")
+            print(f"plist on disk: {'yes' if os.path.exists(plist) else 'no'}")
+            return
+        # Pull a few interesting fields out of the print output
+        keys = ("state =", "pid =", "program =", "path =")
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if any(k in line for k in keys):
+                print(line)
+
+    elif args.action == "stop":
+        r = sp.run(["launchctl", "bootout", target], capture_output=True, text=True)
+        if r.returncode == 0 or "Could not find" in (r.stderr or "") or "No such process" in (r.stderr or ""):
+            # Poll until the service is really gone (daemon's SIGTERM handler unpublishes mDNS first).
+            for _ in range(20):  # max ~4s
+                time.sleep(0.2)
+                p = sp.run(["launchctl", "print", target], capture_output=True)
+                if p.returncode != 0:
+                    break
+            print(f"daemon stopped: {LAUNCHD_LABEL}")
+            print("(note: next Claude SessionStart with is_host=true will reinstall + restart it)")
+        else:
+            print(f"stop failed: {r.stderr.strip()}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.action == "restart":
+        # `kickstart -k` is launchd's atomic kill+respawn for an already-loaded service.
+        # If the service isn't loaded yet, fall back to bootstrap.
+        loaded = sp.run(["launchctl", "print", target], capture_output=True).returncode == 0
+        if loaded:
+            r = sp.run(["launchctl", "kickstart", "-k", target], capture_output=True, text=True)
+            if r.returncode == 0:
+                print(f"daemon restarted: {LAUNCHD_LABEL}")
+                return
+            print(f"kickstart failed: {r.stderr.strip()}", file=sys.stderr)
+            sys.exit(1)
+        # Not loaded — bootstrap fresh
+        if not os.path.exists(plist):
+            print(f"plist missing: {plist}", file=sys.stderr)
+            print("Run a Claude SessionStart with is_host=true to install it first.", file=sys.stderr)
+            sys.exit(1)
+        r = sp.run(["launchctl", "bootstrap", domain, plist], capture_output=True, text=True)
+        if r.returncode == 0:
+            print(f"daemon started: {LAUNCHD_LABEL}")
+        else:
+            print(f"bootstrap failed: {r.stderr.strip()}", file=sys.stderr)
+            sys.exit(1)
+
+
 def cmd_list(args):
     """List all session names with liveness status and message count.
 
@@ -536,6 +614,11 @@ def main():
     s.add_argument("self")
     s.add_argument("peer")
     s.set_defaults(func=cmd_delete)
+
+    s = sub.add_parser("daemon",
+                       help="manage the local meeting daemon (Mac launchd; Linux/Windows daemon is session-bound and unmanaged)")
+    s.add_argument("action", choices=["status", "stop", "restart"])
+    s.set_defaults(func=cmd_daemon)
 
     args = p.parse_args()
     args.func(args)

@@ -98,6 +98,25 @@ The `meeting` CLI's discovery order:
 
 **Access control**: none at the application layer. Any device that can reach the host on port 8765 can call the API. Gate at your network layer (firewall, VLAN, guest-network isolation) if you need that. For typical trusted-home-LAN use, this is fine.
 
+
+
+## Managing the daemon (Mac)
+
+```
+meeting daemon status     # is the daemon registered and running?
+meeting daemon stop       # SIGTERM, wait for clean shutdown
+meeting daemon restart    # atomic kill+respawn (launchctl kickstart -k)
+```
+
+You normally don't need these — launchd auto-starts at login, KeepAlive
+restarts on crash, and plugin upgrades auto-detect path changes and
+respawn the daemon on next SessionStart. But if you want to bounce it
+manually (debug, force-pickup of a code change without reopening Claude),
+the subcommands are there.
+
+Linux/Windows daemon mgmt is not implemented yet — those platforms run the
+daemon session-bound (dies with the SessionStart hook's parent shell).
+
 ## Data location
 
 ```
