@@ -15,16 +15,16 @@ The `sessions` table in `rooms.db` holds every registered session: `name`, `cwd`
 
 ## Invoking the `meeting` CLI / monitor — READ FIRST (per-OS)
 
-`bin/meeting`, `bin/meeting-daemon`, and `bin/monitor.py` are Python scripts. **How you launch them depends on the OS** — detect the platform once and apply this everywhere below:
+`bin/meeting` and `bin/meeting-daemon` are **shell wrapper scripts** on macOS/Linux (created by bootstrap; they exec the venv python internally). `bin/monitor.py` and `bin/session-bootstrap.py` are Python files (symlinked from plugin). **How you invoke them depends on the OS** — detect the platform once and apply this everywhere below:
 
-- **macOS / Linux**: call the scripts directly — they're executable with a `#!/usr/bin/env python3` shebang:
+- **macOS / Linux**: call CLI wrappers directly — they are executable shell scripts that internally use the venv python (which has `zeroconf`):
   - CLI: `~/.agent-meeting/bin/meeting <args>`
   - monitor command: `python3 ~/.agent-meeting/bin/monitor.py <name>`
-- **Windows**: shebangs do **not** work and a bare `python3` resolves to a non-functional Microsoft Store stub. Always go through the bootstrap-created **venv Python** (it exists after SessionStart and carries `zeroconf` for LAN discovery). Expand `$HOME` to the real absolute path yourself when handing the command to a tool:
-  - CLI: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" <args>`
-  - monitor command: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\monitor.py" <name>`
+- **Windows**: CLI wrappers are `.cmd` files; monitor.py is a Python file. Always go through the bootstrap-created **venv Python** for both. **CRITICAL**: The Monitor tool's `command` field is always executed in **bash** (even on Windows). Do NOT use PowerShell syntax (`&`, `$env:USERPROFILE`) — bash does not understand them. Expand `%USERPROFILE%` to the actual absolute path (e.g. `C:/Users/admin`) yourself, and use forward slashes:
+  - CLI (PowerShell tool calls): `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting.cmd" <args>`
+  - monitor command (Monitor tool, bash): `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name>` — substitute the real home path, forward slashes, no `&`, no env vars.
 
-Every example below shows the macOS/Linux form `~/.agent-meeting/bin/meeting …`. On Windows, mentally rewrite it to the venv-Python form above (absolute paths, quoted).
+Every example below shows the macOS/Linux form `~/.agent-meeting/bin/meeting …`. On Windows, rewrite CLI calls to venv-Python form; rewrite Monitor tool commands to bash-compatible absolute paths.
 
 ## `/meeting` subcommand dispatch
 
@@ -76,7 +76,7 @@ Reserved words `list`, `delete`, and `daemon` cannot be used as session names �
 5. **Install monitor**: invoke Monitor tool with:
    - `description`: `📞 meeting:<name>` (static, TUI banner can't be dynamic)
    - `persistent`: `true`
-   - `command`: per the per-OS rule above — macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`; Windows: `"<abs>\.agent-meeting\venv\Scripts\python.exe" "<abs>\.agent-meeting\bin\monitor.py" <name>` (expand `<abs>` to the user profile path). The monitor inherits this interpreter as `sys.executable` and reuses it for its internal `meeting ring` calls, so the whole chain stays on the working venv Python.
+   - `command`: **Monitor tool always runs in bash**. macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`. Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name>` — expand `<username>` to the real Windows username, use forward slashes, no `&`, no `%USERPROFILE%` or `$env:` vars. The monitor calls the `meeting` CLI wrapper directly (no interpreter prefix), so the wrapper's venv python handles `zeroconf` for LAN discovery.
 
    The monitor script (cross-platform Python) handles:
    - Calling `meeting register <name> --cwd <cwd>` on startup (writes into central sessions table) and `meeting unregister <name>` on exit (atexit + SIGINT/SIGTERM)
