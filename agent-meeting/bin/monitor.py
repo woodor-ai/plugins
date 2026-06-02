@@ -50,17 +50,24 @@ MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
 
 
 def _run_meeting(*extra_args):
-    """Run meeting CLI with the correct interpreter.
+    """Run meeting CLI as an executable.
 
-    Prefer the venv python so zeroconf is available for LAN discovery.
-    Fall back to sys.executable only if the venv does not exist yet.
-    Never call sys.executable directly on MEETING_CLI — that bypasses the
-    shell wrapper and lands on system python3 (which may lack zeroconf).
+    On POSIX: ~/.agent-meeting/bin/meeting is a shell wrapper (#!/bin/sh)
+    that execs the venv python with the real plugin script. Call it directly
+    so the wrapper's shebang handles interpreter selection — never pass
+    sys.executable as the interpreter, because that would parse the shell
+    script as Python and fail with SyntaxError.
+
+    On Windows: the wrapper is meeting.cmd (shell scripts don't work);
+    subprocess resolves .cmd automatically when shell=True, or we name it
+    explicitly.
     """
     env = os.environ.copy()
-    venv_py = DATA / "venv" / ("Scripts/python.exe" if sys.platform.startswith("win") else "bin/python")
-    interpreter = str(venv_py) if venv_py.exists() else sys.executable
-    cmd = [interpreter, str(MEETING_CLI)] + list(extra_args)
+    if sys.platform.startswith("win"):
+        cli = DATA / "bin" / "meeting.cmd"
+        cmd = [str(cli)] + list(extra_args)
+    else:
+        cmd = [str(MEETING_CLI)] + list(extra_args)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
 
 
