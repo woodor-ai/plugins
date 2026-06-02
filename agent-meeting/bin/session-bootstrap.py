@@ -57,47 +57,70 @@ def ensure_layout():
     if not DIRECTORY.exists():
         DIRECTORY.write_text("{}")
 
-    # ~/.agent-meeting/bin must be a symlink → the current plugin's bin/ so that
-    # SKILL.md / monitor.py can reference one stable path (~/.agent-meeting/bin/meeting)
-    # regardless of which cache version is active. Plugin upgrades change PLUGIN_ROOT;
-    # this resync makes the stable path follow the latest code automatically.
-    #
-    # This is IDEMPOTENT and SELF-HEALING: if bin/ got corrupted into a real directory
-    # (e.g. someone cp'd files in, or an old `ln -sfn target dir` nested a bin/bin),
-    # we move the junk aside and rebuild the symlink. The data dir never legitimately
-    # contains a real bin/ — all user state is in db/, directory.json, config.json.
+
+# ---------- 3b. bin wrappers (called after venv is ready) ----------
+
+def ensure_bin_wrappers():
+    """Create ~/.agent-meeting/bin/ as a real directory of venv-python wrapper scripts.
+
+    The old design used a symlink bin/ → plugin's bin/, which made the CLI scripts
+    run under system python3 (shebang: #!/usr/bin/env python3). System python3 often
+    lacks zeroconf, so discover_host() always returned None and the client fell back
+    to local SQLite instead of connecting to the LAN daemon.
+
+    New design: bin/ is a real directory. Extensionless scripts (meeting,
+    meeting-daemon, meeting-migrate) become thin shell wrappers that exec the venv
+    python with the real plugin script path. .py files (monitor.py,
+    session-bootstrap.py) are kept as symlinks because callers explicitly pass
+    `python3 ~/.agent-meeting/bin/foo.py` — the interpreter is already controlled.
+
+    Wrappers are regenerated whenever PLUGIN_ROOT changes (plugin version upgrade).
+    The sentinel file .bin-plugin-root records the last generated plugin path.
+    """
+    import shutil as _shutil
+
     if not PLUGIN_ROOT or not (PLUGIN_ROOT / "bin").is_dir():
         return
 
-    desired = (PLUGIN_ROOT / "bin").resolve()
-    try:
-        # Already correct? no-op.
-        if BIN_LINK.is_symlink() and BIN_LINK.resolve() == desired:
-            return
+    plugin_bin = (PLUGIN_ROOT / "bin").resolve()
+    # Do NOT resolve() the venv python — following symlinks would land on the
+    # system python binary and bypass the venv's site-packages (losing zeroconf).
+    py = venv_python()
 
-        # Anything else occupying the path must go.
-        if BIN_LINK.is_symlink():
-            BIN_LINK.unlink()
-        elif BIN_LINK.is_dir():
-            # Real directory (pollution). Move aside instead of deleting, just in case.
-            import shutil
-            bak = BIN_LINK.with_name(f"bin.corrupt-{int(time.time())}")
-            shutil.move(str(BIN_LINK), str(bak))
-            log(f"moved corrupted bin/ aside → {bak.name}")
-        elif BIN_LINK.exists():
-            BIN_LINK.unlink()
+    sentinel = DATA / ".bin-plugin-root"
+    current_root = str(plugin_bin)
+    existing_root = sentinel.read_text().strip() if sentinel.exists() else ""
 
-        if IS_WINDOWS:
-            # Junction works without admin / developer mode.
-            subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(BIN_LINK), str(desired)],
-                check=False, capture_output=True,
+    if (existing_root == current_root
+            and BIN_LINK.is_dir()
+            and not BIN_LINK.is_symlink()):
+        return  # Already up to date for this plugin version
+
+    # Remove whatever occupies BIN_LINK (old symlink or stale wrapper dir)
+    if BIN_LINK.is_symlink():
+        BIN_LINK.unlink()
+    elif BIN_LINK.is_dir():
+        _shutil.rmtree(str(BIN_LINK))
+    elif BIN_LINK.exists():
+        BIN_LINK.unlink()
+
+    BIN_LINK.mkdir()
+
+    for src in sorted(plugin_bin.iterdir()):
+        dest = BIN_LINK / src.name
+        if src.suffix == ".py":
+            # Keep as symlink — callers supply interpreter explicitly.
+            dest.symlink_to(src)
+        elif IS_WINDOWS:
+            dest.with_suffix(".cmd").write_text(
+                f'@echo off\r\n"{py}" "{src}" %*\r\n'
             )
         else:
-            BIN_LINK.symlink_to(desired)
-        log(f"linked bin/ → {desired}")
-    except Exception as e:
-        log(f"could not link bin/: {e}")
+            dest.write_text(f'#!/bin/sh\nexec "{py}" "{src}" "$@"\n')
+            dest.chmod(0o755)
+
+    sentinel.write_text(current_root)
+    log(f"generated venv-python wrappers in bin/ (plugin: {plugin_bin.name})")
 
 
 # ---------- 2. venv + zeroconf ----------
@@ -355,9 +378,10 @@ Online peers: {peers}
 
 def main():
     try:
-        ensure_layout()
-        ensure_venv()
+        ensure_layout()       # base dirs first
+        ensure_venv()         # venv must exist before wrappers reference its python
         ensure_zeroconf()
+        ensure_bin_wrappers() # now venv python path is valid
         cfg = load_or_create_config()
 
         if cfg.get("is_host"):
