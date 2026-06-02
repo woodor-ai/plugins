@@ -50,9 +50,17 @@ MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
 
 
 def _run_meeting(*extra_args):
-    """Run meeting CLI with the correct interpreter."""
+    """Run meeting CLI with the correct interpreter.
+
+    Prefer the venv python so zeroconf is available for LAN discovery.
+    Fall back to sys.executable only if the venv does not exist yet.
+    Never call sys.executable directly on MEETING_CLI — that bypasses the
+    shell wrapper and lands on system python3 (which may lack zeroconf).
+    """
     env = os.environ.copy()
-    cmd = [sys.executable, str(MEETING_CLI)] + list(extra_args)
+    venv_py = DATA / "venv" / ("Scripts/python.exe" if sys.platform.startswith("win") else "bin/python")
+    interpreter = str(venv_py) if venv_py.exists() else sys.executable
+    cmd = [interpreter, str(MEETING_CLI)] + list(extra_args)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
 
 
