@@ -99,10 +99,8 @@ def main():
         segments.append(f"\U0001F4DE {name}")  # 📞
     if model:
         segments.append(model)
-    try:
-        segments.append(Path(cwd).name or cwd)
-    except Exception:
-        pass
+    if cwd:
+        segments.append(cwd)  # full absolute path (not just basename)
     branch = git_branch(cwd)
     if branch:
         segments.append(branch)

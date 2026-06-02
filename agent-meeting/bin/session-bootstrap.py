@@ -18,6 +18,7 @@ Replaces the bash session-bootstrap.sh — that one only worked on POSIX.
 import json
 import os
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -60,22 +61,41 @@ def ensure_layout():
 
 # ---------- 3b. bin wrappers (called after venv is ready) ----------
 
+def _is_reparse_point(p: Path) -> bool:
+    """True for a Windows junction / reparse-point dir.
+
+    Critical: Python's Path.is_symlink() returns False for NTFS *junctions*, so a
+    junction would otherwise fall through to shutil.rmtree() — which recurses INTO
+    the junction and deletes the *target's* contents (e.g. the plugin cache). We
+    detect the reparse-point attribute and remove the link itself with os.rmdir.
+    On POSIX st_file_attributes doesn't exist → AttributeError → False.
+    """
+    try:
+        return bool(p.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except (AttributeError, OSError):
+        return False
+
+
 def ensure_bin_wrappers():
     """Create ~/.agent-meeting/bin/ as a real directory of venv-python wrapper scripts.
 
-    The old design used a symlink bin/ → plugin's bin/, which made the CLI scripts
-    run under system python3 (shebang: #!/usr/bin/env python3). System python3 often
-    lacks zeroconf, so discover_host() always returned None and the client fell back
-    to local SQLite instead of connecting to the LAN daemon.
+    The old design used a symlink/junction bin/ → plugin's bin/, which made the CLI
+    scripts run under system python3 (shebang: #!/usr/bin/env python3). System
+    python3 often lacks zeroconf, so discover_host() always returned None and the
+    client fell back to local SQLite instead of connecting to the LAN daemon.
 
     New design: bin/ is a real directory. Extensionless scripts (meeting,
     meeting-daemon, meeting-migrate) become thin shell wrappers that exec the venv
-    python with the real plugin script path. .py files (monitor.py,
-    session-bootstrap.py) are kept as symlinks because callers explicitly pass
-    `python3 ~/.agent-meeting/bin/foo.py` — the interpreter is already controlled.
+    python with the real plugin script path. .py files (monitor.py, statusline.py,
+    session-bootstrap.py) are COPIED, because callers explicitly pass
+    `python3 ~/.agent-meeting/bin/foo.py` and so they must be real .py files.
+    We copy rather than symlink: symlink_to() needs Administrator / Developer-Mode
+    privilege on Windows and would crash the whole bootstrap (taking statusLine
+    registration down with it); a copy is privilege-free and identical on every OS.
 
-    Wrappers are regenerated whenever PLUGIN_ROOT changes (plugin version upgrade).
-    The sentinel file .bin-plugin-root records the last generated plugin path.
+    Wrappers are regenerated whenever PLUGIN_ROOT changes (plugin version upgrade),
+    which keeps the copied .py files fresh. The sentinel file .bin-plugin-root
+    records the last generated plugin path.
     """
     import shutil as _shutil
 
@@ -92,10 +112,12 @@ def ensure_bin_wrappers():
     existing_root = sentinel.read_text().strip() if sentinel.exists() else ""
 
     def _all_present() -> bool:
-        # Every plugin bin entry must have a corresponding dest (.py kept as-is,
+        # Every plugin bin entry must have a corresponding dest (.py copied as-is,
         # extensionless scripts become .cmd on Windows). Missing one (e.g. a
         # newly-added statusline.py on an unchanged plugin path) forces regen.
         for src in plugin_bin.iterdir():
+            if src.is_dir():
+                continue  # skip __pycache__ and friends
             name = src.name if (src.suffix == ".py" or not IS_WINDOWS) else src.with_suffix(".cmd").name
             if not (BIN_LINK / name).exists():
                 return False
@@ -104,12 +126,20 @@ def ensure_bin_wrappers():
     if (existing_root == current_root
             and BIN_LINK.is_dir()
             and not BIN_LINK.is_symlink()
+            and not _is_reparse_point(BIN_LINK)
             and _all_present()):
         return  # Already up to date for this plugin version
 
-    # Remove whatever occupies BIN_LINK (old symlink or stale wrapper dir)
+    # Remove whatever occupies BIN_LINK. Order matters on Windows:
+    #   - a file/dir *symlink* → unlink() (never touches the target)
+    #   - a *junction* (reparse-point dir; is_symlink() is False for these!) →
+    #     os.rmdir() removes the link itself; rmtree() would recurse INTO the
+    #     junction and wipe the plugin cache it points at.
+    #   - a real directory → rmtree
     if BIN_LINK.is_symlink():
         BIN_LINK.unlink()
+    elif _is_reparse_point(BIN_LINK):
+        os.rmdir(str(BIN_LINK))
     elif BIN_LINK.is_dir():
         _shutil.rmtree(str(BIN_LINK))
     elif BIN_LINK.exists():
@@ -118,10 +148,14 @@ def ensure_bin_wrappers():
     BIN_LINK.mkdir()
 
     for src in sorted(plugin_bin.iterdir()):
+        if src.is_dir():
+            continue  # skip __pycache__ and friends
         dest = BIN_LINK / src.name
         if src.suffix == ".py":
-            # Keep as symlink — callers supply interpreter explicitly.
-            dest.symlink_to(src)
+            # Copy, NOT symlink — callers invoke `python3 .../foo.py` directly, so
+            # these must be real files, and symlink_to() needs admin/Developer-Mode
+            # on Windows (would crash bootstrap). Copy is privilege-free everywhere.
+            _shutil.copyfile(str(src), str(dest))
         elif IS_WINDOWS:
             dest.with_suffix(".cmd").write_text(
                 f'@echo off\r\n"{py}" "{src}" %*\r\n'
