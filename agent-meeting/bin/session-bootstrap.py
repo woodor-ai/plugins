@@ -91,9 +91,20 @@ def ensure_bin_wrappers():
     current_root = str(plugin_bin)
     existing_root = sentinel.read_text().strip() if sentinel.exists() else ""
 
+    def _all_present() -> bool:
+        # Every plugin bin entry must have a corresponding dest (.py kept as-is,
+        # extensionless scripts become .cmd on Windows). Missing one (e.g. a
+        # newly-added statusline.py on an unchanged plugin path) forces regen.
+        for src in plugin_bin.iterdir():
+            name = src.name if (src.suffix == ".py" or not IS_WINDOWS) else src.with_suffix(".cmd").name
+            if not (BIN_LINK / name).exists():
+                return False
+        return True
+
     if (existing_root == current_root
             and BIN_LINK.is_dir()
-            and not BIN_LINK.is_symlink()):
+            and not BIN_LINK.is_symlink()
+            and _all_present()):
         return  # Already up to date for this plugin version
 
     # Remove whatever occupies BIN_LINK (old symlink or stale wrapper dir)
@@ -323,6 +334,62 @@ def ensure_launchd():
             log(f"launchd bootstrap failed: {r.stderr.strip() or r2.stderr.strip()}")
 
 
+# ---------- 4c. status line (Claude Code TUI) ----------
+
+def claude_settings_path() -> Path:
+    """User-level Claude Code settings.json (honors CLAUDE_CONFIG_DIR)."""
+    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = Path(cfg_dir) if cfg_dir else (HOME / ".claude")
+    return base / "settings.json"
+
+
+def ensure_statusline():
+    """Idempotently register our status-line command in Claude Code settings.
+
+    Shows `📞 <room>  |  <model>  |  <dir>  |  <branch>` once a session has
+    registered via /meeting (the badge self-gates: statusline.py only renders it
+    when monitor.py has written the local name cache for this cwd).
+
+    Conservative: if the user already has a *different* statusLine configured,
+    we leave it untouched rather than clobber it. We only install/refresh when
+    statusLine is absent or already points at our statusline.py.
+    """
+    settings_path = claude_settings_path()
+    # Only act under a real Claude Code install (settings dir present).
+    if not settings_path.parent.is_dir():
+        return
+
+    script = BIN_LINK / "statusline.py"
+    py = venv_python()
+    command = f'"{py}" "{script}"'
+
+    settings = {}
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            log("settings.json malformed — skipping statusLine install")
+            return
+
+    existing = settings.get("statusLine")
+    if isinstance(existing, dict):
+        cur = existing.get("command", "")
+        if "statusline.py" not in cur:
+            log("a custom statusLine is configured — leaving it untouched")
+            return
+        if cur == command:
+            return  # already current
+
+    settings["statusLine"] = {"type": "command", "command": command, "padding": 0}
+    try:
+        settings_path.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        log(f"installed statusLine → {script}")
+    except Exception as e:
+        log(f"statusLine install failed: {e}")
+
+
 # ---------- 5. context emission ----------
 
 def online_peers_str() -> str:
@@ -382,6 +449,7 @@ def main():
         ensure_venv()         # venv must exist before wrappers reference its python
         ensure_zeroconf()
         ensure_bin_wrappers() # now venv python path is valid
+        ensure_statusline()   # register TUI status line (idempotent, no-clobber)
         cfg = load_or_create_config()
 
         if cfg.get("is_host"):

@@ -26,6 +26,7 @@ Usage:
 """
 
 import atexit
+import hashlib
 import os
 import signal
 import subprocess
@@ -44,6 +45,15 @@ DATA = HOME / ".agent-meeting"
 MEETING_CLI = DATA / "bin" / "meeting"
 TMP = Path(tempfile.gettempdir())
 STATE_FILE = TMP / f"meeting-{SELF}.last_msg_id"
+
+# Local cache that statusline.py reads to render the 📞 badge. Keyed by the
+# session's cwd (NOT the central sessions table — statusline must stay local,
+# DB- and network-free). Written on register, removed on exit.
+STATUSLINE_DIR = DATA / "statusline"
+_CWD = os.getcwd()
+STATUSLINE_FILE = STATUSLINE_DIR / hashlib.sha1(
+    os.path.normcase(os.path.normpath(_CWD)).encode("utf-8", "replace")
+).hexdigest()[:16]
 
 # Override MEETING_HOME if set (used in tests).
 MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
@@ -77,13 +87,25 @@ def _register():
     # --force: the monitor IS the liveness owner of this name. The /meeting skill
     # may have just registered it seconds ago (fresh last_seen), which would make
     # a plain register fail the conflict check. The monitor legitimately takes over.
-    cwd = os.getcwd()
-    _run_meeting("register", SELF, "--cwd", cwd, "--force")
+    _run_meeting("register", SELF, "--cwd", _CWD, "--force")
+    # Publish the room name locally so the TUI status line can show 📞 <name>.
+    try:
+        STATUSLINE_DIR.mkdir(parents=True, exist_ok=True)
+        STATUSLINE_FILE.write_text(SELF, encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _unregister():
     try:
         _run_meeting("unregister", SELF)
+    except Exception:
+        pass
+    # Clear the status-line badge — but only if it's still ours (another session
+    # in the same cwd may have taken over the file after we wrote it).
+    try:
+        if STATUSLINE_FILE.read_text(encoding="utf-8").strip() == SELF:
+            STATUSLINE_FILE.unlink()
     except Exception:
         pass
 
