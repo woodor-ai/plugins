@@ -434,34 +434,56 @@ def ensure_statusline():
 # ---------- 5. context emission ----------
 
 def online_peers_str() -> str:
-    """Quick online-peer summary by checking pid files. Doesn't require daemon."""
-    online = []
-    if DIRECTORY.exists():
+    """Online peers = sessions-table rows with a fresh heartbeat (last_seen
+    within 12s). Reads rooms.db read-only. The old directory.json + monitor
+    pid-file scheme was removed in the SQLite migration — never resurrect it."""
+    if not DB.exists():
+        return "(none online)"
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=2)
         try:
-            directory = json.loads(DIRECTORY.read_text())
-        except Exception:
-            directory = {}
-        for name in directory:
-            pid_file = TMP / f"meeting-{name}.monitor_pid"
-            if pid_file.exists():
-                try:
-                    pid = int(pid_file.read_text().strip())
-                    if pid_alive(pid):
-                        online.append(name)
-                except (ValueError, OSError):
-                    pass
-    return ", ".join(online) if online else "(none online)"
+            cutoff = time.time() - 12
+            rows = con.execute(
+                "SELECT name FROM sessions WHERE last_seen >= ? ORDER BY name",
+                (cutoff,),
+            ).fetchall()
+        finally:
+            con.close()
+        names = [r[0] for r in rows]
+        return ", ".join(names) if names else "(none online)"
+    except Exception:
+        return "(none online)"
 
 
 def emit_context(cfg: dict):
     role = "host" if cfg.get("is_host") else "client"
     peers = online_peers_str()
     hostname = socket.gethostname()
+
+    # Hand the agent the EXACT, OS-resolved invocations for this machine so it
+    # never has to translate POSIX→Windows or probe the filesystem to find the
+    # CLI. On Windows the CLI goes through python.exe on the real (extensionless)
+    # `meeting` script — never meeting.cmd (cmd.exe mangles `<`/`>` in args).
+    py = venv_python()
+    meeting = BIN_LINK / "meeting"
+    monitor = BIN_LINK / "monitor.py"
+    if IS_WINDOWS:
+        cli = f'"{py}" "{meeting}"'                              # PowerShell CLI tool calls
+        mon = f'"{py.as_posix()}" "{monitor.as_posix()}" <name>'  # Monitor tool runs in bash
+        os_label = "windows"
+    else:
+        cli = str(meeting)
+        mon = f"python3 {monitor} <name>"
+        os_label = "posix"
+
     ctx = f"""📞 Meeting-room system is active.
 
 This session has NO meeting name yet — you cannot make or receive calls until registered.
 
-**MANDATORY first action**: if the user's first prompt is NOT any form of `/meeting` (with or without arguments), do NOT proceed with their task. Instead reply:
+**If the user's first message IS any form of `/meeting`** (`/meeting`, `/meeting <name>`, `/meeting list`, …): just run the skill. Do NOT print the boilerplate below — they already named the session.
+
+**Otherwise** (first message is a normal task): do NOT start it. Reply exactly:
 
 > 📞 Please name this session first. Three options:
 > - `/meeting` — show picker of available names
@@ -470,8 +492,12 @@ This session has NO meeting name yet — you cannot make or receive calls until 
 >
 > Once you pick a name, your phone is active and I'll continue with your request.
 
-Backend: SQLite at ~/.agent-meeting/db/rooms.db (CLI: ~/.agent-meeting/bin/meeting).
-Machine: `{hostname}` (role: {role}).
+These paths are ALREADY RESOLVED for this machine — use them verbatim, do NOT probe the filesystem to find the CLI or venv:
+- CLI invocation: `{cli} <args>`
+- Monitor tool command (bash): `{mon}`
+
+Backend: SQLite at {DB}.
+Machine: `{hostname}` (role: {role}, os: {os_label}).
 Online peers: {peers}
 """
     print(json.dumps({
