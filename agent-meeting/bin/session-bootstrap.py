@@ -157,9 +157,16 @@ def ensure_bin_wrappers():
             # on Windows (would crash bootstrap). Copy is privilege-free everywhere.
             _shutil.copyfile(str(src), str(dest))
         elif IS_WINDOWS:
+            # .cmd wrapper for PATH/shell resolution (monitor, bare `meeting`).
             dest.with_suffix(".cmd").write_text(
                 f'@echo off\r\n"{py}" "{src}" %*\r\n'
             )
+            # ALSO a real extensionless copy so callers can run
+            #   python.exe "<bin>\meeting" <args>
+            # via CreateProcess, bypassing cmd.exe — which mangles `<`/`>` in
+            # args as redirection when the .cmd forwards them through %*. Any
+            # CLI call carrying user content (send --ask/--body) MUST use this.
+            _shutil.copyfile(str(src), str(dest))
         else:
             dest.write_text(f'#!/bin/sh\nexec "{py}" "{src}" "$@"\n')
             dest.chmod(0o755)
