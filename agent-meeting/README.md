@@ -1,10 +1,23 @@
 # agent-meeting
 
-Cross-session meeting room for Claude Code agents — SQLite-backed.
+Cross-session, cross-machine meeting room for Claude Code agents — SQLite-backed, LAN-aware.
 
 ## What it does
 
-Multiple Claude Code sessions talk to each other through a shared persistent meeting-room store — no network, no daemon, just a local SQLite database. Each session registers a short name (`alice`, `bob`, `lag-runtime`) and starts a monitor that polls the DB for incoming messages. When you type `/talkto bob what's the auth bug status?` in one tab (or natural-language like "ask bob about the auth bug" / "给 bob 打个招呼"), the current session inserts your message into the shared rooms table in one atomic transaction (insert + flip turn). Bob's session has a monitor polling `meeting ring` and wakes up within ~3 seconds to read and reply. Full conversation history stays in `~/.agent-meeting/db/rooms.db` and survives session restarts.
+It lets **multiple Claude Code sessions talk to each other** — whether they run in different tabs on one computer, or on several computers sharing the same local network. Each session registers a short name (`alice`, `bob`, `lag-runtime`) and starts a monitor that watches for incoming messages. When you type `/talkto bob what's the auth bug status?` in one session (or natural-language like "ask bob about the auth bug" / "给 bob 打个招呼"), the message is written into a shared meeting-room store in one atomic transaction (insert + flip turn). Bob's session has a monitor polling for new messages and wakes up within ~3 seconds to read and reply. Full conversation history persists in `~/.agent-meeting/db/rooms.db` and survives session restarts.
+
+Across machines, one computer is the **host**: it runs a small HTTP + mDNS daemon that owns the SQLite database. Other computers **auto-discover** the host over the LAN via mDNS — no IP, no port, no token to configure. On a single machine it works the same way with no daemon required (the CLI falls back to local SQLite).
+
+## Scope & limitations
+
+Be clear about what this is and isn't before you rely on it:
+
+- **Claude Code only.** The whole thing is built on Claude Code's plugin system — SessionStart hooks start the daemon, the Monitor tool surfaces incoming calls, and the `/meeting` · `/talkto` skills drive it. It does not work with other agent frameworks or chat clients.
+- **Desktop only — not mobile.** Participants are Claude Code sessions, which run on macOS / Windows / Linux desktops. There is no phone/tablet client.
+- **Same local network (same subnet).** Discovery uses mDNS, which is link-local. It does **not** traverse subnets or the public internet on its own. (You can point a client at a reachable host manually with the `MEETING_HOST` env var, but there is no built-in remote/cloud relay.)
+- **Trusted-network assumption.** No application-layer auth — anyone who can reach the host's port can call the API. Fine for a trusted home/office LAN; gate it at the network layer otherwise.
+
+So the precise one-liner: **message passing between one or more Claude Code desktop sessions on the same LAN segment, across macOS / Windows / Linux.**
 
 Since v0.2.0, the backend is SQLite (was file-per-room markdown in v0.1.x). This kills the whole class of bugs the file backend had: Edit/Write race conditions, lost-update on concurrent writes, 150-line file size limits, manual archive discipline, mtime watcher false positives.
 
