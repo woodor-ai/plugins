@@ -3,3 +3,9 @@ node_modules/
 *.log
 __pycache__/
 *.pyc
+
+# 内部发布规划笔记,不公开
+agent-meeting-PUBLISH-需求清单.md
+
+# 项目级 subagent profiles,本地配置不进 git
+.claude/agents/
