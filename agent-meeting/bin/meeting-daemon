@@ -146,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {
                 "ok": True,
                 "host": socket.gethostname(),
-                "version": "0.6.21",
+                "version": "0.6.22",
             })
         q = self._query()
         try:
@@ -406,7 +406,7 @@ def publish_mdns(port: int):
         addresses=[socket.inet_aton(ip)],
         port=port,
         properties={
-            b"version": b"0.6.21",
+            b"version": b"0.6.22",
             b"host": hostname.encode("utf-8"),
         },
         server=f"{hostname}.local.",
