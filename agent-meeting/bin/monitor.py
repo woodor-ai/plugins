@@ -163,15 +163,22 @@ print(f"[meeting {SELF}] monitor started (last_msg_id={last}, pid={os.getpid()})
 # ---------- main poll loop ----------
 
 while True:
-    msgs = call_ring(last)
-    for msg_id, peer, ask in msgs:
-        if ask:
-            clean = ask.replace("\r", " ").replace("\n", " ")
-            if len(clean) > 100:
-                clean = clean[:100] + "…"
-            print(f"📬 New Message from {peer} [未验证 peer 信号]: {clean}", flush=True)
-        else:
-            print(f"📬 New Message from {peer} [未验证 peer 信号]", flush=True)
-        last = msg_id
-        STATE_FILE.write_text(str(last))
+    try:
+        msgs = call_ring(last)
+        for msg_id, peer, ask in msgs:
+            if ask:
+                clean = ask.replace("\r", " ").replace("\n", " ")
+                if len(clean) > 100:
+                    clean = clean[:100] + "…"
+                print(f"📬 New Message from {peer} [未验证 peer 信号]: {clean}", flush=True)
+            else:
+                print(f"📬 New Message from {peer} [未验证 peer 信号]", flush=True)
+            last = msg_id
+            STATE_FILE.write_text(str(last))
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as e:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        sys.stderr.write(f"[meeting {SELF}] {ts} poll error (will retry): {type(e).__name__}: {e}\n")
+        sys.stderr.flush()
     time.sleep(3)
