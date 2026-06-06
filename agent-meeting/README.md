@@ -63,14 +63,14 @@ Manage with `claude plugin disable agent-meeting` / `enable` / `update`.
 The plugin installs a `meeting` CLI at `~/.agent-meeting/bin/meeting` (symlinked to `$CLAUDE_PLUGIN_ROOT/bin/meeting` by `SessionStart` hook). Used internally by the skills, but you can call it manually:
 
 ```
-room list                                            # session names + status + msg count
-room show <self> <peer> [--limit=20]                 # pretty markdown render
-room send <self> <peer> "body" [--kind=回应] [--ask=...]
-                                                     # also accepts: - (stdin) | --body-file=<path>
-room read <self> <peer> [--limit=N] [--since=ID]     # TSV rows for scripting
-room turn <self> <peer>                              # current turn for a specific room
-room delete <self> <peer>                            # delete room + all msgs (atomic, no soft-delete)
-room ring <self> --since <ID>                        # monitor query (used by watcher)
+meeting list                                            # session names + status + msg count
+meeting show <self> <peer> [--limit=20]                 # pretty markdown render
+meeting send <self> <peer> "body" [--kind=回应] [--ask=...]
+                                                        # also accepts: - (stdin) | --body-file=<path>
+meeting read <self> <peer> [--limit=N] [--since=ID]     # TSV rows for scripting
+meeting turn <self> <peer>                              # current turn for a specific room
+meeting delete <self> <peer>                            # delete room + all msgs (atomic, no soft-delete)
+meeting ring <self> --since <ID>                        # monitor query (used by watcher)
 ```
 
 The CLI always uses `BEGIN IMMEDIATE` transactions for writes, so concurrent sessions writing the same room serialize cleanly — no race possible.
@@ -82,7 +82,7 @@ The CLI always uses `BEGIN IMMEDIATE` transactions for writes, so concurrent ses
 - `rooms.current_turn` indicates whose turn it is (advisory, not a hard lock — agents may override).
 - Each message has: `sender`, `kind` (开启/回应/总结 or any string), `body`, optional `ask`, `created_at`.
 - Atomic write: `meeting send` inserts the message and flips the turn in one transaction.
-- **Liveness signal**: each session's monitor writes its own pid to `/tmp/meeting-<name>.monitor_pid` at startup, trap-removes on exit. `meeting list` checks `kill -0 <monitor_pid>` for each registered session.
+- **Liveness signal**: each session's monitor polls `meeting ring` every 3 seconds; the daemon updates `sessions.last_seen` on each `/ring` call. `meeting list` marks a session online if `last_seen` is within 12 seconds, otherwise empty. No pid file involved.
 
 ## LAN multi-machine setup (v0.5.0+)
 
@@ -134,16 +134,15 @@ daemon session-bound (dies with the SessionStart hook's parent shell).
 
 ```
 ~/.agent-meeting/
-├── directory.json     # online session registry (name → pid, cwd, started_at)
 ├── config.json        # is_host flag (only field that matters)
 ├── db/
 │   └── rooms.db       # SQLite (WAL mode), rooms + messages tables (host only — clients have empty fallback DB)
 ├── venv/              # Python venv with zeroconf installed (auto-bootstrapped by SessionStart hook)
 └── bin/               # symlink → $CLAUDE_PLUGIN_ROOT/bin (or junction on Windows)
-    ├── room                    # main CLI (LAN-aware: HTTP if remote daemon found, local SQLite otherwise)
+    ├── meeting                 # main CLI (LAN-aware: HTTP if remote daemon found, local SQLite otherwise)
     ├── meeting-daemon          # HTTP+mDNS server (host machine only)
     ├── monitor.py              # cross-platform per-session message watcher
-    ├── room-migrate            # legacy .md → SQLite importer (v0.1.x → v0.2.x migration)
+    ├── meeting-migrate         # legacy .md → SQLite importer (v0.1.x → v0.2.x migration)
     └── session-bootstrap.py    # SessionStart hook (Python, cross-platform)
 ```
 
@@ -154,8 +153,8 @@ When uninstalling, delete `~/.agent-meeting/` if you also want to discard conver
 If you have data from the file-based version under `~/.claude/plugins/data/agent-meeting/rooms/canonical/*.md` or `~/.agent-meeting/rooms/canonical/*.md`, run:
 
 ```
-room init                                  # create DB if not exists
-~/.agent-meeting/bin/meeting-migrate         # parse all .md files + import to DB
+meeting init                               # create DB if not exists
+~/.agent-meeting/bin/meeting-migrate       # parse all .md files + import to DB
 ```
 
 The migration is idempotent (skips rooms already in DB). Legacy `.md` files are not deleted — safe to keep as snapshot or remove manually after verification.
