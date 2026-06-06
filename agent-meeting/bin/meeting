@@ -105,6 +105,21 @@ ONLINE_THRESHOLD = 12
 
 # ---------- LAN discovery (mDNS + HTTP client) ----------
 
+def _warn_client_isolated() -> None:
+    """Print a stderr warning when this machine is a client but the host is unreachable."""
+    try:
+        with open(_CONFIG_PATH) as _f:
+            cfg = json.load(_f)
+    except Exception:
+        cfg = {}
+    if not cfg.get("is_host", False):
+        print(
+            "⚠️  agent-meeting: 中央节点(host)不可达，本次操作仅写本地库、不并入舰队。"
+            "跨机消息/注册不会送达。检查 host daemon 是否在线。",
+            file=sys.stderr,
+        )
+
+
 def discover_host() -> str | None:
     """Find a remote daemon to talk to. Returns base URL or None.
 
@@ -129,6 +144,7 @@ def discover_host() -> str | None:
     try:
         from zeroconf import IPVersion, ServiceBrowser, ServiceListener, Zeroconf
     except ImportError:
+        _warn_client_isolated()
         return None
 
     found_url = []
@@ -151,11 +167,13 @@ def discover_host() -> str | None:
             time.sleep(MDNS_BROWSE_TIMEOUT)
             zc.close()
         except Exception:
+            _warn_client_isolated()
             return None
         if found_url:
             break
 
     if not found_url:
+        _warn_client_isolated()
         return None
 
     url = found_url[0]
