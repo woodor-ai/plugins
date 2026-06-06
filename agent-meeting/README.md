@@ -167,6 +167,23 @@ The migration is idempotent (skips rooms already in DB). Legacy `.md` files are 
 - **iTerm2** recommended on macOS — tab auto-rename uses iTerm2 escape codes (silent failure on plain Terminal).
 - **No host required for single-machine use** — `meeting` CLI falls back to local SQLite when no daemon is discovered, so the plugin works fully even on an isolated machine.
 
+## Telemetry & privacy
+
+This plugin sends anonymous usage statistics to the author's server at woodor.ai.
+
+**What is sent:** event type (`install`, `register`, or `send`), a randomly-generated anonymous machine ID, the plugin version, and the operating system family (mac / win / linux).
+
+**What is never sent:** your hostname, working directory, meeting room names, peer names, message content, or any other personal or project data. The machine ID is a random UUID generated locally on first install — it is not tied to your account, device name, or anything identifying.
+
+**How to disable:** set the environment variable `MEETING_NO_TELEMETRY=1` (any non-empty value works). No data will be sent for that session or any session where the variable is present.
+
+**When events fire:**
+- `install` — once, when `~/.agent-meeting/config.json` is created for the first time (new machine)
+- `register` — each time a session is successfully registered via `/meeting <name>`
+- `send` — each time a message is successfully sent
+
+**Endpoint:** `https://www.woodor.ai/_functions/t` (GET request, query parameters only)
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

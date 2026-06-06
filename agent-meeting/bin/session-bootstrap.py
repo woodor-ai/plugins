@@ -22,7 +22,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.parse
+import urllib.request
+import uuid
 from pathlib import Path
 
 HOME = Path.home()
@@ -44,9 +48,42 @@ IS_LINUX = sys.platform.startswith("linux")
 LAUNCHD_LABEL = "com.tommy.agent-meeting"
 LAUNCHD_PLIST = HOME / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 
+TELEMETRY_URL = "https://www.woodor.ai/_functions/t"
+
+if IS_MAC:
+    _OS_LABEL = "mac"
+elif IS_WINDOWS:
+    _OS_LABEL = "win"
+else:
+    _OS_LABEL = "linux"
+
 
 def log(msg: str):
     sys.stderr.write(f"[meeting-bootstrap] {msg}\n")
+
+
+# ---------- telemetry ----------
+
+def beacon(event: str, version: str, machine_id: str):
+    """Fire-and-forget telemetry. Skipped when MEETING_NO_TELEMETRY is set."""
+    if os.environ.get("MEETING_NO_TELEMETRY"):
+        return
+
+    def _send():
+        try:
+            params = urllib.parse.urlencode({
+                "e": event,
+                "id": machine_id,
+                "v": version,
+                "os": _OS_LABEL,
+            })
+            url = f"{TELEMETRY_URL}?{params}"
+            urllib.request.urlopen(url, timeout=2)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_send, daemon=True)
+    t.start()
 
 
 # ---------- 1. ensure dirs ----------
@@ -200,22 +237,63 @@ def ensure_zeroconf():
 
 # ---------- 3. config ----------
 
-def load_or_create_config() -> dict:
-    if CONFIG.exists():
-        try:
-            return json.loads(CONFIG.read_text())
-        except Exception:
-            log("config.json malformed, recreating")
-    cfg = {
-        "is_host": False,  # default: not a host. User flips to True on the machine that owns the DB.
-        "created_at": int(time.time()),
-    }
-    CONFIG.write_text(json.dumps(cfg, indent=2))
+def _read_plugin_version() -> str:
+    """Read version from plugin.json next to this script's PLUGIN_ROOT."""
     try:
-        os.chmod(CONFIG, 0o600)
+        pj = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
+        if pj.exists():
+            return json.loads(pj.read_text()).get("version", "unknown")
     except Exception:
         pass
-    return cfg
+    return "unknown"
+
+
+def load_or_create_config() -> tuple[dict, bool, str]:
+    """Return (cfg, is_new_install, machine_id).
+
+    Side effects:
+    - Generates machine_id if absent (new install → also returns is_new_install=True).
+    - Updates plugin_version in config if it changed.
+    """
+    version = _read_plugin_version()
+    is_new_install = False
+
+    if CONFIG.exists():
+        try:
+            cfg = json.loads(CONFIG.read_text())
+        except Exception:
+            log("config.json malformed, recreating")
+            cfg = None
+    else:
+        cfg = None
+
+    if cfg is None:
+        # First-ever creation: new install.
+        machine_id = uuid.uuid4().hex
+        cfg = {
+            "is_host": False,
+            "created_at": int(time.time()),
+            "machine_id": machine_id,
+            "plugin_version": version,
+        }
+        CONFIG.write_text(json.dumps(cfg, indent=2))
+        try:
+            os.chmod(CONFIG, 0o600)
+        except Exception:
+            pass
+        is_new_install = True
+    else:
+        dirty = False
+        if "machine_id" not in cfg:
+            cfg["machine_id"] = uuid.uuid4().hex
+            dirty = True
+        if cfg.get("plugin_version") != version:
+            cfg["plugin_version"] = version
+            dirty = True
+        if dirty:
+            CONFIG.write_text(json.dumps(cfg, indent=2))
+
+    return cfg, is_new_install, cfg["machine_id"]
 
 
 # ---------- 4. daemon launch ----------
@@ -514,7 +592,11 @@ def main():
         ensure_zeroconf()
         ensure_bin_wrappers() # now venv python path is valid
         ensure_statusline()   # register TUI status line (idempotent, no-clobber)
-        cfg = load_or_create_config()
+        cfg, is_new_install, machine_id = load_or_create_config()
+        version = cfg.get("plugin_version", "unknown")
+
+        if is_new_install:
+            beacon("install", version, machine_id)
 
         if cfg.get("is_host"):
             if IS_MAC:
