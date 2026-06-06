@@ -29,6 +29,7 @@ import signal
 import socket
 import sqlite3
 import sys
+import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,7 +50,7 @@ ONLINE_THRESHOLD = 12
 def db():
     conn = sqlite3.connect(DB_PATH, isolation_level=None, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.executescript("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+    conn.executescript("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA wal_autocheckpoint = 100;")
     try:
         yield conn
     finally:
@@ -77,6 +78,8 @@ def ensure_room(conn, self_name: str, peer: str):
 # ---------- HTTP handlers ----------
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 30  # 30s per-connection timeout; prevents half-open connections blocking threads
+
     # Hide default request log — replace with one-liner.
     def log_message(self, fmt, *args):
         sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
@@ -143,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {
                 "ok": True,
                 "host": socket.gethostname(),
-                "version": "0.6.18",
+                "version": "0.6.20",
             })
         q = self._query()
         try:
@@ -403,7 +406,7 @@ def publish_mdns(port: int):
         addresses=[socket.inet_aton(ip)],
         port=port,
         properties={
-            b"version": b"0.6.18",
+            b"version": b"0.6.20",
             b"host": hostname.encode("utf-8"),
         },
         server=f"{hostname}.local.",
@@ -426,6 +429,10 @@ def main():
         print(f"DB not found at {DB_PATH}. Run `meeting init` first.", file=sys.stderr)
         sys.exit(1)
 
+    # WAL hygiene: compact the WAL file at startup so it doesn't grow unbounded.
+    with db() as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
 
@@ -434,18 +441,46 @@ def main():
         zc, info = publish_mdns(args.port)
 
     def shutdown(sig, _frame):
+        # IMPORTANT: server.shutdown() blocks until serve_forever() returns.
+        # Calling it directly from the signal handler (which runs in the main
+        # thread alongside serve_forever) causes a deadlock. Offload to a
+        # daemon thread so the main thread stays free to process the shutdown.
         print(f"\n[shutdown] received signal {sig}, unpublishing mDNS + stopping HTTP", flush=True)
-        if zc and info:
+        def _do():
             try:
-                zc.unregister_service(info)
+                if zc and info:
+                    zc.unregister_service(info)
+                    zc.close()
             except Exception:
                 pass
-            zc.close()
-        server.shutdown()
-        sys.exit(0)
+            server.shutdown()
+            sys.exit(0)
+        threading.Thread(target=_do, daemon=True).start()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+
+    def _watchdog(port: int):
+        # Self-connect every 10s; three consecutive failures (~30s) → hard exit.
+        # Uses os._exit to bypass atexit hooks that may themselves be stuck.
+        failures = 0
+        time.sleep(15)  # give server time to start
+        while True:
+            try:
+                s = socket.create_connection(("127.0.0.1", port), timeout=5)
+                s.sendall(b"GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                s.recv(256)
+                s.close()
+                failures = 0
+            except Exception:
+                failures += 1
+                print(f"[watchdog] health check failed ({failures}/3)", flush=True)
+                if failures >= 3:
+                    print("[watchdog] daemon unresponsive, forcing exit", flush=True)
+                    os._exit(1)
+            time.sleep(10)
+
+    threading.Thread(target=_watchdog, args=(args.port,), daemon=True).start()
 
     print(f"[http] listening on {args.bind}:{args.port}", flush=True)
     server.serve_forever()
