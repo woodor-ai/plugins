@@ -33,6 +33,7 @@ import argparse
 import http.client as _http_client
 import json
 import os
+import secrets
 import socket
 import sqlite3
 import sys
@@ -173,6 +174,22 @@ def _invalidate_host_cache():
         pass
 
 
+def _get_auth_token() -> str | None:
+    """Return the auth token to send with requests.
+
+    Priority: MEETING_TOKEN env var > config.json auth_token.
+    Returns None when neither is set (open-mode daemon).
+    """
+    env_tok = os.environ.get("MEETING_TOKEN")
+    if env_tok:
+        return env_tok
+    try:
+        with open(_CONFIG_PATH) as _f:
+            return json.load(_f).get("auth_token") or None
+    except Exception:
+        return None
+
+
 def _http_once(method: str, host_url: str, path: str,
                params: dict | None, body: dict | None):
     """Single HTTP attempt. Returns parsed JSON or raw text. Raises on non-2xx."""
@@ -180,6 +197,9 @@ def _http_once(method: str, host_url: str, path: str,
     if params:
         url += "?" + urllib.parse.urlencode(params)
     headers = {}
+    token = _get_auth_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     data = None
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -699,6 +719,49 @@ def cmd_telemetry(args):
         print("telemetry enabled (config.json)")
 
 
+def cmd_token(args):
+    """Generate, set, or clear the shared auth token in config.json."""
+    try:
+        with open(_CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = {}
+
+    value = getattr(args, "value", None)
+
+    if value == "clear":
+        cfg.pop("auth_token", None)
+        with open(_CONFIG_PATH, "w") as f:
+            json.dump(cfg, f, indent=2)
+        print("auth_token cleared — daemon is now open (no auth required)")
+        return
+
+    if value:
+        cfg["auth_token"] = value
+        with open(_CONFIG_PATH, "w") as f:
+            json.dump(cfg, f, indent=2)
+        print(f"auth_token set: {value}")
+        return
+
+    # No value: show existing or generate a new one.
+    existing = cfg.get("auth_token")
+    if existing:
+        print(existing)
+        print("(existing token — distribute this to every client machine)")
+        return
+
+    new_token = secrets.token_urlsafe(32)
+    cfg["auth_token"] = new_token
+    with open(_CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+    print(new_token)
+    print(
+        "Token generated and written to config.json. "
+        "Run `meeting token <value>` on every client machine to distribute it, "
+        "or set the MEETING_TOKEN env var. Keep it secret."
+    )
+
+
 def cmd_list(args):
     """List all session names with liveness status and message count.
 
@@ -810,6 +873,12 @@ def main():
                        help="view or change the telemetry opt-in/out setting in config.json")
     s.add_argument("action", choices=["on", "off", "status"])
     s.set_defaults(func=cmd_telemetry)
+
+    s = sub.add_parser("token",
+                       help="manage the shared auth token (host: generate; client: paste host token; clear: disable auth)")
+    s.add_argument("value", nargs="?", default=None,
+                   help="token value to write, or 'clear' to remove it; omit to show/generate")
+    s.set_defaults(func=cmd_token)
 
     s = sub.add_parser("register",
                        help="register this session in the central sessions table (via daemon or local SQLite)")

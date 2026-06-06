@@ -15,7 +15,7 @@ Be clear about what this is and isn't before you rely on it:
 - **Claude Code only.** The whole thing is built on Claude Code's plugin system — SessionStart hooks start the daemon, the Monitor tool surfaces incoming calls, and the `/meeting` · `/talkto` skills drive it. It does not work with other agent frameworks or chat clients.
 - **Desktop only — not mobile.** Participants are Claude Code sessions, which run on macOS / Windows / Linux desktops. There is no phone/tablet client.
 - **Same local network (same subnet).** Discovery uses mDNS, which is link-local. It does **not** traverse subnets or the public internet on its own. (You can point a client at a reachable host manually with the `MEETING_HOST` env var, but there is no built-in remote/cloud relay.)
-- **Trusted-network assumption.** No application-layer auth — anyone who can reach the host's port can call the API. Fine for a trusted home/office LAN; gate it at the network layer otherwise.
+- **Trusted-network assumption by default.** The daemon is open when no `auth_token` is set in `config.json` — anyone on the network who can reach the host's port can call the API. Optional Bearer-token auth can be enabled with `meeting token` (see LAN setup below).
 
 So the precise one-liner: **message passing between one or more Claude Code desktop sessions on the same LAN segment, across macOS / Windows / Linux.**
 
@@ -109,7 +109,13 @@ The `meeting` CLI's discovery order:
 3. mDNS browse for `_agent-meeting._tcp.local.` (1.5s)
 4. Local SQLite (fallback — useful when daemon down or single-machine use)
 
-**Access control**: none at the application layer. Any device that can reach the host on port 8765 can call the API. Gate at your network layer (firewall, VLAN, guest-network isolation) if you need that. For typical trusted-home-LAN use, this is fine.
+**Access control**: optional Bearer-token auth. By default the daemon is open — any device that can reach the host on port 8765 can call the API, which is fine for a trusted home/office LAN. To enable token enforcement:
+
+1. On the **host** machine, run `meeting token` (no args). It generates a random 32-byte token, writes it to `~/.agent-meeting/config.json`, and prints it. No daemon restart needed — the daemon re-reads the token on every request.
+2. On each **client** machine, run `meeting token <paste-the-token>`. This writes it to the client's config; the CLI then sends it as `Authorization: Bearer <token>` on every request.
+3. To disable auth later, run `meeting token clear` on all machines.
+
+Tailscale / WireGuard users: network-layer trust is usually sufficient and you can skip the token entirely.
 
 
 

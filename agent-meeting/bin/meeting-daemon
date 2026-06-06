@@ -10,9 +10,10 @@ turn / ring / list / delete) — no direct DB access from clients.
 Localhost clients also go through HTTP (uniform code path; localhost RTT
 is <1ms so the cost is negligible).
 
-No auth: meant for trusted LANs. Any device that can reach :8765 can
-operate on the room data. If you need access control, gate at the network
-layer (firewall, VLAN) rather than in this daemon.
+Auth model: open by default (trusted-network assumption). Set `auth_token`
+in config.json to enable Bearer-token enforcement on all routes except
+/health. Token is re-read on every request — no daemon restart required
+after `meeting token` writes it.
 
 Usage:
   meeting-daemon [--port 8765] [--bind 0.0.0.0]
@@ -35,6 +36,7 @@ from urllib.parse import parse_qs, urlparse
 
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
 DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
+_CONFIG_PATH = os.path.join(MEETING_HOME, "config.json")
 SERVICE_TYPE = "_agent-meeting._tcp.local."
 
 # A session is considered online if last_seen is within this many seconds.
@@ -100,6 +102,28 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, status, msg):
         self._json(status, {"error": msg})
 
+    def _check_auth(self, path: str) -> bool:
+        """Return True if the request is allowed, False (and emit 401) if not.
+
+        Re-reads config.json on every call so a token written by `meeting token`
+        takes effect without a daemon restart. /health is always exempt.
+        """
+        if path == "/health":
+            return True
+        expected = None
+        try:
+            with open(_CONFIG_PATH) as _f:
+                expected = json.load(_f).get("auth_token") or None
+        except Exception:
+            pass
+        if not expected:
+            return True
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header == f"Bearer {expected}":
+            return True
+        self._json(401, {"error": "unauthorized"})
+        return False
+
     def _query(self):
         return parse_qs(urlparse(self.path).query)
 
@@ -113,11 +137,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if not self._check_auth(path):
+            return
         if path == "/health":
             return self._json(200, {
                 "ok": True,
                 "host": socket.gethostname(),
-                "version": "0.6.5",
+                "version": "0.6.18",
             })
         q = self._query()
         try:
@@ -142,6 +168,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if not self._check_auth(path):
+            return
         try:
             body = self._read_json_body()
             if path == "/send":
@@ -166,6 +194,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
+        if not self._check_auth(path):
+            return
         q = self._query()
         try:
             if path == "/room":
@@ -373,7 +403,7 @@ def publish_mdns(port: int):
         addresses=[socket.inet_aton(ip)],
         port=port,
         properties={
-            b"version": b"0.6.5",
+            b"version": b"0.6.18",
             b"host": hostname.encode("utf-8"),
         },
         server=f"{hostname}.local.",
