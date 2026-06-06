@@ -48,6 +48,17 @@ IS_LINUX = sys.platform.startswith("linux")
 LAUNCHD_LABEL = "com.tommy.agent-meeting"
 LAUNCHD_PLIST = HOME / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 
+# Windows: no-admin persistence is a Startup-folder launcher (primary logon
+# auto-start) + a /SC MINUTE schtasks task (resurrects the supervisor process
+# if it is killed mid-session). ONLOGON tasks need admin, so they are NOT used.
+# Sentinel records the task command so we only recreate it when the plugin path
+# moves (mirrors ensure_launchd).
+SCHTASKS_TN = "agent-meeting-daemon"
+SCHTASKS_SENTINEL = DATA / ".schtasks-cmd"
+SUPERVISOR_PID_FILE = TMP / "meeting-supervisor.pid"
+STOP_SENTINEL = DATA / "daemon.stopped"
+STARTUP_DIR = HOME / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
 TELEMETRY_URL = "https://www.woodor.ai/_functions/t"
 
 if IS_MAC:
@@ -453,6 +464,143 @@ def ensure_launchd():
             log(f"launchd bootstrap failed: {r.stderr.strip() or r2.stderr.strip()}")
 
 
+# ---------- 4b-win. Windows persistence (host only, no admin) ----------
+#
+# Windows analog of macOS launchd KeepAlive, under a hard "no admin" constraint.
+# Real-machine finding: a logon-triggered task (schtasks /SC ONLOGON) is a
+# protected operation that REQUIRES elevation — it fails "Access is denied" for
+# a non-elevated user. Time-based tasks (/SC MINUTE) and the Startup folder do
+# NOT need admin. So persistence is two no-admin layers:
+#   1. Startup-folder .cmd  → launches the supervisor immediately at logon
+#      (and after a reboot+logon). This is the primary auto-start.
+#   2. schtasks /SC MINUTE  → every 2 min, (re)launch the supervisor. Pure
+#      belt-and-suspenders: resurrects the supervisor PROCESS if it is killed
+#      mid-session without a re-logon. The supervisor's single-instance guard
+#      makes repeated launches a no-op while one is alive.
+# The supervisor itself owns daemon keep-alive (instant relaunch on exit + 20s
+# 假死 health probe). The only uncovered case — start before interactive logon
+# (lock screen) — inherently needs a service = admin, so it is out of scope.
+
+STARTUP_CMD = STARTUP_DIR / "agent-meeting-daemon.cmd"
+
+
+def _supervisor_running() -> bool:
+    try:
+        pid = int(SUPERVISOR_PID_FILE.read_text().strip())
+    except Exception:
+        return False
+    return pid_alive(pid)
+
+
+def _launch_supervisor_now(pyw: Path, supervisor: Path):
+    """Start the supervisor immediately (detached, no console) so the daemon is
+    up this session without waiting for the Startup launcher or the MINUTE task.
+    No-op if one is already alive (the supervisor's own singleton guard would
+    make a second one exit anyway)."""
+    if _supervisor_running():
+        return
+    try:
+        subprocess.Popen([str(pyw), str(supervisor)],
+                         creationflags=0x00000008 | 0x00000200, close_fds=True)
+    except Exception as e:
+        log(f"supervisor launch failed: {e}")
+
+
+def ensure_windows_persistence():
+    """Install/refresh the no-admin Windows persistence for the daemon and make
+    sure the supervisor is running now. Idempotent like ensure_launchd: the
+    Startup .cmd and the MINUTE task both embed the venv-pythonw + supervisor
+    path, so we only rewrite/recreate when that path changes (plugin move)."""
+    supervisor = BIN_LINK / "supervisor.py"
+    if not supervisor.exists():
+        log(f"supervisor missing: {supervisor}")
+        return
+
+    pyw = VENV / "Scripts" / "pythonw.exe"
+    if not pyw.exists():
+        pyw = venv_python()  # fall back to python.exe (console window)
+    tr = f'"{pyw}" "{supervisor}"'
+
+    # A fresh install/refresh means the daemon SHOULD be running — clear any
+    # prior stop sentinel so the supervisor doesn't immediately bail.
+    try:
+        STOP_SENTINEL.unlink()
+    except FileNotFoundError:
+        pass
+    kill_bootstrap_daemon()  # free :8765 from any old session-bound daemon
+
+    # Layer 1: Startup-folder launcher (primary logon auto-start, no admin).
+    # Use \n in-memory; text-mode write_text translates to CRLF on disk (what
+    # cmd.exe wants) and read_text normalizes back to \n, so the equality check
+    # is stable and we don't needlessly rewrite the file every SessionStart.
+    startup_line = f'@echo off\nstart "" "{pyw}" "{supervisor}"\n'
+    try:
+        STARTUP_DIR.mkdir(parents=True, exist_ok=True)
+        if not STARTUP_CMD.exists() or STARTUP_CMD.read_text() != startup_line:
+            STARTUP_CMD.write_text(startup_line)
+            log(f"installed Startup launcher: {STARTUP_CMD}")
+    except Exception as e:
+        log(f"startup launcher install failed: {e}")
+
+    # Layer 2: MINUTE resurrector task (no admin; recreate only on path change).
+    existing = SCHTASKS_SENTINEL.read_text().strip() if SCHTASKS_SENTINEL.exists() else ""
+    registered = subprocess.run(
+        ["schtasks", "/Query", "/TN", SCHTASKS_TN], capture_output=True
+    ).returncode == 0
+    if not (registered and existing == tr):
+        r = subprocess.run(
+            ["schtasks", "/Create", "/TN", SCHTASKS_TN, "/SC", "MINUTE",
+             "/MO", "2", "/F", "/TR", tr],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            SCHTASKS_SENTINEL.write_text(tr)
+            log(f"installed MINUTE resurrector task: {SCHTASKS_TN}")
+        else:
+            # Not fatal — the Startup launcher still gives logon auto-start.
+            log(f"MINUTE task create failed (Startup launcher still active): "
+                f"{(r.stderr or r.stdout).strip()}")
+
+    _launch_supervisor_now(pyw, supervisor)
+
+
+def remove_windows_persistence():
+    """Tear down the Windows persistence (Startup .cmd + MINUTE task) and stop a
+    running supervisor/daemon. Called when this machine is NOT a host, so a
+    former host stops auto-launching a daemon. Idempotent."""
+    removed = False
+    try:
+        if STARTUP_CMD.exists():
+            STARTUP_CMD.unlink(); removed = True
+    except Exception:
+        pass
+    if subprocess.run(["schtasks", "/Query", "/TN", SCHTASKS_TN],
+                      capture_output=True).returncode == 0:
+        subprocess.run(["schtasks", "/Delete", "/TN", SCHTASKS_TN, "/F"],
+                       capture_output=True)
+        removed = True
+    try:
+        SCHTASKS_SENTINEL.unlink()
+    except FileNotFoundError:
+        pass
+    # Stop a running supervisor (sentinel makes it exit without relaunch) + daemon.
+    try:
+        STOP_SENTINEL.write_text(str(int(time.time())))
+    except Exception:
+        pass
+    for pidf in (DAEMON_PID_FILE, SUPERVISOR_PID_FILE):
+        try:
+            pid = int(pidf.read_text().strip())
+            if IS_WINDOWS:
+                subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+            else:
+                os.kill(pid, 15)
+        except Exception:
+            pass
+    if removed:
+        log("removed Windows persistence (not a host)")
+
+
 # ---------- 4c. status line (Claude Code TUI) ----------
 
 def claude_settings_path() -> Path:
@@ -603,9 +751,14 @@ def main():
 
         if cfg.get("is_host"):
             if IS_MAC:
-                ensure_launchd()  # plist + KeepAlive — survives reboots
+                ensure_launchd()              # plist + KeepAlive — survives reboots
+            elif IS_WINDOWS:
+                ensure_windows_persistence()  # Startup launcher + MINUTE task + supervisor
             elif not daemon_running():
-                launch_daemon()   # Linux / Windows: session-bound for now
+                launch_daemon()               # Linux: session-bound for now
+        elif IS_WINDOWS:
+            # Not a host anymore — tear down any persistence a prior host left.
+            remove_windows_persistence()
 
         emit_context(cfg)
     except Exception as e:

@@ -612,6 +612,105 @@ def cmd_unregister(args):
 
 
 LAUNCHD_LABEL = "com.tommy.agent-meeting"
+SCHTASKS_TN = "agent-meeting-daemon"
+DAEMON_PORT = int(os.environ.get("MEETING_PORT", "8765"))
+STOP_SENTINEL = os.path.join(MEETING_HOME, "daemon.stopped")
+_DAEMON_PID_FILE = os.path.join(tempfile.gettempdir(), "meeting-daemon.pid")
+_SUPERVISOR_PID_FILE = os.path.join(tempfile.gettempdir(), "meeting-supervisor.pid")
+
+
+def _win_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    import ctypes
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    code = ctypes.c_ulong(0)
+    ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return code.value == 259  # STILL_ACTIVE
+
+
+def _read_pid(path: str) -> int:
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except Exception:
+        return 0
+
+
+def _probe_health() -> dict | None:
+    """GET /health from the local daemon. Returns parsed JSON or None."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{DAEMON_PORT}/health", timeout=5) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _cmd_daemon_windows(args):
+    """Windows daemon management. The daemon is kept alive by supervisor.py
+    (launched via a user-level logon scheduled task — see session-bootstrap
+    ensure_schtasks). Stop/restart are mediated by the stop sentinel
+    (~/.agent-meeting/daemon.stopped): the supervisor relaunches the daemon on
+    any exit UNLESS the sentinel is present.
+    """
+    import subprocess as sp
+
+    if args.action == "status":
+        q = sp.run(["schtasks", "/Query", "/TN", SCHTASKS_TN, "/FO", "LIST"],
+                   capture_output=True, text=True)
+        if q.returncode != 0:
+            print(f"logon task: not registered ({SCHTASKS_TN})")
+        else:
+            for line in q.stdout.splitlines():
+                line = line.strip()
+                if line.startswith(("TaskName:", "Status:", "Next Run Time:")):
+                    print(line)
+        sup = _read_pid(_SUPERVISOR_PID_FILE)
+        print(f"supervisor: {'running pid='+str(sup) if _win_pid_alive(sup) else 'not running'}")
+        dpid = _read_pid(_DAEMON_PID_FILE)
+        print(f"daemon proc: {'running pid='+str(dpid) if _win_pid_alive(dpid) else 'not running'}")
+        h = _probe_health()
+        print(f"daemon /health: {'ok, version '+h.get('version','?') if h else 'unreachable'}")
+        if os.path.exists(STOP_SENTINEL):
+            print("stop sentinel: PRESENT (supervisor will not relaunch)")
+        return
+
+    if args.action == "stop":
+        # Authoritative "stay down" signal — write BEFORE killing so the
+        # supervisor sees it and exits instead of relaunching.
+        try:
+            with open(STOP_SENTINEL, "w") as f:
+                f.write(str(int(time.time())))
+        except Exception as e:
+            print(f"could not write stop sentinel: {e}", file=sys.stderr)
+        sp.run(["schtasks", "/End", "/TN", SCHTASKS_TN], capture_output=True)
+        for pid in (_read_pid(_DAEMON_PID_FILE), _read_pid(_SUPERVISOR_PID_FILE)):
+            if pid > 0:
+                sp.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+        print(f"daemon stopped: {SCHTASKS_TN} (stop sentinel set)")
+        print("(note: next Claude SessionStart with is_host=true clears the sentinel "
+              "and reinstalls + restarts it)")
+        return
+
+    if args.action == "restart":
+        # Clear the sentinel first so the supervisor is allowed to relaunch.
+        try:
+            os.remove(STOP_SENTINEL)
+        except FileNotFoundError:
+            pass
+        # Make sure a supervisor is alive (it owns relaunch); kick the task if not.
+        if not _win_pid_alive(_read_pid(_SUPERVISOR_PID_FILE)):
+            sp.run(["schtasks", "/Run", "/TN", SCHTASKS_TN], capture_output=True)
+        # Kill the current daemon; the supervisor revives a fresh one within a tick.
+        dpid = _read_pid(_DAEMON_PID_FILE)
+        if dpid > 0:
+            sp.run(["taskkill", "/F", "/PID", str(dpid)], capture_output=True)
+        print(f"daemon restarting: {SCHTASKS_TN} (supervisor will relaunch a fresh daemon)")
+        return
 
 
 def cmd_daemon(args):
@@ -622,14 +721,20 @@ def cmd_daemon(args):
     Claude session if is_host=true, so `stop` is effectively "pause until next
     Claude restart" unless you also set is_host=false in config.json.
 
-    Linux/Windows: not implemented — the daemon there is session-bound and dies
-    with the SessionStart hook's parent shell. We print an error instead of
-    pretending to manage it.
+    Windows: drives the user-level logon scheduled task (agent-meeting-daemon)
+    + supervisor.py via a stop sentinel. See _cmd_daemon_windows.
+
+    Linux: not implemented — the daemon there is session-bound and dies with the
+    SessionStart hook's parent shell. We print an error instead of pretending to
+    manage it.
     """
     import platform
     import subprocess as sp
-    if platform.system() != "Darwin":
-        print("daemon mgmt currently mac-only (Linux/Windows daemon is session-bound)", file=sys.stderr)
+    system = platform.system()
+    if system == "Windows":
+        return _cmd_daemon_windows(args)
+    if system != "Darwin":
+        print("daemon mgmt not supported on this platform (Linux daemon is session-bound)", file=sys.stderr)
         sys.exit(1)
 
     uid = os.getuid()
@@ -865,7 +970,7 @@ def main():
     s.set_defaults(func=cmd_delete)
 
     s = sub.add_parser("daemon",
-                       help="manage the local meeting daemon (Mac launchd; Linux/Windows daemon is session-bound and unmanaged)")
+                       help="manage the local meeting daemon (Mac launchd / Windows logon-task+supervisor; Linux session-bound, unmanaged)")
     s.add_argument("action", choices=["status", "stop", "restart"])
     s.set_defaults(func=cmd_daemon)
 
