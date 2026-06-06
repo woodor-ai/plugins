@@ -60,7 +60,8 @@ else:
 
 
 def beacon(event: str):
-    """Fire-and-forget telemetry. Skipped when MEETING_NO_TELEMETRY is set."""
+    """Fire-and-forget telemetry. Skipped when MEETING_NO_TELEMETRY is set or
+    config.json has telemetry=false (absent/null counts as enabled)."""
     if os.environ.get("MEETING_NO_TELEMETRY"):
         return
 
@@ -72,6 +73,8 @@ def beacon(event: str):
                     cfg = json.load(_f)
             except Exception:
                 pass
+            if cfg.get("telemetry") is False:
+                return
             machine_id = cfg.get("machine_id", "unknown")
             version = cfg.get("plugin_version", "unknown")
             params = urllib.parse.urlencode({

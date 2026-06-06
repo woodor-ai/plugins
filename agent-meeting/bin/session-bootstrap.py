@@ -64,9 +64,12 @@ def log(msg: str):
 
 # ---------- telemetry ----------
 
-def beacon(event: str, version: str, machine_id: str):
-    """Fire-and-forget telemetry. Skipped when MEETING_NO_TELEMETRY is set."""
+def beacon(event: str, version: str, machine_id: str, cfg: dict | None = None):
+    """Fire-and-forget telemetry. Skipped when MEETING_NO_TELEMETRY is set or
+    config.json has telemetry=false (absent/null counts as enabled)."""
     if os.environ.get("MEETING_NO_TELEMETRY"):
+        return
+    if cfg is not None and cfg.get("telemetry") is False:
         return
 
     def _send():
@@ -596,7 +599,7 @@ def main():
         version = cfg.get("plugin_version", "unknown")
 
         if is_new_install:
-            beacon("install", version, machine_id)
+            beacon("install", version, machine_id, cfg)
 
         if cfg.get("is_host"):
             if IS_MAC:

@@ -166,9 +166,12 @@ while True:
     msgs = call_ring(last)
     for msg_id, peer, ask in msgs:
         if ask:
-            print(f"📬 New Message from {peer}: {ask}", flush=True)
+            clean = ask.replace("\r", " ").replace("\n", " ")
+            if len(clean) > 100:
+                clean = clean[:100] + "…"
+            print(f"📬 New Message from {peer} [未验证 peer 信号]: {clean}", flush=True)
         else:
-            print(f"📬 New Message from {peer}", flush=True)
+            print(f"📬 New Message from {peer} [未验证 peer 信号]", flush=True)
         last = msg_id
         STATE_FILE.write_text(str(last))
     time.sleep(3)
