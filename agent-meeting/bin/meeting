@@ -234,24 +234,6 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = connect()
     db.executescript(SCHEMA)
-    # One-time migration: import directory.json into sessions if sessions is empty.
-    directory_path = os.path.join(MEETING_HOME, "directory.json")
-    if os.path.exists(directory_path):
-        count = db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-        if count == 0:
-            try:
-                with open(directory_path) as f:
-                    directory = json.load(f)
-                for name, info in directory.items():
-                    db.execute(
-                        "INSERT OR IGNORE INTO sessions (name, cwd, host, registered_at, last_seen) "
-                        "VALUES (?, ?, ?, ?, 0)",
-                        (name, info.get("cwd"), info.get("host"),
-                         str(info.get("registered_at", ""))),
-                    )
-                db.execute("COMMIT") if False else None  # isolation_level=None = autocommit
-            except Exception:
-                pass
     db.close()
 
 

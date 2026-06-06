@@ -30,7 +30,6 @@ DATA = HOME / ".agent-meeting"
 DB_DIR = DATA / "db"
 DB = DB_DIR / "rooms.db"
 CONFIG = DATA / "config.json"
-DIRECTORY = DATA / "directory.json"
 VENV = DATA / "venv"
 BIN_LINK = DATA / "bin"
 
@@ -50,13 +49,11 @@ def log(msg: str):
     sys.stderr.write(f"[meeting-bootstrap] {msg}\n")
 
 
-# ---------- 1. ensure dirs + directory.json ----------
+# ---------- 1. ensure dirs ----------
 
 def ensure_layout():
     DATA.mkdir(exist_ok=True)
     DB_DIR.mkdir(exist_ok=True)
-    if not DIRECTORY.exists():
-        DIRECTORY.write_text("{}")
 
 
 # ---------- 3b. bin wrappers (called after venv is ready) ----------
