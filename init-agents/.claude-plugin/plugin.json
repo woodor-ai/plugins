@@ -1,10 +1,10 @@
 {
   "name": "init-agents",
-  "version": "0.1.1",
-  "description": "Initialize three project-level subagent profiles (explore/rd/planner) tiered by model cost. Replaces ad-hoc use of built-in Explore/Plan/general-purpose agents with a deliberate cheap\u2192expensive cascade.",
+  "version": "0.1.2",
+  "description": "Initialize three project-level subagent profiles (explore/rd/planner) tiered by model cost. Replaces ad-hoc use of built-in Explore/Plan/general-purpose agents with a deliberate cheap→expensive cascade.",
   "author": {
-    "name": "Tommy",
-    "url": "https://github.com/Tommy-OMI"
+    "name": "Woodor",
+    "url": "https://github.com/woodor-ai"
   },
-  "homepage": "https://github.com/Tommy-OMI/plugins"
+  "homepage": "https://github.com/woodor-ai/plugins"
 }

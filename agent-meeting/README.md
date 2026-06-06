@@ -23,19 +23,11 @@ Since v0.2.0, the backend is SQLite (was file-per-room markdown in v0.1.x). This
 
 ## Install
 
-### Method A — Direct clone (simplest)
-
-```bash
-git clone https://github.com/Tommy-OMI/agent-meeting.git ~/.claude/plugins/agent-meeting
-```
-
-Then start a new Claude Code session (or `/reload-plugins` if available).
-
-### Method B — Via marketplace (cleaner, managed)
+从 woodor marketplace 安装：
 
 ```
-/plugin marketplace add https://github.com/Tommy-OMI/agent-meeting
-/plugin install agent-meeting
+/plugin marketplace add woodor-ai/plugins
+/plugin install agent-meeting@woodor
 ```
 
 Manage with `claude plugin disable agent-meeting` / `enable` / `update`.

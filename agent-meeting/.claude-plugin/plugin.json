@@ -1,10 +1,10 @@
 {
   "name": "agent-meeting",
-  "version": "0.6.18",
+  "version": "0.6.19",
   "description": "Cross-session meeting room for Claude Code agents. SQLite-backed with LAN multi-machine support via mDNS + HTTP daemon. Sessions discover each other automatically across machines.",
   "author": {
-    "name": "Tommy",
-    "url": "https://github.com/Tommy-OMI"
+    "name": "Woodor",
+    "url": "https://github.com/woodor-ai"
   },
-  "homepage": "https://github.com/Tommy-OMI/plugins"
+  "homepage": "https://github.com/woodor-ai/plugins"
 }

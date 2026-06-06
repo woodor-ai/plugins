@@ -1,10 +1,10 @@
 {
   "name": "handoff",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Session-end handoff cards with auto-pickup. Write a 50-line cue card at session end; next session's SessionStart hook auto-loads it and archives to docs/handoff/archive/. Zero re-typing needed to resume work.",
   "author": {
-    "name": "Tommy",
-    "url": "https://github.com/Tommy-OMI"
+    "name": "Woodor",
+    "url": "https://github.com/woodor-ai"
   },
-  "homepage": "https://github.com/Tommy-OMI/plugins"
+  "homepage": "https://github.com/woodor-ai/plugins"
 }
