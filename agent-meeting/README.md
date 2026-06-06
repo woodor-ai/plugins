@@ -175,9 +175,10 @@ This plugin sends anonymous usage statistics to the author's server at woodor.ai
 
 **What is never sent:** your hostname, working directory, meeting room names, peer names, message content, or any other personal or project data. The machine ID is a random UUID generated locally on first install — it is not tied to your account, device name, or anything identifying.
 
-**How to disable (either method works):**
-- Add `"telemetry": false` to `~/.agent-meeting/config.json` — persistent, applies to every session on this machine.
-- Set the environment variable `MEETING_NO_TELEMETRY=1` (any non-empty value) — applies to the current shell session only.
+**How to disable (any method works):**
+- Run `/meeting telemetry off` in a Claude session — the friendliest way; writes `config.json` for you.
+- Add `"telemetry": false` to `~/.agent-meeting/config.json` directly — same effect as the command above.
+- Set the environment variable `MEETING_NO_TELEMETRY=1` (any non-empty value) — applies to the current shell session only; overrides `config.json`.
 
 **When events fire:**
 - `install` — once, when `~/.agent-meeting/config.json` is created for the first time (new machine)

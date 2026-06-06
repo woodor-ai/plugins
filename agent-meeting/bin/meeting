@@ -669,6 +669,36 @@ def cmd_daemon(args):
             sys.exit(1)
 
 
+def cmd_telemetry(args):
+    """Read/write the telemetry flag in config.json."""
+    try:
+        with open(_CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = {}
+
+    if args.action == "status":
+        flag = cfg.get("telemetry")
+        if flag is False:
+            config_state = "disabled"
+        else:
+            config_state = "enabled"
+        env_override = bool(os.environ.get("MEETING_NO_TELEMETRY"))
+        print(f"telemetry: {config_state} (config.json)")
+        if env_override:
+            print("MEETING_NO_TELEMETRY is set — environment variable overrides config and forces telemetry off")
+    elif args.action == "off":
+        cfg["telemetry"] = False
+        with open(_CONFIG_PATH, "w") as f:
+            json.dump(cfg, f, indent=2)
+        print("telemetry disabled (config.json)")
+    elif args.action == "on":
+        cfg["telemetry"] = True
+        with open(_CONFIG_PATH, "w") as f:
+            json.dump(cfg, f, indent=2)
+        print("telemetry enabled (config.json)")
+
+
 def cmd_list(args):
     """List all session names with liveness status and message count.
 
@@ -775,6 +805,11 @@ def main():
                        help="manage the local meeting daemon (Mac launchd; Linux/Windows daemon is session-bound and unmanaged)")
     s.add_argument("action", choices=["status", "stop", "restart"])
     s.set_defaults(func=cmd_daemon)
+
+    s = sub.add_parser("telemetry",
+                       help="view or change the telemetry opt-in/out setting in config.json")
+    s.add_argument("action", choices=["on", "off", "status"])
+    s.set_defaults(func=cmd_telemetry)
 
     s = sub.add_parser("register",
                        help="register this session in the central sessions table (via daemon or local SQLite)")

@@ -38,9 +38,10 @@ The first word after `/meeting` decides what to do:
 | `/meeting daemon status` | Run `~/.agent-meeting/bin/meeting daemon status` and paste the output. Shows launchd registration / pid / paths for the LAN-sharing daemon (Mac host only). |
 | `/meeting daemon stop` | Run `~/.agent-meeting/bin/meeting daemon stop`. SIGTERMs the daemon and waits for clean shutdown. Note: next Claude SessionStart with is_host=true will reinstall + relaunch it. |
 | `/meeting daemon restart` | Run `~/.agent-meeting/bin/meeting daemon restart`. Atomic kill+respawn via `launchctl kickstart -k`. Use this to force-pickup a daemon code change without reopening Claude. |
+| `/meeting telemetry on\|off\|status` | Run `~/.agent-meeting/bin/meeting telemetry <action>` and paste the one-line output to the user. |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
-Reserved words `list`, `delete`, and `daemon` cannot be used as session names — they go to the corresponding subcommand instead.
+Reserved words `list`, `delete`, `daemon`, and `telemetry` cannot be used as session names — they go to the corresponding subcommand instead.
 
 ### Picker (when `/meeting` has no args)
 
