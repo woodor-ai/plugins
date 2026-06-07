@@ -810,16 +810,13 @@ def cmd_token(args):
 
 
 def cmd_controls(args):
-    """List all discovered control nodes as human-readable text.
+    """List all discovered control nodes.
 
-    Each node is printed as a block with host / ip:port / url / version /
-    current-marker.  "未发现 control 节点" when nothing is found.
+    Default: human-readable text blocks.
+    --json: JSON array; each element has host/ip/port/url/version/is_current.
+    "未发现 control 节点" (or []) when nothing is found.
     """
     controls = discover_controls()
-
-    if not controls:
-        print("未发现 control 节点")
-        return
 
     # Determine the "current" (last used) URL from the cache.
     current_url = None
@@ -832,6 +829,24 @@ def cmd_controls(args):
         except Exception:
             pass
 
+    if args.json:
+        result = []
+        for c in controls:
+            result.append({
+                "host": c.get("host") or "",
+                "ip": c.get("ip") or "",
+                "port": c.get("port") or 0,
+                "url": c.get("url") or "",
+                "version": c.get("version") or "",
+                "is_current": c["url"] == current_url,
+            })
+        print(json.dumps(result, ensure_ascii=False))
+        return
+
+    if not controls:
+        print("未发现 control 节点")
+        return
+
     for i, c in enumerate(controls):
         is_current = c["url"] == current_url
         current_tag = "  ★ 当前" if is_current else ""
@@ -840,7 +855,6 @@ def cmd_controls(args):
         print(f"  ip:port: {c['ip']}:{c['port']}")
         print(f"  url:     {c['url']}")
         print(f"  version: {c['version'] or '(unknown)'}")
-
 
 def cmd_list(args):
     """List all session names with liveness status and message count.
@@ -910,8 +924,11 @@ def main():
     s.add_argument("action", nargs="?", choices=["status", "stop", "restart"], default=None)
     s.set_defaults(func=cmd_daemon)
 
-    sub.add_parser("controls",
-                   help="list all discovered control nodes (human-readable)").set_defaults(func=cmd_controls)
+    s = sub.add_parser("controls",
+                       help="list all discovered control nodes (human-readable, or --json for structured output)")
+    s.add_argument("--json", action="store_true", default=False,
+                   help="output JSON array instead of human-readable text")
+    s.set_defaults(func=cmd_controls)
 
     s = sub.add_parser("telemetry",
                        help="view or change the telemetry opt-in/out setting in config.json")
