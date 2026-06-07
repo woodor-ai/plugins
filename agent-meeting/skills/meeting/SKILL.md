@@ -1,7 +1,7 @@
 ---
 name: meeting
 description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.agent-meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
-argument-hint: [list | delete <peer> | daemon status|stop|restart | telemetry on|off|status | token [<value>|clear] | <name>]
+argument-hint: [list | controls | delete <peer> | daemon [status|stop|restart] | telemetry on|off|status | token [<value>|clear] | <name>]
 ---
 
 ## Architecture (changed 2026-05-26; sessions table added 2026-06-01)
@@ -34,15 +34,17 @@ The first word after `/meeting` decides what to do:
 |---|---|
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
 | `/meeting list` | Run `~/.agent-meeting/bin/meeting list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `empty` / `online` / `historical`. |
+| `/meeting controls` | Run `~/.agent-meeting/bin/meeting controls` and paste the JSON output. Shows all currently discovered control nodes (host / ip / port / url / current). |
 | `/meeting delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/meeting delete <self> <peer>`. |
+| `/meeting daemon` (bare) | Promote this machine to control node — see "On `/meeting daemon`" below. |
 | `/meeting daemon status` | Run `~/.agent-meeting/bin/meeting daemon status` and paste the output. Shows launchd registration / pid / paths for the LAN-sharing daemon (Mac host only). |
 | `/meeting daemon stop` | Run `~/.agent-meeting/bin/meeting daemon stop`. SIGTERMs the daemon and waits for clean shutdown. Note: next Claude SessionStart with is_host=true will reinstall + relaunch it. |
 | `/meeting daemon restart` | Run `~/.agent-meeting/bin/meeting daemon restart`. Atomic kill+respawn via `launchctl kickstart -k`. Use this to force-pickup a daemon code change without reopening Claude. |
 | `/meeting telemetry on\|off\|status` | Run `~/.agent-meeting/bin/meeting telemetry <action>` and paste the one-line output to the user. |
-| `/meeting token [<value>\|clear]` | Run `~/.agent-meeting/bin/meeting token [<value>\|clear]`. On the **host** machine with no args: generates a token (if none exists) and prints it — distribute this to every client. On a **client** machine with `<value>`: writes the host's token into local config. `clear` removes the token and returns the daemon to open mode. Note: the token is printed to the terminal and may appear in shell history — treat it like a password. |
+| `/meeting token [<value>\|clear]` | Run `~/.agent-meeting/bin/meeting token [<value>\|clear]`. On the **host** machine with no args: generates a token (if none exists) and prints it — distribute this to every client. On a **client** machine with `<value>`: writes the host's token into local config. `clear` removes the token and returns the daemon to open mode. Note: the token is printed to the terminal and may appear in shell history — treat it like a password. After success, output: `✅ Token 已写入本机 config，本会话后续与其他 agent 的通信都会带此 token 鉴权。` |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
-Reserved words `list`, `delete`, `daemon`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
+Reserved words `list`, `controls`, `delete`, `daemon`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
 
 ### Picker (when `/meeting` has no args)
 
@@ -66,12 +68,26 @@ Reserved words `list`, `delete`, `daemon`, `telemetry`, and `token` cannot be us
 3. If user picks an `online` name, ask explicit confirmation before proceeding (their choice may have been informational).
 4. After user confirms a name (or types via Other), proceed to "On `/meeting <name>`" below with that name.
 
+## On `/meeting daemon`
+
+1. Run `~/.agent-meeting/bin/meeting controls` to check whether any control is already on the LAN.
+2. If **any controls found**: use AskUserQuestion to confirm — "本 LAN 已发现以下 control 节点：\n<list each as `<host> (<ip>:<port>)`>\n确定把本机也设为新的 control 吗？". If user confirms, run `~/.agent-meeting/bin/meeting daemon`. If user declines, abort.
+3. If **no controls found**: run `~/.agent-meeting/bin/meeting daemon` directly (no confirmation needed).
+
 ## On `/meeting <name>`
 
-1. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20.
-2. **Register**: call the CLI register subcommand — it writes the session into the central sessions table (via daemon HTTP POST /register, or directly into local SQLite if no daemon). Per the per-OS rule at the top:
-   - macOS/Linux: `~/.agent-meeting/bin/meeting register <name> --cwd <cwd>`
-   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" register <name> --cwd <cwd>`
+1. **Discover controls first**: run `~/.agent-meeting/bin/meeting controls` and parse the JSON output.
+
+   - **0 controls**: use AskUserQuestion with question "未发现中央节点 agent-meeting-control，是否把本机设为 control？" and options:
+     - "是（推荐）" — run `~/.agent-meeting/bin/meeting daemon` to start the control, then continue to register.
+     - "否" — tell user: "你可以稍后在有 control 的机器上执行 `/meeting daemon`，再回来 `/meeting <name>` 注册。" Abort.
+   - **1 control**: proceed to register against that control automatically. Report one line: `🛰 已连接 agent-meeting-control：<host>（<ip>:<port>）`.
+   - **2+ controls**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on whichever has `"current": true`. Do NOT add any language implying multiple controls is unusual or an error — it is a valid multi-machine office topology.
+
+2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20.
+3. **Register**: call the CLI register subcommand. When a specific control was chosen in step 1, pass `--host <url>`. Per the per-OS rule at the top:
+   - macOS/Linux: `~/.agent-meeting/bin/meeting register <name> --cwd <cwd> [--host <url>]`
+   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" register <name> --cwd <cwd> [--host <url>]`
 
    The command exits 0 on success. On non-zero exit (name taken, monitor heartbeat still recent) surface the error to the user and abort — do not proceed to monitor install. Use `--force` only if the user explicitly asks to take over.
 4. **Initialize DB** (idempotent): `~/.agent-meeting/bin/meeting init`
@@ -85,7 +101,7 @@ Reserved words `list`, `delete`, `daemon`, `telemetry`, and `token` cannot be us
    - Liveness heartbeat: monitor polls `/ring` every 3s; the daemon updates `sessions.last_seen` on each /ring call. No pid files are written.
    - Seeding cursor on first launch to current MAX(msg_id) so a new registration doesn't replay history
    - Polling `meeting ring <name> --since <cursor>` every 3s and emitting `📬 New Message from <peer>(: <ask>)?` lines
-   - Works identically whether the DB is local or behind the LAN HTTP daemon — `meeting ring` (and all other subcommands: `list`, `send`, `show`, `read`, `turn`, `delete`) call `discover_host()` transparently; only when no daemon is found do they fall back to local SQLite.
+   - All subcommands (`list`, `send`, `show`, `read`, `turn`, `ring`, `delete`) require a reachable control. When no control is found, they exit 1 with a clear error — there is no silent local-SQLite fallback.
 
 6. **Update terminal tab title (best-effort)**: `{ printf '\033]0;%s\a' "<name>" > /dev/tty; } 2>/dev/null || true`
 7. **Confirm to user**: "Meeting registered as `<name>`. You can now /talkto <peer> or receive calls."

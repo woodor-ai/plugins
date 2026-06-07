@@ -102,22 +102,63 @@ SERVICE_TYPE = "_agent-meeting._tcp.local."
 # monitor polls /ring every 3s, so 4 missed heartbeats = 12s.
 ONLINE_THRESHOLD = 12
 
+_NO_CONTROL_MSG = (
+    "未发现中央节点 (agent-meeting-control)。"
+    "请先用 /meeting daemon 把本机设为中央节点，或确认目标 control 在线且同网段。"
+)
+
 
 # ---------- LAN discovery (mDNS + HTTP client) ----------
 
-def _warn_client_isolated() -> None:
-    """Print a stderr warning when this machine is a client but the host is unreachable."""
+def discover_controls() -> list[dict]:
+    """Enumerate ALL _agent-meeting._tcp instances on the LAN.
+
+    Returns a list of dicts: {url, host, ip, port, version}.
+    host/version are taken from mDNS TXT properties — no extra HTTP call.
+    Empty list when zeroconf is unavailable or nothing found.
+    """
+    if os.environ.get("MEETING_HOST"):
+        url = os.environ["MEETING_HOST"].rstrip("/")
+        # Parse host/ip/port from the override URL for a consistent return shape.
+        parsed = urllib.parse.urlparse(url)
+        ip = parsed.hostname or ""
+        port = parsed.port or 8765
+        return [{"url": url, "host": ip, "ip": ip, "port": port, "version": ""}]
+
     try:
-        with open(_CONFIG_PATH) as _f:
-            cfg = json.load(_f)
-    except Exception:
-        cfg = {}
-    if not cfg.get("is_host", False):
-        print(
-            "⚠️  agent-meeting: 中央节点(host)不可达，本次操作仅写本地库、不并入舰队。"
-            "跨机消息/注册不会送达。检查 host daemon 是否在线。",
-            file=sys.stderr,
-        )
+        from zeroconf import IPVersion, ServiceBrowser, ServiceListener, Zeroconf
+    except ImportError:
+        return []
+
+    found: list[dict] = []
+
+    class _L(ServiceListener):
+        def add_service(self, zc, type_, name):
+            info = zc.get_service_info(type_, name, timeout=int(MDNS_BROWSE_TIMEOUT * 1000))
+            if info and info.addresses:
+                ip = socket.inet_ntoa(info.addresses[0])
+                port = info.port
+                url = f"http://{ip}:{port}"
+                props = info.properties or {}
+                host = (props.get(b"host") or b"").decode("utf-8", errors="replace")
+                version = (props.get(b"version") or b"").decode("utf-8", errors="replace")
+                found.append({"url": url, "host": host, "ip": ip, "port": port, "version": version})
+
+        def update_service(self, *a): pass
+        def remove_service(self, *a): pass
+
+    for _attempt in range(3):
+        try:
+            zc = Zeroconf(ip_version=IPVersion.V4Only)
+            ServiceBrowser(zc, SERVICE_TYPE, _L())
+            time.sleep(MDNS_BROWSE_TIMEOUT)
+            zc.close()
+        except Exception:
+            return found
+        if found:
+            break
+
+    return found
 
 
 def discover_host() -> str | None:
@@ -126,8 +167,8 @@ def discover_host() -> str | None:
     Resolution order:
       1. MEETING_HOST env var (e.g. http://10.0.0.114:8765) — manual override.
       2. /tmp/meeting-host.cache — recently discovered URL, valid for HOST_CACHE_TTL.
-      3. mDNS browse for _agent-meeting._tcp.local. (1.5s).
-      4. None → caller falls back to local SQLite (works only on the host machine).
+      3. mDNS browse via discover_controls() (1.5s).
+      4. None → no control found; caller must error out.
     """
     if os.environ.get("MEETING_HOST"):
         return os.environ["MEETING_HOST"].rstrip("/")
@@ -141,42 +182,13 @@ def discover_host() -> str | None:
         except Exception:
             pass
 
-    try:
-        from zeroconf import IPVersion, ServiceBrowser, ServiceListener, Zeroconf
-    except ImportError:
-        _warn_client_isolated()
+    controls = discover_controls()
+    if not controls:
         return None
 
-    found_url = []
-
-    class _L(ServiceListener):
-        def add_service(self, zc, type_, name):
-            info = zc.get_service_info(type_, name, timeout=int(MDNS_BROWSE_TIMEOUT * 1000))
-            if info and info.addresses:
-                ip = socket.inet_ntoa(info.addresses[0])
-                found_url.append(f"http://{ip}:{info.port}")
-
-        def update_service(self, *a): pass
-        def remove_service(self, *a): pass
-
-    # Retry up to 2 times so cold-start mDNS has up to ~3x 1.5s ≈ 4.5s total.
-    for _attempt in range(3):
-        try:
-            zc = Zeroconf(ip_version=IPVersion.V4Only)
-            ServiceBrowser(zc, SERVICE_TYPE, _L())
-            time.sleep(MDNS_BROWSE_TIMEOUT)
-            zc.close()
-        except Exception:
-            _warn_client_isolated()
-            return None
-        if found_url:
-            break
-
-    if not found_url:
-        _warn_client_isolated()
-        return None
-
-    url = found_url[0]
+    # Prefer the cached "last used" URL if it's still in the discovered set;
+    # otherwise fall back to the first discovered control.
+    url = controls[0]["url"]
     try:
         with open(HOST_CACHE, "w") as f:
             json.dump({"url": url, "expires": time.time() + HOST_CACHE_TTL}, f)
@@ -190,6 +202,21 @@ def _invalidate_host_cache():
         os.remove(HOST_CACHE)
     except Exception:
         pass
+
+
+def _resolve_host(explicit: str | None = None) -> str:
+    """Return the control URL to use for this command, or raise SystemExit.
+
+    If explicit is given (from --host flag), use it directly.
+    Otherwise call discover_host(). Raises SystemExit with a clear Chinese
+    error message when no control is found.
+    """
+    if explicit:
+        return explicit.rstrip("/")
+    url = discover_host()
+    if url:
+        return url
+    raise SystemExit(_NO_CONTROL_MSG)
 
 
 def _get_auth_token() -> str | None:
@@ -237,8 +264,10 @@ def http(method: str, host_url: str, path: str,
 
     Catches broken-connection errors (RemoteDisconnected, IncompleteRead,
     socket.timeout, ConnectionError) in addition to HTTPError/URLError.
-    On a broken-connection error: invalidate host cache, retry once. If the
-    retry also fails, fall back to local SQLite (caller detects None return).
+    On a broken-connection error: invalidate host cache, retry once with a
+    freshly discovered host. If that also fails, raise SystemExit — there is
+    no local-SQLite fallback (a missing control is a hard error, see
+    _resolve_host).
     """
     _BROKEN = (
         _http_client.RemoteDisconnected,
@@ -369,126 +398,38 @@ def cmd_send(args):
     if not body:
         raise SystemExit("error: body is empty")
 
-    host = discover_host()
-    if host:
-        url = host
-        payload = {"self": args.self, "peer": args.peer, "body": body, "kind": args.kind}
-        if args.ask:
-            payload["ask"] = args.ask
-        r = http("POST", url, "/send", body=payload)
-        print(f"sent: room={r['room']} msg_id={r['msg_id']} turn→{r['turn']}")
-        beacon("send")
-        return
-
-    db = connect()
-    db.execute("BEGIN IMMEDIATE")
-    try:
-        room = ensure_room(db, args.self, args.peer)
-        # Validate that self is a participant.
-        if args.self not in (room["participant_a"], room["participant_b"]):
-            raise SystemExit(f"error: {args.self} is not a participant in room {room['name']}")
-        db.execute(
-            "INSERT INTO messages (room_id, sender, kind, body, ask, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (room["id"], args.self, args.kind, body, args.ask, int(time.time())),
-        )
-        # Flip turn to peer.
-        db.execute("UPDATE rooms SET current_turn=? WHERE id=?", (args.peer, room["id"]))
-        msg_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        db.execute("COMMIT")
-        print(f"sent: room={room['name']} msg_id={msg_id} turn→{args.peer}")
-        beacon("send")
-    except Exception:
-        db.execute("ROLLBACK")
-        raise
-    finally:
-        db.close()
+    host = _resolve_host(getattr(args, "host", None))
+    payload = {"self": args.self, "peer": args.peer, "body": body, "kind": args.kind}
+    if args.ask:
+        payload["ask"] = args.ask
+    r = http("POST", host, "/send", body=payload)
+    print(f"sent: room={r['room']} msg_id={r['msg_id']} turn→{r['turn']}")
+    beacon("send")
 
 
 def cmd_read(args):
     """Print messages as raw rows: id|created_at|sender|kind|ask|body."""
-    host = discover_host()
-    if host:
-        url = host
-        rows = http("GET", url, "/read",
-                    params={"self": args.self, "peer": args.peer, "limit": args.limit, "since": args.since})
-        for r in rows:
-            ask = (r.get("ask") or "").replace("\n", " ")
-            body = r["body"].replace("\n", "\\n")
-            print(f"{r['id']}\t{r['created_at']}\t{r['sender']}\t{r['kind']}\t{ask}\t{body}")
-        return
-
-    db = connect()
-    room = db.execute(
-        "SELECT * FROM rooms WHERE name=?",
-        (canonical_room_name(args.self, args.peer)[0],),
-    ).fetchone()
-    if room is None:
-        print(f"no such room: {args.self} <-> {args.peer}", file=sys.stderr)
-        sys.exit(1)
-    q = "SELECT * FROM messages WHERE room_id=? "
-    params = [room["id"]]
-    if args.since:
-        q += "AND id > ? "
-        params.append(args.since)
-    q += "ORDER BY id ASC "
-    if args.limit:
-        q += f"LIMIT {int(args.limit)}"
-    for row in db.execute(q, params):
-        ask = (row["ask"] or "").replace("\n", " ")
-        body = row["body"].replace("\n", "\\n")
-        print(f"{row['id']}\t{row['created_at']}\t{row['sender']}\t{row['kind']}\t{ask}\t{body}")
-    db.close()
+    host = _resolve_host(getattr(args, "host", None))
+    rows = http("GET", host, "/read",
+                params={"self": args.self, "peer": args.peer, "limit": args.limit, "since": args.since})
+    for r in rows:
+        ask = (r.get("ask") or "").replace("\n", " ")
+        body = r["body"].replace("\n", "\\n")
+        print(f"{r['id']}\t{r['created_at']}\t{r['sender']}\t{r['kind']}\t{ask}\t{body}")
 
 
 def cmd_show(args):
     """Pretty markdown render of recent messages (for human viewing)."""
-    host = discover_host()
-    if host:
-        url = host
-        text = http("GET", url, "/show",
-                    params={"self": args.self, "peer": args.peer, "limit": args.limit})
-        sys.stdout.write(text)
-        return
-
-    db = connect()
-    name = canonical_room_name(args.self, args.peer)[0]
-    room = db.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
-    if room is None:
-        print(f"no such room: {args.self} <-> {args.peer}", file=sys.stderr)
-        sys.exit(1)
-    print(f"# Room: {room['participant_a']} ↔ {room['participant_b']}")
-    print(f"Created: {time.strftime('%Y-%m-%d %H:%M', time.localtime(room['created_at']))}")
-    print(f"当前发言权: {room['current_turn']}\n---\n")
-    msgs = db.execute(
-        "SELECT * FROM messages WHERE room_id=? ORDER BY id DESC LIMIT ?",
-        (room["id"], args.limit),
-    ).fetchall()
-    for row in reversed(msgs):
-        ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
-        print(f"### [{row['sender']} @ {ts}] {row['kind']}")
-        print(row["body"])
-        if row["ask"]:
-            print(f"\n**Ask**: {row['ask']}")
-        print()
-    db.close()
+    host = _resolve_host(getattr(args, "host", None))
+    text = http("GET", host, "/show",
+                params={"self": args.self, "peer": args.peer, "limit": args.limit})
+    sys.stdout.write(text)
 
 
 def cmd_turn(args):
-    host = discover_host()
-    if host:
-        url = host
-        r = http("GET", url, "/turn", params={"self": args.self, "peer": args.peer})
-        print(r["turn"])
-        return
-    db = connect()
-    name = canonical_room_name(args.self, args.peer)[0]
-    row = db.execute("SELECT current_turn FROM rooms WHERE name=?", (name,)).fetchone()
-    if row is None:
-        print(f"no such room: {args.self} <-> {args.peer}", file=sys.stderr)
-        sys.exit(1)
-    print(row["current_turn"])
-    db.close()
+    host = _resolve_host(getattr(args, "host", None))
+    r = http("GET", host, "/turn", params={"self": args.self, "peer": args.peer})
+    print(r["turn"])
 
 
 def cmd_delete(args):
@@ -497,32 +438,9 @@ def cmd_delete(args):
     Hard delete — no soft-delete / archive. The caller (SKILL.md) is responsible
     for confirming with the user before invoking this.
     """
-    host = discover_host()
-    if host:
-        url = host
-        r = http("DELETE", url, "/room", params={"self": args.self, "peer": args.peer})
-        print(f"deleted: room={r['room']} ({r['msg_count']} msgs purged)")
-        return
-    name = canonical_room_name(args.self, args.peer)[0]
-    db = connect()
-    db.execute("BEGIN IMMEDIATE")
-    try:
-        row = db.execute("SELECT id FROM rooms WHERE name=?", (name,)).fetchone()
-        if row is None:
-            db.execute("ROLLBACK")
-            print(f"no such room: {name}", file=sys.stderr)
-            sys.exit(1)
-        room_id = row["id"]
-        msg_cnt = db.execute("SELECT COUNT(*) c FROM messages WHERE room_id=?", (room_id,)).fetchone()["c"]
-        db.execute("DELETE FROM messages WHERE room_id=?", (room_id,))
-        db.execute("DELETE FROM rooms WHERE id=?", (room_id,))
-        db.execute("COMMIT")
-        print(f"deleted: room={name} ({msg_cnt} msgs purged)")
-    except Exception:
-        db.execute("ROLLBACK")
-        raise
-    finally:
-        db.close()
+    host = _resolve_host(getattr(args, "host", None))
+    r = http("DELETE", host, "/room", params={"self": args.self, "peer": args.peer})
+    print(f"deleted: room={r['room']} ({r['msg_count']} msgs purged)")
 
 
 def cmd_ring(args):
@@ -531,40 +449,15 @@ def cmd_ring(args):
     Output: one line per message: <msg_id>\t<peer>\t<ask_or_empty>
     Monitor uses this to track the cursor and emit notifications.
     """
-    host = discover_host()
-    if host:
-        url = host
-        rows = http("GET", url, "/ring", params={"self": args.self, "since": args.since})
-        for r in rows:
-            ask = (r.get("ask") or "").replace("\n", " ").replace("\t", " ")
-            print(f"{r['id']}\t{r['peer']}\t{ask}")
-        return
-    db = connect()
-    rows = db.execute(
-        """
-        SELECT m.id, m.sender, m.ask, r.participant_a, r.participant_b
-          FROM messages m
-          JOIN rooms r ON m.room_id = r.id
-         WHERE r.current_turn = ?
-           AND m.id > ?
-           AND m.sender != ?
-         ORDER BY m.id ASC
-        """,
-        (args.self, args.since, args.self),
-    ).fetchall()
-    for row in rows:
-        # The peer is whichever participant is not self.
-        peer = row["participant_a"] if row["sender"] == row["participant_a"] else row["participant_b"]
-        ask = (row["ask"] or "").replace("\n", " ").replace("\t", " ")
-        print(f"{row['id']}\t{peer}\t{ask}")
-    db.close()
+    host = _resolve_host(getattr(args, "host", None))
+    rows = http("GET", host, "/ring", params={"self": args.self, "since": args.since})
+    for r in rows:
+        ask = (r.get("ask") or "").replace("\n", " ").replace("\t", " ")
+        print(f"{r['id']}\t{r['peer']}\t{ask}")
 
 
 def cmd_register(args):
-    """Register this session in the central sessions table.
-
-    Via daemon (HTTP POST /register) when a daemon is reachable, otherwise
-    writes directly to the local SQLite sessions table.
+    """Register this session in the central sessions table via daemon HTTP POST /register.
 
     Conflict: if name already exists and last_seen is within ONLINE_THRESHOLD
     seconds, refuse unless --force.
@@ -572,39 +465,23 @@ def cmd_register(args):
     name = args.name
     cwd = args.cwd
     host_name = socket.gethostname()
-    now = time.time()
 
-    host = discover_host()
-    if host:
-        payload = {"name": name, "cwd": cwd, "force": args.force}
-        r = http("POST", host, "/register", body=payload)
-        if r.get("error"):
-            print(r["error"], file=sys.stderr)
-            sys.exit(1)
-        print(f"registered: {name} (cwd={cwd}, host={host_name})")
-        beacon("register")
-        return
+    explicit_host = getattr(args, "host", None)
+    host = _resolve_host(explicit_host)
 
-    # Local fallback: write directly to sessions table.
-    db = connect()
-    existing = db.execute("SELECT last_seen FROM sessions WHERE name=?", (name,)).fetchone()
-    if existing and not args.force:
-        last_seen = existing["last_seen"] or 0
-        if now - last_seen <= ONLINE_THRESHOLD:
-            print(
-                f"error: '{name}' is already registered and its monitor is still running. "
-                f"Use --force to override.",
-                file=sys.stderr,
-            )
-            db.close()
-            sys.exit(1)
-    db.execute(
-        "INSERT INTO sessions (name, cwd, host, registered_at, last_seen) VALUES (?, ?, ?, ?, ?) "
-        "ON CONFLICT(name) DO UPDATE SET cwd=excluded.cwd, host=excluded.host, "
-        "registered_at=excluded.registered_at, last_seen=excluded.last_seen",
-        (name, cwd, host_name, str(int(now)), now),
-    )
-    db.close()
+    # When --host is given explicitly, persist it as the preferred control.
+    if explicit_host:
+        try:
+            with open(HOST_CACHE, "w") as f:
+                json.dump({"url": explicit_host.rstrip("/"), "expires": time.time() + HOST_CACHE_TTL}, f)
+        except Exception:
+            pass
+
+    payload = {"name": name, "cwd": cwd, "force": args.force}
+    r = http("POST", host, "/register", body=payload)
+    if r.get("error"):
+        print(r["error"], file=sys.stderr)
+        sys.exit(1)
     print(f"registered: {name} (cwd={cwd}, host={host_name})")
     beacon("register")
 
@@ -613,19 +490,11 @@ def cmd_unregister(args):
     """Remove a session from the central sessions table. Silent if not present."""
     name = args.name
 
-    host = discover_host()
-    if host:
-        r = http("POST", host, "/unregister", body={"name": name})
-        if r.get("error"):
-            print(r["error"], file=sys.stderr)
-            sys.exit(1)
-        print(f"unregistered: {name}")
-        return
-
-    # Local fallback.
-    db = connect()
-    db.execute("DELETE FROM sessions WHERE name=?", (name,))
-    db.close()
+    host = _resolve_host(getattr(args, "host", None))
+    r = http("POST", host, "/unregister", body={"name": name})
+    if r.get("error"):
+        print(r["error"], file=sys.stderr)
+        sys.exit(1)
     print(f"unregistered: {name}")
 
 
@@ -731,8 +600,59 @@ def _cmd_daemon_windows(args):
         return
 
 
+def _cmd_daemon_start(sp, system: str):
+    """Bare `meeting daemon` — promote this machine to control node.
+
+    Writes is_host=true into config.json, then installs+starts the daemon via
+    the same path the SessionStart hook uses (launchd on Mac, schtasks+supervisor
+    on Windows, direct launch on Linux).  Idempotent.
+    """
+    try:
+        with open(_CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = {}
+    cfg["is_host"] = True
+    os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+    with open(_CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("PLUGIN_ROOT") or ""
+    if not plugin_root:
+        # Infer from this script's location: plugin/bin/meeting → plugin/
+        plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    bootstrap = os.path.join(MEETING_HOME, "bin", "session-bootstrap.py")
+    if os.path.exists(bootstrap):
+        env = os.environ.copy()
+        env["CLAUDE_PLUGIN_ROOT"] = plugin_root
+        result = sp.run([sys.executable, bootstrap], env=env, capture_output=True, text=True)
+        if result.returncode != 0:
+            sys.stderr.write(result.stderr)
+        print("daemon started: this machine is now the control node (agent-meeting-control)")
+    else:
+        # Fallback: launch daemon directly
+        daemon_script = os.path.join(plugin_root, "bin", "meeting-daemon")
+        if not os.path.exists(daemon_script):
+            raise SystemExit(f"daemon script not found: {daemon_script}")
+        import tempfile as _tempfile
+        log_file = os.path.join(_tempfile.gettempdir(), "meeting-daemon.log")
+        if system == "Windows":
+            flags = 0x00000008 | 0x00000200
+            sp.Popen([sys.executable, daemon_script, "--port", "8765"],
+                     stdout=open(log_file, "a"), stderr=sp.STDOUT,
+                     creationflags=flags, close_fds=True)
+        else:
+            sp.Popen([sys.executable, daemon_script, "--port", "8765"],
+                     stdout=open(log_file, "a"), stderr=sp.STDOUT,
+                     start_new_session=True, close_fds=True)
+        print("daemon started: this machine is now the control node (agent-meeting-control)")
+
+
 def cmd_daemon(args):
     """Manage the local meeting-daemon.
+
+    Bare `meeting daemon` (no action) → promote this machine to control node.
 
     Mac: drives the launchd LaunchAgent (com.tommy.agent-meeting). All ops are
     idempotent. SessionStart hook will reinstall/restart the daemon on next
@@ -749,6 +669,10 @@ def cmd_daemon(args):
     import platform
     import subprocess as sp
     system = platform.system()
+
+    if not args.action:
+        return _cmd_daemon_start(sp, system)
+
     if system == "Windows":
         return _cmd_daemon_windows(args)
     if system != "Darwin":
@@ -885,55 +809,49 @@ def cmd_token(args):
     )
 
 
+def cmd_controls(args):
+    """List all discovered control nodes as JSON.
+
+    Output: JSON array of {host, ip, port, url, current} where current=true
+    marks the last successfully used URL (HOST_CACHE).  Empty list → [].
+    """
+    controls = discover_controls()
+
+    # Determine the "current" (last used) URL from the cache.
+    current_url = None
+    if os.path.exists(HOST_CACHE):
+        try:
+            with open(HOST_CACHE) as f:
+                cache = json.load(f)
+            if cache.get("expires", 0) > time.time() and cache.get("url"):
+                current_url = cache["url"]
+        except Exception:
+            pass
+
+    result = []
+    for c in controls:
+        result.append({
+            "host": c["host"],
+            "ip": c["ip"],
+            "port": c["port"],
+            "url": c["url"],
+            "version": c["version"],
+            "current": c["url"] == current_url,
+        })
+
+    print(json.dumps(result, ensure_ascii=False))
+
+
 def cmd_list(args):
     """List all session names with liveness status and message count.
 
     Columns: <status>\t<name>\t<msgs>
       status: online | empty | historical
-        online     = in sessions table AND last_seen within ONLINE_THRESHOLD seconds
-        empty      = in sessions table but last_seen expired (> ONLINE_THRESHOLD seconds ago)
-        historical = sender appears in messages but not in sessions table
-      msgs   = total messages sent by this name across all rooms
     """
-    host = discover_host()
-    if host:
-        url = host
-        rows = http("GET", url, "/list")
-        for r in rows:
-            print(f"{r['status']}\t{r['name']}\t{r['msgs']}")
-        return
-
-    db = connect()
-    now = time.time()
-    # msg count per sender across all rooms
-    msg_counts = {
-        r["sender"]: r["cnt"]
-        for r in db.execute("SELECT sender, COUNT(*) AS cnt FROM messages GROUP BY sender")
-    }
-    sessions = db.execute("SELECT name, last_seen FROM sessions").fetchall()
-    db.close()
-
-    online_names = set()
-    empty_names = set()
-    for s in sessions:
-        last_seen = s["last_seen"] or 0
-        if now - last_seen <= ONLINE_THRESHOLD:
-            online_names.add(s["name"])
-        else:
-            empty_names.add(s["name"])
-
-    historical_names = set(msg_counts.keys()) - online_names - empty_names
-
-    rows = []
-    for name in sorted(online_names, key=lambda n: -msg_counts.get(n, 0)):
-        rows.append(("online", name, msg_counts.get(name, 0)))
-    for name in sorted(empty_names, key=lambda n: -msg_counts.get(n, 0)):
-        rows.append(("empty", name, msg_counts.get(name, 0)))
-    for name in sorted(historical_names, key=lambda n: -msg_counts.get(n, 0)):
-        rows.append(("historical", name, msg_counts.get(name, 0)))
-
-    for status, name, msgs in rows:
-        print(f"{status}\t{name}\t{msgs}")
+    host = _resolve_host(getattr(args, "host", None))
+    rows = http("GET", host, "/list")
+    for r in rows:
+        print(f"{r['status']}\t{r['name']}\t{r['msgs']}")
 
 
 # ---------- main ----------
@@ -988,9 +906,12 @@ def main():
     s.set_defaults(func=cmd_delete)
 
     s = sub.add_parser("daemon",
-                       help="manage the local meeting daemon (Mac launchd / Windows logon-task+supervisor; Linux session-bound, unmanaged)")
-    s.add_argument("action", choices=["status", "stop", "restart"])
+                       help="manage the local meeting daemon; bare `daemon` promotes this machine to control node")
+    s.add_argument("action", nargs="?", choices=["status", "stop", "restart"], default=None)
     s.set_defaults(func=cmd_daemon)
+
+    sub.add_parser("controls",
+                   help="list all discovered control nodes as JSON").set_defaults(func=cmd_controls)
 
     s = sub.add_parser("telemetry",
                        help="view or change the telemetry opt-in/out setting in config.json")
@@ -1004,15 +925,17 @@ def main():
     s.set_defaults(func=cmd_token)
 
     s = sub.add_parser("register",
-                       help="register this session in the central sessions table (via daemon or local SQLite)")
+                       help="register this session in the central sessions table")
     s.add_argument("name", help="session name to register")
     s.add_argument("--cwd", required=True, help="working directory of this session")
     s.add_argument("--force", action="store_true",
                    help="override even if monitor is still running")
+    s.add_argument("--host", default=None,
+                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); saved as preferred control")
     s.set_defaults(func=cmd_register)
 
     s = sub.add_parser("unregister",
-                       help="remove this session from the central sessions table (via daemon or local SQLite)")
+                       help="remove this session from the central sessions table (via the control daemon)")
     s.add_argument("name", help="session name to unregister")
     s.set_defaults(func=cmd_unregister)
 

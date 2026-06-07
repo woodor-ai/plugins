@@ -27,6 +27,7 @@ Usage:
 
 import atexit
 import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -83,15 +84,34 @@ def _run_meeting(*extra_args):
 
 # ---------- register/unregister + cleanup ----------
 
+def _discover_control_info() -> dict:
+    """Return {host, ip_port} for the currently connected control, or {} if unknown."""
+    try:
+        r = _run_meeting("controls")
+        controls = json.loads(r.stdout.strip() or "[]")
+        if not controls:
+            return {}
+        # Prefer the one marked current, else take the first.
+        current = next((c for c in controls if c.get("current")), controls[0])
+        host = current.get("host") or current.get("ip") or ""
+        ip_port = f"{current.get('ip', '')}:{current.get('port', '')}"
+        return {"host": host, "ip_port": ip_port}
+    except Exception:
+        return {}
+
+
 def _register():
     # --force: the monitor IS the liveness owner of this name. The /meeting skill
     # may have just registered it seconds ago (fresh last_seen), which would make
     # a plain register fail the conflict check. The monitor legitimately takes over.
     _run_meeting("register", SELF, "--cwd", _CWD, "--force")
-    # Publish the room name locally so the TUI status line can show 📞 <name>.
+    # Publish the room name + control info locally so the TUI status line can show
+    # 📞 <name> 🛰 <control>. JSON format; statusline.py reads it.
     try:
         STATUSLINE_DIR.mkdir(parents=True, exist_ok=True)
-        STATUSLINE_FILE.write_text(SELF, encoding="utf-8")
+        ctrl = _discover_control_info()
+        payload = {"room": SELF, "control_host": ctrl.get("host", ""), "control_ip_port": ctrl.get("ip_port", "")}
+        STATUSLINE_FILE.write_text(json.dumps(payload), encoding="utf-8")
     except Exception:
         pass
 
@@ -104,7 +124,13 @@ def _unregister():
     # Clear the status-line badge — but only if it's still ours (another session
     # in the same cwd may have taken over the file after we wrote it).
     try:
-        if STATUSLINE_FILE.read_text(encoding="utf-8").strip() == SELF:
+        raw = STATUSLINE_FILE.read_text(encoding="utf-8").strip()
+        # Support both old plain-text format and new JSON format.
+        try:
+            owner = json.loads(raw).get("room", "")
+        except Exception:
+            owner = raw
+        if owner == SELF:
             STATUSLINE_FILE.unlink()
     except Exception:
         pass

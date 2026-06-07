@@ -25,6 +25,7 @@ minimal line (or empty), never a traceback (which would land in the status bar).
 import hashlib
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -40,15 +41,62 @@ def cwd_key(cwd: str) -> str:
     return hashlib.sha1(norm.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def meeting_name(cwd: str) -> str:
-    """Registered room name for this cwd, or '' if not registered."""
+def _read_statusline_cache(cwd: str) -> dict:
+    """Read the statusline cache for this cwd.  Returns {} if missing/unreadable.
+
+    Supports both the old plain-text format (just the room name) and the new
+    JSON format {room, control_host, control_ip_port}.
+    """
     try:
         f = STATUSLINE_DIR / cwd_key(cwd)
-        if f.exists():
-            return f.read_text(encoding="utf-8").strip()
+        if not f.exists():
+            return {}
+        raw = f.read_text(encoding="utf-8").strip()
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        # Old plain-text format: just the room name.
+        return {"room": raw, "control_host": "", "control_ip_port": ""}
     except Exception:
-        pass
-    return ""
+        return {}
+
+
+def meeting_name(cwd: str) -> str:
+    """Registered room name for this cwd, or '' if not registered."""
+    return _read_statusline_cache(cwd).get("room", "")
+
+
+def _control_label(cwd: str) -> str:
+    """Return the control badge string, e.g. '🛰 meeting-control myhost 10.0.0.5:8765'.
+
+    Returns '🛰 meeting-control self' when connected to localhost. Returns ''
+    when there is no control info (e.g. a legacy plain-text cache) — we don't
+    assert a state we don't know; it self-heals to the real control on the next
+    register (which rewrites the cache in JSON form).
+    """
+    cache = _read_statusline_cache(cwd)
+    if not cache.get("room"):
+        return ""
+    host = cache.get("control_host", "")
+    ip_port = cache.get("control_ip_port", "")
+    if not host and not ip_port:
+        return ""
+    # Detect self: host matches local hostname or IP is loopback.
+    local_host = socket.gethostname().replace(".local", "")
+    ip = ip_port.split(":")[0] if ip_port else ""
+    if host == local_host or ip in ("127.0.0.1", "::1", "localhost"):
+        return "\U0001F6F0 meeting-control self"  # 🛰
+    parts = []
+    if host:
+        parts.append(host)
+    if ip_port:
+        parts.append(ip_port)
+    return "\U0001F6F0 meeting-control " + " ".join(parts)  # 🛰
 
 
 def git_branch(cwd: str) -> str:
@@ -96,7 +144,11 @@ def main():
 
     name = meeting_name(cwd)
     if name:
-        segments.append(f"\U0001F4DE {name}")  # 📞
+        badge = f"\U0001F4DE {name}"  # 📞
+        ctrl = _control_label(cwd)
+        if ctrl:
+            badge += f" {ctrl}"
+        segments.append(badge)
     if model:
         segments.append(model)
     if cwd:
