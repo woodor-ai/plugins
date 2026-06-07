@@ -40,6 +40,12 @@ DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
 _CONFIG_PATH = os.path.join(MEETING_HOME, "config.json")
 SERVICE_TYPE = "_agent-meeting._tcp.local."
 
+try:
+    with open(_CONFIG_PATH) as _f:
+        _plugin_version: str = json.load(_f).get("plugin_version") or "unknown"
+except Exception:
+    _plugin_version = "unknown"
+
 # A session is considered online if last_seen is within this many seconds.
 ONLINE_THRESHOLD = 12
 
@@ -146,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {
                 "ok": True,
                 "host": socket.gethostname(),
-                "version": "0.7.0",
+                "version": _plugin_version,
             })
         q = self._query()
         try:
@@ -406,7 +412,7 @@ def publish_mdns(port: int):
         addresses=[socket.inet_aton(ip)],
         port=port,
         properties={
-            b"version": b"0.7.0",
+            b"version": _plugin_version.encode("utf-8"),
             b"host": hostname.encode("utf-8"),
         },
         server=f"{hostname}.local.",
