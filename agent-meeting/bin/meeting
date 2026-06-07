@@ -696,6 +696,20 @@ def cmd_daemon(args):
             line = line.strip()
             if any(k in line for k in keys):
                 print(line)
+        # 额外检查：本机应为 control，但 daemon 是否真在监听 :8765
+        try:
+            cfg = json.load(open(_CONFIG_PATH))
+        except Exception:
+            cfg = {}
+        if cfg.get("is_host"):
+            healthy = _probe_health() is not None
+            if not healthy:
+                print(
+                    f"\n⚠ 本机应为 control，但 daemon 未在监听 :{DAEMON_PORT}。"
+                    " 修复：launchctl 自愈未生效时跑 'meeting daemon restart'，"
+                    " 或重开 Claude 会话触发自动拉起。"
+                    " 详见 ~/.agent-meeting/logs/bootstrap.log"
+                )
 
     elif args.action == "stop":
         r = sp.run(["launchctl", "bootout", target], capture_output=True, text=True)

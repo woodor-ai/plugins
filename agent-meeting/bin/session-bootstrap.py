@@ -61,6 +61,31 @@ STARTUP_DIR = HOME / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Me
 
 TELEMETRY_URL = "https://www.woodor.ai/_functions/t"
 
+LOG_DIR = DATA / "logs"
+
+# 模块级全局：ensure_launchd() 自愈失败时写入警告文本；emit_context() 读取后追加到 additionalContext。
+LAUNCHD_WARNING = ""
+
+
+def blog(msg: str):
+    """追加一行到 ~/.agent-meeting/logs/bootstrap.log（带本机时间戳）。"""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y-%m-%d %H:%M:%S %Z")
+    with open(LOG_DIR / "bootstrap.log", "a", encoding="utf-8") as f:
+        f.write(f"[{ts}] {msg}\n")
+
+
+def _daemon_healthy(port: int = 8765, timeout: float = 1.0) -> bool:
+    """GET /health 探测 daemon 是否在线。2xx 视为健康，任何异常/超时返回 False。"""
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/health", timeout=timeout
+        ) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
 if IS_MAC:
     _OS_LABEL = "mac"
 elif IS_WINDOWS:
@@ -392,19 +417,26 @@ def kill_bootstrap_daemon():
 
 
 def ensure_launchd():
-    """Install ~/Library/LaunchAgents/<label>.plist and load it. Idempotent:
-    - Write fresh plist every time (paths may change if plugin reinstalls).
-    - If already loaded with the same paths, no-op.
-    - If loaded but plist content changed, bootout + bootstrap to pick up new ProgramArguments.
-    macOS handles RunAtLoad + KeepAlive so the daemon survives reboots and crashes.
+    """在 ~/Library/LaunchAgents/ 安装 plist 并用 launchd 托管 daemon。
+
+    策略：OS 持久化为主，SessionStart hook 降级为兜底体检。
+    - 每次调用先做 launchctl enable（幂等清除 disabled 覆盖，确保登录自启）。
+    - plist 未变且已 loaded → no-op 返回（但 enable 已做过）。
+    - plist 变了 → 先 bootout 再重新 bootstrap。
+    - bootstrap 后轮询最多 5 秒校验 /health；若不健康最多重试 2 次自愈。
+    - 失败落盘到 ~/.agent-meeting/logs/bootstrap.log；成功/失败均写日志。
+    - 最终仍失败 → 设 LAUNCHD_WARNING 供 emit_context() 注入 additionalContext。
     """
+    global LAUNCHD_WARNING
     import plistlib
 
     LAUNCHD_PLIST.parent.mkdir(parents=True, exist_ok=True)
 
     daemon_path = PLUGIN_ROOT / "bin" / "meeting-daemon"
     if not daemon_path.exists():
-        log(f"daemon script missing: {daemon_path}")
+        msg = f"daemon script missing: {daemon_path}"
+        log(msg)
+        blog(msg)
         return
     py = venv_python()
     log_file = TMP / "meeting-daemon.log"
@@ -424,11 +456,18 @@ def ensure_launchd():
     if plist_changed:
         LAUNCHD_PLIST.write_bytes(new_bytes)
 
-    # Is it currently loaded?
     uid = os.getuid()
     domain_target = f"gui/{uid}"
+    service_target = f"{domain_target}/{LAUNCHD_LABEL}"
+
+    # 先做 enable：清除任何 disabled 覆盖状态，确保登录自启（未注册时会报错，忽略返回码）。
+    subprocess.run(
+        ["launchctl", "enable", service_target],
+        capture_output=True,
+    )
+
     listed = subprocess.run(
-        ["launchctl", "print", f"{domain_target}/{LAUNCHD_LABEL}"],
+        ["launchctl", "print", service_target],
         capture_output=True,
     ).returncode == 0
 
@@ -437,31 +476,65 @@ def ensure_launchd():
         return
 
     if listed and plist_changed:
-        # Bootout to pick up the new plist
         subprocess.run(
-            ["launchctl", "bootout", f"{domain_target}/{LAUNCHD_LABEL}"],
+            ["launchctl", "bootout", service_target],
             capture_output=True,
         )
 
     # Kill any session-bound daemon so port 8765 is free
     kill_bootstrap_daemon()
 
-    r = subprocess.run(
-        ["launchctl", "bootstrap", domain_target, str(LAUNCHD_PLIST)],
-        capture_output=True, text=True,
-    )
-    if r.returncode == 0:
-        log(f"launchd loaded {LAUNCHD_LABEL} (auto-start on boot, KeepAlive on)")
-    else:
-        # Fallback to legacy syntax
+    def _do_bootstrap() -> bool:
+        """执行 bootstrap，失败时降级到 legacy load -w。返回是否命令本身成功。"""
+        r = subprocess.run(
+            ["launchctl", "bootstrap", domain_target, str(LAUNCHD_PLIST)],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            return True
         r2 = subprocess.run(
             ["launchctl", "load", "-w", str(LAUNCHD_PLIST)],
             capture_output=True, text=True,
         )
-        if r2.returncode == 0:
-            log(f"launchd loaded via legacy syntax: {LAUNCHD_LABEL}")
-        else:
-            log(f"launchd bootstrap failed: {r.stderr.strip() or r2.stderr.strip()}")
+        return r2.returncode == 0
+
+    def _wait_healthy(total: float = 5.0, interval: float = 0.5) -> bool:
+        """轮询 /health，最多等 total 秒。"""
+        steps = int(total / interval)
+        for _ in range(steps):
+            if _daemon_healthy():
+                return True
+            time.sleep(interval)
+        return False
+
+    # 首次 bootstrap
+    _do_bootstrap()
+    if _wait_healthy():
+        msg = f"launchd loaded {LAUNCHD_LABEL}（auto-start on boot，KeepAlive on）"
+        log(msg)
+        blog(msg)
+        return
+
+    # 自愈重试，最多 2 次
+    for attempt in range(1, 3):
+        blog(f"bootstrap 后 daemon 未健康，自愈重试 #{attempt}")
+        subprocess.run(["launchctl", "bootout", service_target], capture_output=True)
+        time.sleep(1.5)
+        _do_bootstrap()
+        if _wait_healthy():
+            msg = f"launchd loaded {LAUNCHD_LABEL}（自愈 #{attempt} 成功）"
+            log(msg)
+            blog(msg)
+            return
+
+    # 全部失败
+    warn = (
+        "⚠ control daemon 自动拉起失败，建议跑 `meeting daemon restart` "
+        "或查看 ~/.agent-meeting/logs/bootstrap.log"
+    )
+    log(warn)
+    blog(f"FAIL: {warn}")
+    LAUNCHD_WARNING = warn
 
 
 # ---------- 4b-win. Windows persistence (host only, no admin) ----------
@@ -721,6 +794,8 @@ Backend: SQLite at {DB}.
 Machine: `{hostname}` (role: {role}, os: {os_label}).
 Online peers: {peers}
 """
+    if LAUNCHD_WARNING:
+        ctx += f"\n{LAUNCHD_WARNING}\n"
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
