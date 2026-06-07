@@ -705,18 +705,13 @@ def emit_context(cfg: dict):
 
     ctx = f"""📞 Meeting-room system is active.
 
-This session has NO meeting name yet — you cannot make or receive calls until registered.
+This session has NO meeting name yet — and that's fine. The meeting room (peer-to-peer agent calls) is OPTIONAL. NEVER gate, block, or delay the user's work to make them register a name.
 
-**If the user's first message IS any form of `/meeting`** (`/meeting`, `/meeting <name>`, `/meeting list`, …): just run the skill. Do NOT print the boilerplate below — they already named the session.
-
-**Otherwise** (first message is a normal task): do NOT start it. Reply exactly:
-
-> 📞 Please name this session first. Three options:
-> - `/meeting` — show picker of available names
-> - `/meeting <name>` — register directly with a chosen name (2–20 chars, alphanumeric + hyphen)
-> - `/meeting list` — see existing rooms / session names
->
-> Once you pick a name, your phone is active and I'll continue with your request.
+- Proceed with whatever the user asks, normally — registration is NOT a prerequisite for anything.
+- If the user's first message begins with the literal token `/meeting` (anything after it), run the meeting skill instead — they are explicitly opting in.
+- Reminder line: on your FIRST reply of this session ONLY, append this single line at the very end (skip it entirely if the user's first message was itself a `/meeting` command):
+  > 💡 本会话未注册 meeting；如需与其他 agent 互通可 `/meeting <名字>` 注册（不影响当前任务）。
+  Show it at most once per session, never repeat it, and never let it replace or postpone the actual task.
 
 These paths are ALREADY RESOLVED for this machine — use them verbatim, do NOT probe the filesystem to find the CLI or venv:
 - CLI invocation: `{cli} <args>`
