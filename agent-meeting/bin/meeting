@@ -810,12 +810,16 @@ def cmd_token(args):
 
 
 def cmd_controls(args):
-    """List all discovered control nodes as JSON.
+    """List all discovered control nodes as human-readable text.
 
-    Output: JSON array of {host, ip, port, url, current} where current=true
-    marks the last successfully used URL (HOST_CACHE).  Empty list → [].
+    Each node is printed as a block with host / ip:port / url / version /
+    current-marker.  "未发现 control 节点" when nothing is found.
     """
     controls = discover_controls()
+
+    if not controls:
+        print("未发现 control 节点")
+        return
 
     # Determine the "current" (last used) URL from the cache.
     current_url = None
@@ -828,18 +832,14 @@ def cmd_controls(args):
         except Exception:
             pass
 
-    result = []
-    for c in controls:
-        result.append({
-            "host": c["host"],
-            "ip": c["ip"],
-            "port": c["port"],
-            "url": c["url"],
-            "version": c["version"],
-            "current": c["url"] == current_url,
-        })
-
-    print(json.dumps(result, ensure_ascii=False))
+    for i, c in enumerate(controls):
+        is_current = c["url"] == current_url
+        current_tag = "  ★ 当前" if is_current else ""
+        print(f"control {i + 1}{current_tag}")
+        print(f"  host:    {c['host'] or '(unknown)'}")
+        print(f"  ip:port: {c['ip']}:{c['port']}")
+        print(f"  url:     {c['url']}")
+        print(f"  version: {c['version'] or '(unknown)'}")
 
 
 def cmd_list(args):
@@ -911,7 +911,7 @@ def main():
     s.set_defaults(func=cmd_daemon)
 
     sub.add_parser("controls",
-                   help="list all discovered control nodes as JSON").set_defaults(func=cmd_controls)
+                   help="list all discovered control nodes (human-readable)").set_defaults(func=cmd_controls)
 
     s = sub.add_parser("telemetry",
                        help="view or change the telemetry opt-in/out setting in config.json")

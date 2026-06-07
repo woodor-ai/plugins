@@ -27,6 +27,7 @@ Usage:
 
 import atexit
 import hashlib
+import importlib.util
 import json
 import os
 import signal
@@ -84,17 +85,41 @@ def _run_meeting(*extra_args):
 
 # ---------- register/unregister + cleanup ----------
 
+# Load discover_controls from the meeting script (extensionless, same bin dir).
+# spec_from_file_location cannot handle extensionless files; use SourceFileLoader directly.
+_MEETING_SCRIPT = Path(__file__).parent / "meeting"
+_meeting_mod = None
+try:
+    import importlib.machinery as _imm
+    _loader = _imm.SourceFileLoader("_meeting", str(_MEETING_SCRIPT))
+    _spec = importlib.util.spec_from_loader("_meeting", _loader)
+    _meeting_mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_meeting_mod)
+except Exception:
+    pass
+
+
 def _discover_control_info() -> dict:
     """Return {host, ip_port} for the currently connected control, or {} if unknown."""
     try:
-        r = _run_meeting("controls")
-        controls = json.loads(r.stdout.strip() or "[]")
+        if _meeting_mod is None:
+            return {}
+        controls = _meeting_mod.discover_controls()
         if not controls:
             return {}
-        # Prefer the one marked current, else take the first.
-        current = next((c for c in controls if c.get("current")), controls[0])
-        host = current.get("host") or current.get("ip") or ""
-        ip_port = f"{current.get('ip', '')}:{current.get('port', '')}"
+        # Prefer current (last cached) control, else take the first.
+        current_url = None
+        import os as _os, time as _time
+        cache_path = _meeting_mod.HOST_CACHE
+        if _os.path.exists(cache_path):
+            import json as _json
+            with open(cache_path) as _f:
+                cache = _json.load(_f)
+            if cache.get("expires", 0) > _time.time() and cache.get("url"):
+                current_url = cache["url"]
+        c = next((x for x in controls if x["url"] == current_url), controls[0])
+        host = c.get("host") or c.get("ip") or ""
+        ip_port = f"{c.get('ip', '')}:{c.get('port', '')}"
         return {"host": host, "ip_port": ip_port}
     except Exception:
         return {}

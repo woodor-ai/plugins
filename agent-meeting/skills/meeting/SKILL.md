@@ -34,7 +34,7 @@ The first word after `/meeting` decides what to do:
 |---|---|
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
 | `/meeting list` | Run `~/.agent-meeting/bin/meeting list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `empty` / `online` / `historical`. |
-| `/meeting controls` | Run `~/.agent-meeting/bin/meeting controls` and paste the JSON output. Shows all currently discovered control nodes (host / ip / port / url / current). |
+| `/meeting controls` | Run `~/.agent-meeting/bin/meeting controls` and paste the text output verbatim into your reply. Shows all currently discovered control nodes (host / ip:port / url / version / ★ 当前). |
 | `/meeting delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/meeting delete <self> <peer>`. |
 | `/meeting daemon` (bare) | Promote this machine to control node — see "On `/meeting daemon`" below. |
 | `/meeting daemon status` | Run `~/.agent-meeting/bin/meeting daemon status` and paste the output. Shows launchd registration / pid / paths for the LAN-sharing daemon (Mac host only). |
@@ -70,19 +70,19 @@ Reserved words `list`, `controls`, `delete`, `daemon`, `telemetry`, and `token` 
 
 ## On `/meeting daemon`
 
-1. Run `~/.agent-meeting/bin/meeting controls` to check whether any control is already on the LAN.
+1. Run `~/.agent-meeting/bin/meeting controls` to check whether any control is already on the LAN. Read the text output: "未发现 control 节点" means none found; otherwise each block shows host / ip:port / url / version.
 2. If **any controls found**: use AskUserQuestion to confirm — "本 LAN 已发现以下 control 节点：\n<list each as `<host> (<ip>:<port>)`>\n确定把本机也设为新的 control 吗？". If user confirms, run `~/.agent-meeting/bin/meeting daemon`. If user declines, abort.
 3. If **no controls found**: run `~/.agent-meeting/bin/meeting daemon` directly (no confirmation needed).
 
 ## On `/meeting <name>`
 
-1. **Discover controls first**: run `~/.agent-meeting/bin/meeting controls` and parse the JSON output.
+1. **Discover controls first**: run `~/.agent-meeting/bin/meeting controls` and read the text output.
 
-   - **0 controls**: use AskUserQuestion with question "未发现中央节点 agent-meeting-control，是否把本机设为 control？" and options:
+   - **0 controls** (output is "未发现 control 节点"): use AskUserQuestion with question "未发现中央节点 agent-meeting-control，是否把本机设为 control？" and options:
      - "是（推荐）" — run `~/.agent-meeting/bin/meeting daemon` to start the control, then continue to register.
      - "否" — tell user: "你可以稍后在有 control 的机器上执行 `/meeting daemon`，再回来 `/meeting <name>` 注册。" Abort.
    - **1 control**: proceed to register against that control automatically. Report one line: `🛰 已连接 agent-meeting-control：<host>（<ip>:<port>）`.
-   - **2+ controls**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on whichever has `"current": true`. Do NOT add any language implying multiple controls is unusual or an error — it is a valid multi-machine office topology.
+   - **2+ controls**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on the one marked `★ 当前`. Do NOT add any language implying multiple controls is unusual or an error — it is a valid multi-machine office topology.
 
 2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20.
 3. **Register**: call the CLI register subcommand. When a specific control was chosen in step 1, pass `--host <url>`. Per the per-OS rule at the top:
