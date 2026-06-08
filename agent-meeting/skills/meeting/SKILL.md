@@ -86,8 +86,10 @@ Reserved words `list`, `controls`, `delete`, `daemon`, `telemetry`, and `token` 
 
 2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20.
 3. **Register**: call the CLI register subcommand. When a specific control was chosen in step 1, pass `--host <url>`. Per the per-OS rule at the top:
-   - macOS/Linux: `~/.agent-meeting/bin/meeting register <name> --cwd <cwd> [--host <url>]`
-   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" register <name> --cwd <cwd> [--host <url>]`
+   - macOS/Linux: `~/.agent-meeting/bin/meeting register <name> --cwd <cwd> [--host <url>] [--director]`
+   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" register <name> --cwd <cwd> [--host <url>] [--director]`
+
+   Pass `--director` to register this session as a director role (default: worker).
 
    The command exits 0 on success. On non-zero exit (name taken, monitor heartbeat still recent) surface the error to the user and abort — do not proceed to monitor install. Use `--force` only if the user explicitly asks to take over.
 4. **Initialize DB** (idempotent): `~/.agent-meeting/bin/meeting init`

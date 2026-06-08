@@ -190,7 +190,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, result)
             if path == "/register":
                 return self._json(200, self._register(
-                    body["name"], body.get("cwd"), body.get("force", False)
+                    body["name"], body.get("cwd"), body.get("force", False), body.get("role")
                 ))
             if path == "/unregister":
                 return self._json(200, self._unregister(body["name"]))
@@ -225,11 +225,15 @@ class Handler(BaseHTTPRequestHandler):
                 r["sender"]: r["cnt"]
                 for r in conn.execute("SELECT sender, COUNT(*) AS cnt FROM messages GROUP BY sender")
             }
-            sessions = conn.execute("SELECT name, last_seen FROM sessions").fetchall()
+            sessions = conn.execute("SELECT name, last_seen, cwd, role FROM sessions").fetchall()
 
         online_names = set()
         empty_names = set()
+        cwd_by_name = {}
+        role_by_name = {}
         for s in sessions:
+            cwd_by_name[s["name"]] = s["cwd"]
+            role_by_name[s["name"]] = s["role"]
             last_seen = s["last_seen"] or 0
             if now - last_seen <= ONLINE_THRESHOLD:
                 online_names.add(s["name"])
@@ -240,14 +244,17 @@ class Handler(BaseHTTPRequestHandler):
 
         rows = []
         for n in sorted(online_names, key=lambda n: -msg_counts.get(n, 0)):
-            rows.append({"status": "online", "name": n, "msgs": msg_counts.get(n, 0)})
+            rows.append({"status": "online", "name": n, "msgs": msg_counts.get(n, 0),
+                         "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n)})
         for n in sorted(empty_names, key=lambda n: -msg_counts.get(n, 0)):
-            rows.append({"status": "empty", "name": n, "msgs": msg_counts.get(n, 0)})
+            rows.append({"status": "empty", "name": n, "msgs": msg_counts.get(n, 0),
+                         "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n)})
         for n in sorted(historical_names, key=lambda n: -msg_counts.get(n, 0)):
-            rows.append({"status": "historical", "name": n, "msgs": msg_counts.get(n, 0)})
+            rows.append({"status": "historical", "name": n, "msgs": msg_counts.get(n, 0),
+                         "role": "worker", "cwd": None})
         return rows
 
-    def _register(self, name: str, cwd: str | None, force: bool):
+    def _register(self, name: str, cwd: str | None, force: bool, role: str | None = None):
         now = time.time()
         host_name = socket.gethostname()
         with db() as conn:
@@ -262,10 +269,11 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     }
             conn.execute(
-                "INSERT INTO sessions (name, cwd, host, registered_at, last_seen) VALUES (?, ?, ?, ?, ?) "
+                "INSERT INTO sessions (name, cwd, host, registered_at, last_seen, role) VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(name) DO UPDATE SET cwd=excluded.cwd, host=excluded.host, "
-                "registered_at=excluded.registered_at, last_seen=excluded.last_seen",
-                (name, cwd, host_name, str(int(now)), now),
+                "registered_at=excluded.registered_at, last_seen=excluded.last_seen, "
+                "role=COALESCE(excluded.role, role)",
+                (name, cwd, host_name, str(int(now)), now, role),
             )
         return {"ok": True, "name": name}
 
@@ -438,6 +446,13 @@ def main():
     # WAL hygiene: compact the WAL file at startup so it doesn't grow unbounded.
     with db() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    # Idempotent schema migration: add role column if not present (pre-0.7.9 DBs).
+    with db() as conn:
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN role TEXT")
+        except sqlite3.OperationalError:
+            pass
 
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((args.bind, args.port), Handler)

@@ -327,7 +327,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   cwd TEXT,
   host TEXT,
   registered_at TEXT,
-  last_seen REAL                        -- epoch seconds (float); heartbeat via /ring
+  last_seen REAL,                       -- epoch seconds (float); heartbeat via /ring
+  role TEXT
 );
 """
 
@@ -345,6 +346,10 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = connect()
     db.executescript(SCHEMA)
+    try:
+        db.execute("ALTER TABLE sessions ADD COLUMN role TEXT")
+    except sqlite3.OperationalError:
+        pass
     db.close()
 
 
@@ -477,7 +482,7 @@ def cmd_register(args):
         except Exception:
             pass
 
-    payload = {"name": name, "cwd": cwd, "force": args.force}
+    payload = {"name": name, "cwd": cwd, "force": args.force, "role": "director" if args.director else None}
     r = http("POST", host, "/register", body=payload)
     if r.get("error"):
         print(r["error"], file=sys.stderr)
@@ -879,7 +884,7 @@ def cmd_list(args):
     host = _resolve_host(getattr(args, "host", None))
     rows = http("GET", host, "/list")
     for r in rows:
-        print(f"{r['status']}\t{r['name']}\t{r['msgs']}")
+        print(f"{r['status']}\t{r['name']}\t{r['msgs']}\t{r.get('role') or 'worker'}\t{r.get('cwd') or ''}")
 
 
 # ---------- main ----------
@@ -961,6 +966,8 @@ def main():
     s.add_argument("--cwd", required=True, help="working directory of this session")
     s.add_argument("--force", action="store_true",
                    help="override even if monitor is still running")
+    s.add_argument("--director", action="store_true",
+                   help="register this session as a director (default: worker)")
     s.add_argument("--host", default=None,
                    help="explicitly specify control URL (e.g. http://10.0.0.5:8765); saved as preferred control")
     s.set_defaults(func=cmd_register)

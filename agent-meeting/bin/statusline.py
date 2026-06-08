@@ -25,7 +25,6 @@ minimal line (or empty), never a traceback (which would land in the status bar).
 import hashlib
 import json
 import os
-import socket
 import sys
 from pathlib import Path
 
@@ -72,31 +71,20 @@ def meeting_name(cwd: str) -> str:
 
 
 def _control_label(cwd: str) -> str:
-    """Return the control badge string, e.g. '🛰 meeting-control myhost 10.0.0.5:8765'.
+    """Return the control badge string, e.g. '🛰 10.0.0.5:8765'.
 
-    Returns '🛰 meeting-control self' when connected to localhost. Returns ''
-    when there is no control info (e.g. a legacy plain-text cache) — we don't
-    assert a state we don't know; it self-heals to the real control on the next
-    register (which rewrites the cache in JSON form).
+    Shows only the control's ip:port (no host/device name). Returns '' when
+    there is no control info (e.g. a legacy plain-text cache) — it self-heals
+    to the real control on the next register (which rewrites the cache in JSON
+    form).
     """
     cache = _read_statusline_cache(cwd)
     if not cache.get("room"):
         return ""
-    host = cache.get("control_host", "")
     ip_port = cache.get("control_ip_port", "")
-    if not host and not ip_port:
+    if not ip_port:
         return ""
-    # Detect self: host matches local hostname or IP is loopback.
-    local_host = socket.gethostname().replace(".local", "")
-    ip = ip_port.split(":")[0] if ip_port else ""
-    if host == local_host or ip in ("127.0.0.1", "::1", "localhost"):
-        return "\U0001F6F0 meeting-control self"  # 🛰
-    parts = []
-    if host:
-        parts.append(host)
-    if ip_port:
-        parts.append(ip_port)
-    return "\U0001F6F0 meeting-control " + " ".join(parts)  # 🛰
+    return "\U0001F6F0 " + ip_port  # 🛰
 
 
 def git_branch(cwd: str) -> str:
