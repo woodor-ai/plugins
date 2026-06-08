@@ -269,7 +269,7 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     }
             conn.execute(
-                "INSERT INTO sessions (name, cwd, host, registered_at, last_seen, role) VALUES (?, ?, ?, ?, ?, ?) "
+                "INSERT INTO sessions (name, cwd, host, registered_at, last_seen, role) VALUES (?, ?, ?, ?, ?, COALESCE(?, 'worker')) "
                 "ON CONFLICT(name) DO UPDATE SET cwd=excluded.cwd, host=excluded.host, "
                 "registered_at=excluded.registered_at, last_seen=excluded.last_seen, "
                 "role=COALESCE(excluded.role, role)",
@@ -450,7 +450,7 @@ def main():
     # Idempotent schema migration: add role column if not present (pre-0.7.9 DBs).
     with db() as conn:
         try:
-            conn.execute("ALTER TABLE sessions ADD COLUMN role TEXT")
+            conn.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
         except sqlite3.OperationalError:
             pass
 

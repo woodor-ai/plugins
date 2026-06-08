@@ -33,7 +33,7 @@ The first word after `/meeting` decides what to do:
 | Input | Action |
 |---|---|
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
-| `/meeting list` | Run `~/.agent-meeting/bin/meeting list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `empty` / `online` / `historical`. |
+| `/meeting list` | Run `~/.agent-meeting/bin/meeting list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs / Role. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `empty` / `online` / `historical`. Role is `director` or `worker`. |
 | `/meeting controls` | Run `~/.agent-meeting/bin/meeting controls` and paste the text output verbatim into your reply. Shows all currently discovered control nodes (host / ip:port / url / version / ★ 当前). |
 | `/meeting delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/meeting delete <self> <peer>`. |
 | `/meeting daemon` (bare) | Promote this machine to control node — see "On `/meeting daemon`" below. |
@@ -48,7 +48,7 @@ Reserved words `list`, `controls`, `delete`, `daemon`, `telemetry`, and `token` 
 
 ### Picker (when `/meeting` has no args)
 
-1. Run `~/.agent-meeting/bin/meeting list` to get session-name candidates. Output is TSV: `<status>\t<name>\t<msgs>` where status is one of:
+1. Run `~/.agent-meeting/bin/meeting list` to get session-name candidates. Output is TSV: `<status>\t<name>\t<msgs>\t<role>\t<cwd>` where status is one of:
    - `empty` — in sessions table but heartbeat expired (last_seen > 12s ago, monitor gone) → **safe to take over**, has historical msg context.
    - `online` — in sessions table with recent heartbeat (last_seen ≤ 12s ago) → picking would conflict with the running session.
    - `historical` — never in sessions table but appeared as sender in DB at some point → safe, fully fresh registration.
@@ -167,7 +167,7 @@ Do NOT use Read/Write/Edit tools on `rooms/canonical/*.md` — those files are l
 
 ## Useful read-only commands
 
-- `~/.agent-meeting/bin/meeting list` — all session names with status (online/empty/historical) + msg count
+- `~/.agent-meeting/bin/meeting list` — all session names with status (online/empty/historical) + msg count + role (director/worker)
 - `~/.agent-meeting/bin/meeting turn <self> <peer>` — current turn for a specific room
 - `~/.agent-meeting/bin/meeting show <self> <peer> --limit=N` — pretty render
 - `~/.agent-meeting/bin/meeting read <self> <peer> --limit=N` — TSV rows for scripting

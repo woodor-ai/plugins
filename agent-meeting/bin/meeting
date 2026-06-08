@@ -328,7 +328,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   host TEXT,
   registered_at TEXT,
   last_seen REAL,                       -- epoch seconds (float); heartbeat via /ring
-  role TEXT
+  role TEXT NOT NULL DEFAULT 'worker'
 );
 """
 
@@ -347,7 +347,7 @@ def init_db():
     db = connect()
     db.executescript(SCHEMA)
     try:
-        db.execute("ALTER TABLE sessions ADD COLUMN role TEXT")
+        db.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
     except sqlite3.OperationalError:
         pass
     db.close()
