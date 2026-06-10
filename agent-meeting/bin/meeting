@@ -350,6 +350,10 @@ def init_db():
         db.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
     except sqlite3.OperationalError:
         pass
+    try:
+        db.execute("ALTER TABLE sessions ADD COLUMN os TEXT")
+    except sqlite3.OperationalError:
+        pass
     db.close()
 
 
@@ -482,7 +486,8 @@ def cmd_register(args):
         except Exception:
             pass
 
-    payload = {"name": name, "cwd": cwd, "force": args.force, "role": "director" if args.director else None}
+    payload = {"name": name, "cwd": cwd, "force": args.force, "role": "director" if args.director else None,
+               "host": host_name, "os": _OS_LABEL}
     r = http("POST", host, "/register", body=payload)
     if r.get("error"):
         print(r["error"], file=sys.stderr)
@@ -884,7 +889,7 @@ def cmd_list(args):
     host = _resolve_host(getattr(args, "host", None))
     rows = http("GET", host, "/list")
     for r in rows:
-        print(f"{r['status']}\t{r['name']}\t{r['msgs']}\t{r.get('role') or 'worker'}\t{r.get('cwd') or ''}")
+        print(f"{r['status']}\t{r['name']}\t{r['msgs']}\t{r.get('role') or 'worker'}\t{r.get('cwd') or ''}\t{r.get('host') or ''}\t{r.get('os') or ''}")
 
 
 # ---------- main ----------

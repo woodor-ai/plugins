@@ -190,7 +190,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, result)
             if path == "/register":
                 return self._json(200, self._register(
-                    body["name"], body.get("cwd"), body.get("force", False), body.get("role")
+                    body["name"], body.get("cwd"), body.get("force", False), body.get("role"),
+                    body.get("host"), body.get("os")
                 ))
             if path == "/unregister":
                 return self._json(200, self._unregister(body["name"]))
@@ -225,15 +226,19 @@ class Handler(BaseHTTPRequestHandler):
                 r["sender"]: r["cnt"]
                 for r in conn.execute("SELECT sender, COUNT(*) AS cnt FROM messages GROUP BY sender")
             }
-            sessions = conn.execute("SELECT name, last_seen, cwd, role FROM sessions").fetchall()
+            sessions = conn.execute("SELECT name, last_seen, cwd, role, host, os FROM sessions").fetchall()
 
         online_names = set()
         empty_names = set()
         cwd_by_name = {}
         role_by_name = {}
+        host_by_name = {}
+        os_by_name = {}
         for s in sessions:
             cwd_by_name[s["name"]] = s["cwd"]
             role_by_name[s["name"]] = s["role"]
+            host_by_name[s["name"]] = s["host"]
+            os_by_name[s["name"]] = s["os"]
             last_seen = s["last_seen"] or 0
             if now - last_seen <= ONLINE_THRESHOLD:
                 online_names.add(s["name"])
@@ -245,18 +250,20 @@ class Handler(BaseHTTPRequestHandler):
         rows = []
         for n in sorted(online_names, key=lambda n: -msg_counts.get(n, 0)):
             rows.append({"status": "online", "name": n, "msgs": msg_counts.get(n, 0),
-                         "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n)})
+                         "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n),
+                         "host": host_by_name.get(n), "os": os_by_name.get(n)})
         for n in sorted(empty_names, key=lambda n: -msg_counts.get(n, 0)):
             rows.append({"status": "empty", "name": n, "msgs": msg_counts.get(n, 0),
-                         "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n)})
+                         "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n),
+                         "host": host_by_name.get(n), "os": os_by_name.get(n)})
         for n in sorted(historical_names, key=lambda n: -msg_counts.get(n, 0)):
             rows.append({"status": "historical", "name": n, "msgs": msg_counts.get(n, 0),
-                         "role": "worker", "cwd": None})
+                         "role": "worker", "cwd": None, "host": None, "os": None})
         return rows
 
-    def _register(self, name: str, cwd: str | None, force: bool, role: str | None = None):
+    def _register(self, name: str, cwd: str | None, force: bool, role: str | None = None,
+                  host: str | None = None, os_label: str | None = None):
         now = time.time()
-        host_name = socket.gethostname()
         with db() as conn:
             existing = conn.execute("SELECT last_seen FROM sessions WHERE name=?", (name,)).fetchone()
             if existing and not force:
@@ -269,11 +276,11 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     }
             conn.execute(
-                "INSERT INTO sessions (name, cwd, host, registered_at, last_seen, role) VALUES (?, ?, ?, ?, ?, COALESCE(?, 'worker')) "
-                "ON CONFLICT(name) DO UPDATE SET cwd=excluded.cwd, host=excluded.host, "
+                "INSERT INTO sessions (name, cwd, host, os, registered_at, last_seen, role) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'worker')) "
+                "ON CONFLICT(name) DO UPDATE SET cwd=excluded.cwd, host=excluded.host, os=excluded.os, "
                 "registered_at=excluded.registered_at, last_seen=excluded.last_seen, "
                 "role=COALESCE(excluded.role, role)",
-                (name, cwd, host_name, str(int(now)), now, role),
+                (name, cwd, host, os_label, str(int(now)), now, role),
             )
         return {"ok": True, "name": name}
 
@@ -451,6 +458,10 @@ def main():
     with db() as conn:
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN os TEXT")
         except sqlite3.OperationalError:
             pass
 
