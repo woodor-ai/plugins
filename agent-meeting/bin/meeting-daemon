@@ -279,8 +279,8 @@ class Handler(BaseHTTPRequestHandler):
                 "INSERT INTO sessions (name, cwd, host, os, registered_at, last_seen, role) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'worker')) "
                 "ON CONFLICT(name) DO UPDATE SET cwd=excluded.cwd, host=excluded.host, os=excluded.os, "
                 "registered_at=excluded.registered_at, last_seen=excluded.last_seen, "
-                "role=COALESCE(excluded.role, role)",
-                (name, cwd, host, os_label, str(int(now)), now, role),
+                "role=COALESCE(?, role)",
+                (name, cwd, host, os_label, str(int(now)), now, role, role),
             )
         return {"ok": True, "name": name}
 

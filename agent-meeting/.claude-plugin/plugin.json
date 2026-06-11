@@ -1,6 +1,6 @@
 {
   "name": "agent-meeting",
-  "version": "0.7.10",
+  "version": "0.7.11",
   "description": "Cross-session meeting room for Claude Code agents. SQLite-backed with LAN multi-machine support via mDNS + HTTP daemon. Sessions discover each other automatically across machines.",
   "author": {
     "name": "Woodor",
