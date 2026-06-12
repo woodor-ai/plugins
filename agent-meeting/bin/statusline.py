@@ -34,20 +34,17 @@ STATUSLINE_DIR = DATA / "statusline"
 SEP = "  |  "
 
 
-def cwd_key(cwd: str) -> str:
-    """Stable per-directory key shared with monitor.py. Case/sep-normalized."""
+def _badge_key(session_id: str | None, cwd: str) -> str:
+    """Stable badge file key — matches the logic in monitor.py exactly."""
+    if session_id:
+        return hashlib.sha1(session_id.encode("utf-8", "replace")).hexdigest()[:16]
     norm = os.path.normcase(os.path.normpath(cwd))
     return hashlib.sha1(norm.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def _read_statusline_cache(cwd: str) -> dict:
-    """Read the statusline cache for this cwd.  Returns {} if missing/unreadable.
-
-    Supports both the old plain-text format (just the room name) and the new
-    JSON format {room, control_host, control_ip_port}.
-    """
+def _parse_cache_file(f: "Path") -> dict:
+    """Read and parse a single cache file. Returns {} if missing/unreadable."""
     try:
-        f = STATUSLINE_DIR / cwd_key(cwd)
         if not f.exists():
             return {}
         raw = f.read_text(encoding="utf-8").strip()
@@ -65,12 +62,32 @@ def _read_statusline_cache(cwd: str) -> dict:
         return {}
 
 
-def meeting_name(cwd: str) -> str:
-    """Registered room name for this cwd, or '' if not registered."""
-    return _read_statusline_cache(cwd).get("room", "")
+def _read_statusline_cache(cwd: str, session_id: str | None = None) -> dict:
+    """Read the statusline cache for this session/cwd. Returns {} if not found.
+
+    Lookup order when session_id is present:
+      1. session-keyed file (sha1(session_id)[:16])
+      2. cwd-keyed file (fallback for old monitor without session_id support)
+    When session_id is absent, only the cwd-keyed file is checked.
+    """
+    try:
+        if session_id:
+            result = _parse_cache_file(STATUSLINE_DIR / _badge_key(session_id, cwd))
+            if result:
+                return result
+            # Fallback: old monitor wrote only the cwd-keyed file.
+            return _parse_cache_file(STATUSLINE_DIR / _badge_key(None, cwd))
+        return _parse_cache_file(STATUSLINE_DIR / _badge_key(None, cwd))
+    except Exception:
+        return {}
 
 
-def _control_label(cwd: str) -> str:
+def meeting_name(cwd: str, session_id: str | None = None) -> str:
+    """Registered room name for this session/cwd, or '' if not registered."""
+    return _read_statusline_cache(cwd, session_id).get("room", "")
+
+
+def _control_label(cwd: str, session_id: str | None = None) -> str:
     """Return the control badge string, e.g. '🛰 10.0.0.5:8765'.
 
     Shows only the control's ip:port (no host/device name). Returns '' when
@@ -78,7 +95,7 @@ def _control_label(cwd: str) -> str:
     to the real control on the next register (which rewrites the cache in JSON
     form).
     """
-    cache = _read_statusline_cache(cwd)
+    cache = _read_statusline_cache(cwd, session_id)
     if not cache.get("room"):
         return ""
     ip_port = cache.get("control_ip_port", "")
@@ -127,13 +144,14 @@ def main():
     workspace = data.get("workspace") or {}
     cwd = workspace.get("current_dir") or data.get("cwd") or os.getcwd()
     model = (data.get("model") or {}).get("display_name") or ""
+    session_id = data.get("session_id") or None
 
     segments = []
 
-    name = meeting_name(cwd)
+    name = meeting_name(cwd, session_id)
     if name:
         badge = f"\U0001F4DE {name}"  # 📞
-        ctrl = _control_label(cwd)
+        ctrl = _control_label(cwd, session_id)
         if ctrl:
             badge += f" {ctrl}"
         segments.append(badge)

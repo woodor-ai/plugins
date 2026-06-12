@@ -47,14 +47,25 @@ MEETING_CLI = DATA / "bin" / "meeting"
 TMP = Path(tempfile.gettempdir())
 STATE_FILE = TMP / f"meeting-{SELF}.last_msg_id"
 
-# Local cache that statusline.py reads to render the 📞 badge. Keyed by the
-# session's cwd (NOT the central sessions table — statusline must stay local,
-# DB- and network-free). Written on register, removed on exit.
+# Local cache that statusline.py reads to render the 📞 badge. Keyed by
+# session_id when available (so multiple named sessions in the same cwd each
+# get their own file), falling back to cwd-hash for envs without session_id.
 STATUSLINE_DIR = DATA / "statusline"
 _CWD = os.getcwd()
-STATUSLINE_FILE = STATUSLINE_DIR / hashlib.sha1(
-    os.path.normcase(os.path.normpath(_CWD)).encode("utf-8", "replace")
-).hexdigest()[:16]
+SESSION_ID = os.environ.get("CLAUDE_CODE_SESSION_ID")
+
+
+def _badge_key(session_id: str | None, cwd: str) -> str:
+    if session_id:
+        return hashlib.sha1(session_id.encode("utf-8", "replace")).hexdigest()[:16]
+    return hashlib.sha1(
+        os.path.normcase(os.path.normpath(cwd)).encode("utf-8", "replace")
+    ).hexdigest()[:16]
+
+
+STATUSLINE_FILE = STATUSLINE_DIR / _badge_key(SESSION_ID, _CWD)
+# Legacy cwd-keyed file — used for cleanup when we're running with session_id.
+_CWD_STATUSLINE_FILE = STATUSLINE_DIR / _badge_key(None, _CWD)
 
 # Override MEETING_HOME if set (used in tests).
 MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
@@ -121,6 +132,20 @@ def _register():
         STATUSLINE_FILE.write_text(json.dumps(payload), encoding="utf-8")
     except Exception:
         pass
+    # Best-effort: when running with session_id, clean up any stale cwd-keyed
+    # badge file left by a previous run of this same session (pre-upgrade) or
+    # another session that wrongly shared it. Only delete if it's still ours.
+    if SESSION_ID and _CWD_STATUSLINE_FILE != STATUSLINE_FILE:
+        try:
+            raw = _CWD_STATUSLINE_FILE.read_text(encoding="utf-8").strip()
+            try:
+                owner = json.loads(raw).get("room", "")
+            except Exception:
+                owner = raw
+            if owner == SELF:
+                _CWD_STATUSLINE_FILE.unlink()
+        except Exception:
+            pass
 
 
 def _unregister():
