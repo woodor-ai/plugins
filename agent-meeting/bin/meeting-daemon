@@ -25,6 +25,7 @@ import argparse
 import contextlib
 import json
 import os
+import ipaddress
 import signal
 import socket
 import sqlite3
@@ -405,6 +406,79 @@ class Handler(BaseHTTPRequestHandler):
 
 # ---------- mDNS ----------
 
+# Explicit LAN ranges. We do NOT use ipaddress.is_private to exclude tailscale:
+# Python 3.13 classifies 100.64.0.0/10 as is_private=True, so that check would
+# happily pick the tailscale CGNAT address. Match the RFC1918 ranges explicitly
+# and exclude the CGNAT block by hand.
+_RFC1918 = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+]
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")  # tailscale et al.
+
+
+def _candidate_ips() -> set[str]:
+    """Enumerate every local IPv4 address.
+
+    Uses ifaddr (a zeroconf dependency, so always present here) to list ALL
+    interface addresses directly. Route-based probes — connect("8.8.8.8") or
+    getaddrinfo(hostname) — are useless on a tailscale host: the default route
+    points at the tailscale interface, so they only ever surface the 100.x CGNAT
+    address and never see the LAN NIC. We fall back to a probe only if ifaddr
+    somehow can't be imported.
+    """
+    candidates: set[str] = set()
+    try:
+        import ifaddr
+
+        for adapter in ifaddr.get_adapters():
+            for ip in adapter.ips:
+                if isinstance(ip.ip, str):  # str → IPv4; IPv6 comes as a tuple
+                    candidates.add(ip.ip)
+    except Exception:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            candidates.add(s.getsockname()[0])
+        except Exception:
+            pass
+        finally:
+            s.close()
+    return candidates
+
+
+def pick_advertise_ip() -> str:
+    """Pick the IP to broadcast over mDNS, preferring the LAN address.
+
+    Meeting only ever talks over the LAN, so we enumerate every interface
+    address and prefer RFC1918, explicitly avoiding the tailscale CGNAT block.
+    """
+    override = os.environ.get("MEETING_ADVERTISE_IP")
+    if override:
+        return override
+
+    candidates = _candidate_ips()
+
+    def score(ip: str) -> int:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return -1
+        if addr in _CGNAT or addr.is_loopback or addr.is_link_local:
+            return -1
+        if any(addr in net for net in _RFC1918):
+            return 2
+        return 1  # public / other — last resort for LAN-less hosts
+
+    best, best_score = "127.0.0.1", 0
+    for ip in sorted(candidates):  # sorted → deterministic tie-break
+        sc = score(ip)
+        if sc > best_score:
+            best, best_score = ip, sc
+    return best
+
+
 def publish_mdns(port: int):
     """Register this daemon as _agent-meeting._tcp.local. Returns ServiceInfo
     so caller can unregister on shutdown."""
@@ -413,13 +487,7 @@ def publish_mdns(port: int):
     zc = Zeroconf(ip_version=IPVersion.V4Only)
     hostname = socket.gethostname().replace(".local", "")
     instance = f"{hostname}-meeting"
-    # Get a real LAN IP (not 127.0.0.1)
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-    finally:
-        s.close()
+    ip = pick_advertise_ip()
 
     info = ServiceInfo(
         SERVICE_TYPE,
