@@ -1,7 +1,7 @@
 ---
 name: meeting
 description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.agent-meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
-argument-hint: "<name> | list | controls | delete | daemon | telemetry | token"
+argument-hint: "<name> | list | delete | setup [daemon|token|telemetry]"
 ---
 
 ## Architecture (changed 2026-05-26; sessions table added 2026-06-01)
@@ -33,18 +33,15 @@ The first word after `/meeting` decides what to do:
 | Input | Action |
 |---|---|
 | `/meeting` (empty) | Show name picker (see "Picker" below) |
-| `/meeting list` | Run `~/.agent-meeting/bin/meeting list` and **paste the TSV output verbatim into your reply as a markdown table** with columns Status / Name / Msgs / Role. Do NOT just say "see above" or "如上" relying on the collapsed bash block — the user wants it visible in the main chat area without expanding. Status is `empty` / `online` / `historical`. Role is `director` or `worker`. |
-| `/meeting controls` | Run `~/.agent-meeting/bin/meeting controls` and paste the text output verbatim into your reply. Shows all currently discovered control nodes (host / ip:port / url / version / ★ 当前). |
+| `/meeting list` | Run `~/.agent-meeting/bin/meeting list` **and** `~/.agent-meeting/bin/meeting controls`, then present both together: first a markdown table with columns Status / Name / Msgs / Role (from `list`), then a "control 节点" subsection listing discovered controls (from `controls`). Do NOT just say "see above" or "如上" relying on the collapsed bash block — paste both results visible in the main chat area. Status is `empty` / `online` / `historical`. Role is `director` or `worker`. |
 | `/meeting delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/meeting delete <self> <peer>`. |
-| `/meeting daemon` (bare) | Promote this machine to control node — see "On `/meeting daemon`" below. |
-| `/meeting daemon status` | Run `~/.agent-meeting/bin/meeting daemon status` and paste the output. Shows launchd registration / pid / paths for the LAN-sharing daemon (Mac host only). |
-| `/meeting daemon stop` | Run `~/.agent-meeting/bin/meeting daemon stop`. SIGTERMs the daemon and waits for clean shutdown. Note: next Claude SessionStart with is_host=true will reinstall + relaunch it. |
-| `/meeting daemon restart` | Run `~/.agent-meeting/bin/meeting daemon restart`. Atomic kill+respawn via `launchctl kickstart -k`. Use this to force-pickup a daemon code change without reopening Claude. |
-| `/meeting telemetry on\|off\|status` | Run `~/.agent-meeting/bin/meeting telemetry <action>` and paste the one-line output to the user. |
-| `/meeting token [<value>\|clear]` | Run `~/.agent-meeting/bin/meeting token [<value>\|clear]`. On the **host** machine with no args: generates a token (if none exists) and prints it — distribute this to every client. On a **client** machine with `<value>`: writes the host's token into local config. `clear` removes the token and returns the daemon to open mode. Note: the token is printed to the terminal and may appear in shell history — treat it like a password. After success, output: `✅ Token 已写入本机 config，本会话后续与其他 agent 的通信都会带此 token 鉴权。` |
+| `/meeting setup` | Print brief usage of the three setup subcommands (daemon / token / telemetry). No action taken. See "On `/meeting setup`" below. |
+| `/meeting setup daemon [status\|stop\|restart]` | Manage the LAN-sharing daemon — see "On `/meeting setup daemon`" below. |
+| `/meeting setup token [<value>\|clear]` | Run `~/.agent-meeting/bin/meeting token [<value>\|clear]`. On the **host** machine with no args: generates a token (if none exists) and prints it — distribute this to every client. On a **client** machine with `<value>`: writes the host's token into local config. `clear` removes the token and returns the daemon to open mode. Note: the token is printed to the terminal and may appear in shell history — treat it like a password. After success, output: `✅ Token 已写入本机 config，本会话后续与其他 agent 的通信都会带此 token 鉴权。` |
+| `/meeting setup telemetry on\|off\|status` | Run `~/.agent-meeting/bin/meeting telemetry <action>` and paste the one-line output to the user. |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
-Reserved words `list`, `controls`, `delete`, `daemon`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
+Reserved words `list`, `delete`, `setup`, `controls`, `daemon`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
 
 ### Picker (when `/meeting` has no args)
 
@@ -68,11 +65,24 @@ Reserved words `list`, `controls`, `delete`, `daemon`, `telemetry`, and `token` 
 3. If user picks an `online` name, ask explicit confirmation before proceeding (their choice may have been informational).
 4. After user confirms a name (or types via Other), proceed to "On `/meeting <name>`" below with that name.
 
-## On `/meeting daemon`
+## On `/meeting setup`
+
+When invoked bare (no second word), print this usage summary and do nothing else:
+
+```
+/meeting setup daemon [status|stop|restart]  — 管理 LAN 共享 daemon（把本机设为 control 节点）
+/meeting setup token [<value>|clear]         — 生成或写入鉴权 token
+/meeting setup telemetry on|off|status       — 开关遥测上报
+```
+
+For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup telemetry …`, route to the corresponding section or dispatch row above. The underlying CLI calls are `meeting daemon` / `meeting token` / `meeting telemetry` — unchanged.
+
+## On `/meeting setup daemon`
 
 1. Run `~/.agent-meeting/bin/meeting controls` to check whether any control is already on the LAN. Read the text output: "未发现 control 节点" means none found; otherwise each block shows host / ip:port / url / version.
 2. If **any controls found**: use AskUserQuestion to confirm — "本 LAN 已发现以下 control 节点：\n<list each as `<host> (<ip>:<port>)`>\n确定把本机也设为新的 control 吗？". If user confirms, run `~/.agent-meeting/bin/meeting daemon`. If user declines, abort.
 3. If **no controls found**: run `~/.agent-meeting/bin/meeting daemon` directly (no confirmation needed).
+4. For `status` / `stop` / `restart`: run `~/.agent-meeting/bin/meeting daemon status|stop|restart` and paste the output verbatim. `stop` SIGTERMs the daemon and waits for clean shutdown (note: next Claude SessionStart with is_host=true will reinstall + relaunch it). `restart` does atomic kill+respawn via `launchctl kickstart -k` — use this to force-pickup a daemon code change without reopening Claude.
 
 ## On `/meeting <name>`
 
@@ -80,7 +90,7 @@ Reserved words `list`, `controls`, `delete`, `daemon`, `telemetry`, and `token` 
 
    - **0 controls** (output is "未发现 control 节点"): use AskUserQuestion with question "未发现中央节点 agent-meeting-control，是否把本机设为 control？" and options:
      - "是（推荐）" — run `~/.agent-meeting/bin/meeting daemon` to start the control, then continue to register.
-     - "否" — tell user: "你可以稍后在有 control 的机器上执行 `/meeting daemon`，再回来 `/meeting <name>` 注册。" Abort.
+     - "否" — tell user: "你可以稍后在有 control 的机器上执行 `/meeting setup daemon`，再回来 `/meeting <name>` 注册。" Abort.
    - **1 control**: proceed to register against that control automatically. Report one line: `🛰 已连接 agent-meeting-control：<host>（<ip>:<port>）`.
    - **2+ controls**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on the one marked `★ 当前`. Do NOT add any language implying multiple controls is unusual or an error — it is a valid multi-machine office topology.
 

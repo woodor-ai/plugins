@@ -910,6 +910,8 @@ def main():
     s.add_argument("--kind", default="回应",
                    help="message kind/header, typically 开启|回应|总结 but any string allowed")
     s.add_argument("--ask", default=None, help="optional one-line ask")
+    s.add_argument("--host", default=None,
+                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
     s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("read", help="dump messages as TSV rows")
@@ -917,30 +919,43 @@ def main():
     s.add_argument("peer")
     s.add_argument("--limit", type=int, default=30)
     s.add_argument("--since", type=int, default=0, help="only msgs with id > since")
+    s.add_argument("--host", default=None,
+                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
     s.set_defaults(func=cmd_read)
 
     s = sub.add_parser("show", help="pretty markdown render")
     s.add_argument("self")
     s.add_argument("peer")
     s.add_argument("--limit", type=int, default=30)
+    s.add_argument("--host", default=None,
+                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
     s.set_defaults(func=cmd_show)
 
     s = sub.add_parser("turn", help="print current turn-holder")
     s.add_argument("self")
     s.add_argument("peer")
+    s.add_argument("--host", default=None,
+                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
     s.set_defaults(func=cmd_turn)
 
     s = sub.add_parser("ring", help="monitor query: new msgs in rooms where turn=self")
     s.add_argument("self")
     s.add_argument("--since", type=int, default=0, help="only msgs with id > since")
+    s.add_argument("--host", default=None,
+                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
     s.set_defaults(func=cmd_ring)
 
-    sub.add_parser("list",
-                   help="list all session names with status (online/empty/historical) + msg count").set_defaults(func=cmd_list)
+    s = sub.add_parser("list",
+                       help="list all session names with status (online/empty/historical) + msg count")
+    s.add_argument("--host", default=None,
+                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
+    s.set_defaults(func=cmd_list)
 
     s = sub.add_parser("delete", help="delete a room and all its messages (hard delete, atomic)")
     s.add_argument("self")
     s.add_argument("peer")
+    s.add_argument("--host", default=None,
+                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
     s.set_defaults(func=cmd_delete)
 
     s = sub.add_parser("daemon",
