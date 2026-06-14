@@ -1,6 +1,6 @@
 ---
 name: meeting
-description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.agent-meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
+description: Meeting-room directory for peer agent sessions. `/meeting <name>` registers this session and starts the monitor (required before /talkto). Subcommands — list (who's online), rename <new> (rename this session, migrating its rooms+messages), stop [<name>] (stop a monitor / take a session offline), delete <peer> (purge a conversation), setup (daemon|token|telemetry), help (usage). Backed by SQLite (~/.agent-meeting/db/rooms.db).
 argument-hint: "<name> | list | delete | rename <new> | stop [<name>] | setup [daemon|token|telemetry] | help"
 ---
 
