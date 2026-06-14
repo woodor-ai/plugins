@@ -804,6 +804,69 @@ Online peers: {peers}
     }))
 
 
+# ---------- version comparison ----------
+
+def _parse_semver(v: str) -> tuple:
+    """Parse 'X.Y.Z' into (X, Y, Z) as ints for comparison. Unknown/malformed → (0, 0, 0)."""
+    try:
+        parts = [int(x) for x in v.strip().split(".")]
+        # Pad to 3 components
+        while len(parts) < 3:
+            parts.append(0)
+        return tuple(parts[:3])
+    except Exception:
+        return (0, 0, 0)
+
+
+def _read_installed_version() -> str | None:
+    """Read the version currently installed in the shared runtime.
+
+    Priority order (stops at first hit):
+    1. Wrapper script exec path — the most reliable indicator after a real install.
+       The wrapper's second line is: exec "<venv-py>" "<plugin-root>/bin/meeting-daemon"
+       The plugin root is a versioned cache dir like .../agent-meeting/0.8.0/...
+    2. config.json plugin_version field.
+    3. .bin-plugin-root sentinel (contains the plugin_bin path, version segment embedded).
+
+    Returns None if no runtime is present (fresh install → caller treats as no downgrade).
+    """
+    # 1. Parse wrapper exec path
+    wrapper = DATA / "bin" / "meeting"
+    if wrapper.exists() and not wrapper.is_dir():
+        try:
+            text = wrapper.read_text(encoding="utf-8", errors="replace")
+            # Look for a path segment matching a semver directory component
+            import re
+            m = re.search(r"[/\\]agent-meeting[/\\](\d+\.\d+(?:\.\d+)?)[/\\]", text)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+
+    # 2. config.json
+    if CONFIG.exists():
+        try:
+            v = json.loads(CONFIG.read_text()).get("plugin_version")
+            if v and v != "unknown":
+                return v
+        except Exception:
+            pass
+
+    # 3. .bin-plugin-root sentinel
+    sentinel = DATA / ".bin-plugin-root"
+    if sentinel.exists():
+        try:
+            text = sentinel.read_text().strip()
+            import re
+            m = re.search(r"[/\\]agent-meeting[/\\](\d+\.\d+(?:\.\d+)?)[/\\]", text)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+
+    return None
+
+
 # ---------- main ----------
 
 def main():
@@ -811,24 +874,41 @@ def main():
         ensure_layout()       # base dirs first
         ensure_venv()         # venv must exist before wrappers reference its python
         ensure_zeroconf()
-        ensure_bin_wrappers() # now venv python path is valid
-        ensure_statusline()   # register TUI status line (idempotent, no-clobber)
+
+        # Monotonic-upgrade guard: skip runtime rewrite if this session's plugin
+        # version is older than what's already installed.
+        session_ver = _read_plugin_version()
+        installed_ver = _read_installed_version()
+        skip_runtime_rewrite = False
+        if installed_ver is not None and session_ver != "unknown":
+            if _parse_semver(session_ver) < _parse_semver(installed_ver):
+                msg = (f"skip downgrade: session {session_ver} < installed {installed_ver}, "
+                       f"keeping {installed_ver}")
+                log(msg)
+                blog(msg)
+                skip_runtime_rewrite = True
+
+        if not skip_runtime_rewrite:
+            ensure_bin_wrappers()
+            ensure_statusline()
+
         cfg, is_new_install, machine_id = load_or_create_config()
         version = cfg.get("plugin_version", "unknown")
 
         if is_new_install:
             beacon("install", version, machine_id, cfg)
 
-        if cfg.get("is_host"):
-            if IS_MAC:
-                ensure_launchd()              # plist + KeepAlive — survives reboots
+        if not skip_runtime_rewrite:
+            if cfg.get("is_host"):
+                if IS_MAC:
+                    ensure_launchd()              # plist + KeepAlive — survives reboots
+                elif IS_WINDOWS:
+                    ensure_windows_persistence()  # Startup launcher + MINUTE task + supervisor
+                elif not daemon_running():
+                    launch_daemon()               # Linux: session-bound for now
             elif IS_WINDOWS:
-                ensure_windows_persistence()  # Startup launcher + MINUTE task + supervisor
-            elif not daemon_running():
-                launch_daemon()               # Linux: session-bound for now
-        elif IS_WINDOWS:
-            # Not a host anymore — tear down any persistence a prior host left.
-            remove_windows_persistence()
+                # Not a host anymore — tear down any persistence a prior host left.
+                remove_windows_persistence()
 
         emit_context(cfg)
     except Exception as e:
