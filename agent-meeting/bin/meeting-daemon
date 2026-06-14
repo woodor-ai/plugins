@@ -51,7 +51,7 @@ except Exception:
 ONLINE_THRESHOLD = 12
 
 
-# ---------- DB helpers (mirror meeting CLI) ----------
+# ---------- DB helpers ----------
 
 @contextlib.contextmanager
 def db():
@@ -64,22 +64,72 @@ def db():
         conn.close()
 
 
-def canonical_room_name(a: str, b: str):
-    sa, sb = sorted([a, b])
-    return f"{sa}--{sb}", sa, sb
+def _conversation_clause(a: str, b: str) -> tuple[str, list]:
+    """Return WHERE clause + params for messages between a and b (both directions)."""
+    clause = "((sender=? AND recipient=?) OR (sender=? AND recipient=?))"
+    return clause, [a, b, b, a]
 
 
-def ensure_room(conn, self_name: str, peer: str):
-    name, a, b = canonical_room_name(self_name, peer)
-    row = conn.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO rooms (name, participant_a, participant_b, current_turn, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (name, a, b, self_name, int(time.time())),
-        )
-        row = conn.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
-    return row
+def migrate_db(conn):
+    """Idempotent migration: rooms+room_id schema → sender/recipient schema."""
+    has_rooms = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rooms'"
+    ).fetchone() is not None
+    has_recipient = any(
+        col[1] == "recipient"
+        for col in conn.execute("PRAGMA table_info(messages)").fetchall()
+    )
+
+    if not has_rooms and has_recipient:
+        return  # already new schema
+
+    has_messages = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
+    ).fetchone() is not None
+    if not has_messages:
+        return  # fresh DB — schema will create everything
+
+    original_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+    if has_rooms and not has_recipient:
+        conn.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
+        conn.execute("""
+            UPDATE messages SET recipient = (
+                SELECT CASE
+                    WHEN r.participant_a = messages.sender THEN r.participant_b
+                    ELSE r.participant_a
+                END
+                FROM rooms r WHERE r.id = messages.room_id
+            )
+        """)
+
+    conn.executescript("""
+        CREATE TABLE messages_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sender TEXT NOT NULL,
+          recipient TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          body TEXT NOT NULL,
+          ask TEXT,
+          created_at INTEGER NOT NULL
+        );
+        INSERT INTO messages_new (id, sender, recipient, kind, body, ask, created_at)
+            SELECT id, sender, recipient, kind, body, ask, created_at FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_new RENAME TO messages;
+        DROP INDEX IF EXISTS idx_messages_room_id;
+        CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
+        CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
+    """)
+
+    if has_rooms:
+        conn.execute("DROP TABLE IF EXISTS rooms")
+
+    migrated_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    assert migrated_count == original_count, (
+        f"migration lost messages: {original_count} before, {migrated_count} after"
+    )
+    print(f"[migrate] completed: {migrated_count} messages migrated", flush=True)
 
 
 # ---------- HTTP handlers ----------
@@ -266,6 +316,8 @@ class Handler(BaseHTTPRequestHandler):
                          "role": "worker", "cwd": None, "host": None, "os": None})
         return rows
 
+    # _register and _unregister are unchanged
+
     def _register(self, name: str, cwd: str | None, force: bool, role: str | None = None,
                   host: str | None = None, os_label: str | None = None):
         now = time.time()
@@ -295,26 +347,30 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "name": name}
 
     def _turn(self, self_name, peer):
-        name = canonical_room_name(self_name, peer)[0]
+        """Derive turn from the last message in the conversation.
+
+        If no messages exist yet, the sender (self_name) holds the turn —
+        mirroring the old ensure_room behavior where the room creator starts.
+        """
+        clause, params = _conversation_clause(self_name, peer)
         with db() as conn:
-            row = conn.execute("SELECT current_turn FROM rooms WHERE name=?", (name,)).fetchone()
-            if row is None:
-                raise KeyError(f"no such room: {name}")
-            return row["current_turn"]
+            row = conn.execute(
+                f"SELECT recipient FROM messages WHERE {clause} ORDER BY id DESC LIMIT 1",
+                params,
+            ).fetchone()
+        # No messages yet → self_name holds turn (creator convention)
+        return row["recipient"] if row else self_name
 
     def _show(self, self_name, peer, limit):
-        name = canonical_room_name(self_name, peer)[0]
+        clause, params = _conversation_clause(self_name, peer)
+        turn = self._turn(self_name, peer)
         with db() as conn:
-            room = conn.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
-            if room is None:
-                raise KeyError(f"no such room: {name}")
             msgs = conn.execute(
-                "SELECT * FROM messages WHERE room_id=? ORDER BY id DESC LIMIT ?",
-                (room["id"], limit),
+                f"SELECT * FROM messages WHERE {clause} ORDER BY id DESC LIMIT ?",
+                params + [limit],
             ).fetchall()
-        lines = [f"# Room: {room['participant_a']} ↔ {room['participant_b']}",
-                 f"Created: {time.strftime('%Y-%m-%d %H:%M', time.localtime(room['created_at']))}",
-                 f"当前发言权: {room['current_turn']}\n---\n"]
+        lines = [f"# Conversation: {self_name} ↔ {peer}",
+                 f"当前发言权: {turn}\n---\n"]
         for row in reversed(msgs):
             ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
             lines.append(f"### [{row['sender']} @ {ts}] {row['kind']}")
@@ -325,46 +381,28 @@ class Handler(BaseHTTPRequestHandler):
         return "\n".join(lines)
 
     def _read(self, self_name, peer, limit, since):
-        name = canonical_room_name(self_name, peer)[0]
+        clause, params = _conversation_clause(self_name, peer)
+        if since:
+            clause += " AND id > ?"
+            params.append(since)
+        q = f"SELECT * FROM messages WHERE {clause} ORDER BY id ASC"
+        if limit:
+            q += f" LIMIT {int(limit)}"
         with db() as conn:
-            room = conn.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
-            if room is None:
-                raise KeyError(f"no such room: {name}")
-            q = "SELECT * FROM messages WHERE room_id=? "
-            params = [room["id"]]
-            if since:
-                q += "AND id > ? "
-                params.append(since)
-            q += "ORDER BY id ASC "
-            if limit:
-                q += f"LIMIT {int(limit)}"
             rows = conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
 
     def _ring(self, self_name, since):
         with db() as conn:
             rows = conn.execute(
-                """
-                SELECT m.id, m.sender, m.ask, r.participant_a, r.participant_b
-                  FROM messages m
-                  JOIN rooms r ON m.room_id = r.id
-                 WHERE r.current_turn = ?
-                   AND m.id > ?
-                   AND m.sender != ?
-                 ORDER BY m.id ASC
-                """,
-                (self_name, since, self_name),
+                "SELECT id, sender, ask FROM messages WHERE recipient=? AND id > ? ORDER BY id ASC",
+                (self_name, since),
             ).fetchall()
-            # Heartbeat: update last_seen for self in sessions table.
             conn.execute(
                 "UPDATE sessions SET last_seen=? WHERE name=?",
                 (time.time(), self_name),
             )
-        out = []
-        for r in rows:
-            peer = r["participant_a"] if r["sender"] == r["participant_a"] else r["participant_b"]
-            out.append({"id": r["id"], "peer": peer, "ask": r["ask"] or ""})
-        return out
+        return [{"id": r["id"], "peer": r["sender"], "ask": r["ask"] or ""} for r in rows]
 
     def _send(self, self_name, peer, body, kind, ask):
         if not body:
@@ -372,18 +410,14 @@ class Handler(BaseHTTPRequestHandler):
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                room = ensure_room(conn, self_name, peer)
-                if self_name not in (room["participant_a"], room["participant_b"]):
-                    raise ValueError(f"{self_name} not a participant of {room['name']}")
                 conn.execute(
-                    "INSERT INTO messages (room_id, sender, kind, body, ask, created_at) "
+                    "INSERT INTO messages (sender, recipient, kind, body, ask, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (room["id"], self_name, kind, body, ask, int(time.time())),
+                    (self_name, peer, kind, body, ask, int(time.time())),
                 )
-                conn.execute("UPDATE rooms SET current_turn=? WHERE id=?", (peer, room["id"]))
                 msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 conn.execute("COMMIT")
-                return {"msg_id": msg_id, "room": room["name"], "turn": peer}
+                return {"msg_id": msg_id, "room": "--".join(sorted([self_name, peer])), "turn": peer}
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
@@ -399,64 +433,28 @@ class Handler(BaseHTTPRequestHandler):
                     conn.execute("ROLLBACK")
                     return {"error": f"name already taken: {new}"}
 
-                affected_rooms = conn.execute(
-                    "SELECT id, participant_a, participant_b FROM rooms WHERE participant_a=? OR participant_b=?",
-                    (old, old),
-                ).fetchall()
-
-                for room in affected_rooms:
-                    other = room["participant_b"] if room["participant_a"] == old else room["participant_a"]
-                    new_room_name, _, _ = canonical_room_name(new, other)
-                    existing = conn.execute(
-                        "SELECT id FROM rooms WHERE name=?", (new_room_name,)
-                    ).fetchone()
-                    if existing and existing["id"] != room["id"]:
-                        conn.execute("ROLLBACK")
-                        return {"error": f"rename would collide with existing room '{new_room_name}'; delete one side first"}
-
                 conn.execute("UPDATE sessions SET name=? WHERE name=?", (new, old))
-
-                rooms_migrated = 0
-                for room in affected_rooms:
-                    other = room["participant_b"] if room["participant_a"] == old else room["participant_a"]
-                    new_room_name, new_a, new_b = canonical_room_name(new, other)
-                    cur_turn = conn.execute(
-                        "SELECT current_turn FROM rooms WHERE id=?", (room["id"],)
-                    ).fetchone()["current_turn"]
-                    new_turn = new if cur_turn == old else cur_turn
-                    conn.execute(
-                        "UPDATE rooms SET name=?, participant_a=?, participant_b=?, current_turn=? WHERE id=?",
-                        (new_room_name, new_a, new_b, new_turn, room["id"]),
-                    )
-                    rooms_migrated += 1
-
-                result = conn.execute(
-                    "UPDATE messages SET sender=? WHERE sender=?", (new, old)
-                )
-                messages_migrated = result.rowcount
+                r1 = conn.execute("UPDATE messages SET sender=? WHERE sender=?", (new, old))
+                r2 = conn.execute("UPDATE messages SET recipient=? WHERE recipient=?", (new, old))
+                messages_migrated = r1.rowcount + r2.rowcount
 
                 conn.execute("COMMIT")
-                return {"ok": True, "old": old, "new": new,
-                        "rooms_migrated": rooms_migrated, "messages_migrated": messages_migrated}
+                return {"ok": True, "old": old, "new": new, "rooms_migrated": 0, "messages_migrated": messages_migrated}
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
 
     def _delete(self, self_name, peer):
-        name = canonical_room_name(self_name, peer)[0]
+        clause, params = _conversation_clause(self_name, peer)
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                row = conn.execute("SELECT id FROM rooms WHERE name=?", (name,)).fetchone()
-                if row is None:
-                    conn.execute("ROLLBACK")
-                    raise KeyError(f"no such room: {name}")
-                room_id = row["id"]
-                cnt = conn.execute("SELECT COUNT(*) c FROM messages WHERE room_id=?", (room_id,)).fetchone()["c"]
-                conn.execute("DELETE FROM messages WHERE room_id=?", (room_id,))
-                conn.execute("DELETE FROM rooms WHERE id=?", (room_id,))
+                cnt = conn.execute(
+                    f"SELECT COUNT(*) c FROM messages WHERE {clause}", params
+                ).fetchone()["c"]
+                conn.execute(f"DELETE FROM messages WHERE {clause}", params)
                 conn.execute("COMMIT")
-                return {"deleted": True, "room": name, "msg_count": cnt}
+                return {"deleted": True, "room": f"{self_name}--{peer}", "msg_count": cnt}
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
@@ -580,7 +578,11 @@ def main():
     with db() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
-    # Idempotent schema migration: add role column if not present (pre-0.7.9 DBs).
+    # Schema migration: rooms+room_id → sender/recipient (0.8.x → 0.9.0).
+    with db() as conn:
+        migrate_db(conn)
+
+    # Idempotent column additions for sessions table.
     with db() as conn:
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")

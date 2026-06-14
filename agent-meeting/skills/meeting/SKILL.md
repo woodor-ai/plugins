@@ -4,13 +4,17 @@ description: Meeting-room directory for peer agent sessions. `/meeting <name>` r
 argument-hint: "<name> | list | delete | rename <new> | stop [<name>] | setup [daemon|token|telemetry] | help"
 ---
 
-## Architecture (changed 2026-05-26; sessions table added 2026-06-01)
+## Architecture (changed 2026-05-26; sessions table added 2026-06-01; rooms table removed 2026-06-14)
 
-Room storage moved from per-room markdown files to a single SQLite database at `~/.agent-meeting/db/rooms.db`. All reads and writes go through the `meeting` CLI at `~/.agent-meeting/bin/meeting`. This eliminates the entire class of bugs we were fighting: Edit/Write races, mtime check hacks, file size limits, manual archive discipline, monitor false positives.
+Storage: single SQLite database at `~/.agent-meeting/db/rooms.db`. All reads and writes go through the `meeting` CLI at `~/.agent-meeting/bin/meeting`. This eliminates the entire class of bugs we were fighting: Edit/Write races, mtime check hacks, file size limits, manual archive discipline, monitor false positives.
 
 You do NOT read or write canonical `.md` files anymore. The old `rooms/canonical/*.md` and view-symlink dirs are legacy/snapshot only — ignore them.
 
-**Session registration is now central (SQLite sessions table, not directory.json).**
+**There is no `rooms` table.** A conversation is defined purely by its participants: it is the set of messages where `(sender=A AND recipient=B) OR (sender=B AND recipient=A)`. There is no canonical room name, no `room_id`, no `current_turn` field in a room row — all of these are gone.
+
+**Turn is derived, not stored.** The current turn-holder for a conversation is the `recipient` of the last message in that conversation. If no messages exist yet, the first sender implicitly holds the turn. This means `rename` can never collide — there are no room names to clash.
+
+**Session registration is central (SQLite sessions table, not directory.json).**
 The `sessions` table in `rooms.db` holds every registered session: `name`, `cwd`, `host`, `registered_at`, `last_seen` (epoch float). Liveness is determined by heartbeat: the daemon updates `last_seen` on every `/ring` poll (monitor polls every 3s). A session is **online** if `last_seen` is within 12 seconds; **empty** if the entry exists but `last_seen` is older; **historical** if the name appears in messages but has no sessions entry. The old `directory.json` and `/tmp/meeting-<name>.monitor_pid` files are no longer read or written.
 
 ## Invoking the `meeting` CLI / monitor — READ FIRST (per-OS)
@@ -129,7 +133,8 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
 
 3. **先 rename，后停 monitor**（关键顺序）：跑 `~/.agent-meeting/bin/meeting rename <old> <new>`。
    **必须趁旧 monitor 还活着、`<old>` 还在注册表里时执行**——rename 要求 old 是已注册 session；若先停 monitor，monitor 退出会 atexit `unregister <old>`，rename 就会报 "no such session" 失败，导致状态不一致。
-   - 若 rename 返回错误（如目标名已占用、房间撞名）→ 原样报给用户并中止。此时还没动 monitor，状态干净。
+   - 若 rename 返回错误（如目标名已被另一个 session 占用）→ 原样报给用户并中止。此时还没动 monitor，状态干净。
+   - 注意：新模型不会因「两段对话名相同」而撞名——对话不再用名字作标识符，rename 从结构上不可能产生房间冲突。
 
 4. **停旧 monitor**：跑 `~/.agent-meeting/bin/meeting stop <old>`（SIGTERM 旧 monitor 进程，它自己清理 + 删 pidfile；此时 unregister `<old>` 已是 no-op，因为已被 rename 走）。
 

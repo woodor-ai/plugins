@@ -302,26 +302,18 @@ SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS rooms (
-  id INTEGER PRIMARY KEY,
-  name TEXT UNIQUE NOT NULL,           -- canonical name: sorted([a,b]).join('--')
-  participant_a TEXT NOT NULL,         -- lexicographically first
-  participant_b TEXT NOT NULL,
-  current_turn TEXT NOT NULL,          -- one of participant_a/b
-  created_at INTEGER NOT NULL          -- unix seconds
-);
-
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  room_id INTEGER NOT NULL REFERENCES rooms(id),
   sender TEXT NOT NULL,
+  recipient TEXT NOT NULL,
   kind TEXT NOT NULL,                  -- 开启|回应|总结
   body TEXT NOT NULL,
   ask TEXT,                            -- nullable; the **Ask** line of this msg
   created_at INTEGER NOT NULL          -- unix seconds
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages(room_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
+CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
 
 CREATE TABLE IF NOT EXISTS sessions (
   name TEXT PRIMARY KEY,
@@ -343,9 +335,86 @@ def connect():
     return db
 
 
+def _conversation_clause(a: str, b: str) -> tuple[str, list]:
+    """Return WHERE clause + params for messages between a and b (both directions)."""
+    clause = "((sender=? AND recipient=?) OR (sender=? AND recipient=?))"
+    return clause, [a, b, b, a]
+
+
+def migrate_db(db):
+    """Idempotent migration: rooms+room_id schema → sender/recipient schema.
+
+    Detects old schema by checking for 'rooms' table or absence of 'recipient' column.
+    Counts messages before/after to assert no data loss.
+    """
+    # Check whether migration is needed
+    has_rooms = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rooms'"
+    ).fetchone() is not None
+    has_recipient = any(
+        col[1] == "recipient"
+        for col in db.execute("PRAGMA table_info(messages)").fetchall()
+    )
+
+    if not has_rooms and has_recipient:
+        return  # already new schema — no-op
+
+    has_messages = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
+    ).fetchone() is not None
+    if not has_messages:
+        return  # fresh DB — schema will create everything
+
+    # Count original messages for integrity check
+    original_count = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+    if has_rooms and not has_recipient:
+        # Add recipient column and backfill from rooms table
+        db.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
+        db.execute("""
+            UPDATE messages SET recipient = (
+                SELECT CASE
+                    WHEN r.participant_a = messages.sender THEN r.participant_b
+                    ELSE r.participant_a
+                END
+                FROM rooms r WHERE r.id = messages.room_id
+            )
+        """)
+
+    # Rebuild messages table without room_id, with recipient NOT NULL
+    db.executescript("""
+        CREATE TABLE messages_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sender TEXT NOT NULL,
+          recipient TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          body TEXT NOT NULL,
+          ask TEXT,
+          created_at INTEGER NOT NULL
+        );
+        INSERT INTO messages_new (id, sender, recipient, kind, body, ask, created_at)
+            SELECT id, sender, recipient, kind, body, ask, created_at FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_new RENAME TO messages;
+        DROP INDEX IF EXISTS idx_messages_room_id;
+        CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
+        CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
+    """)
+
+    if has_rooms:
+        db.execute("DROP TABLE IF EXISTS rooms")
+
+    migrated_count = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    assert migrated_count == original_count, (
+        f"migration lost messages: {original_count} before, {migrated_count} after"
+    )
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = connect()
+    # Run migration first on existing DBs, then apply schema for new installs
+    migrate_db(db)
     db.executescript(SCHEMA)
     try:
         db.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
@@ -358,29 +427,6 @@ def init_db():
     db.close()
 
 
-# ---------- helpers ----------
-
-def canonical_room_name(a: str, b: str) -> tuple[str, str, str]:
-    """Sort two participants lexicographically. Returns (name, a, b)."""
-    sa, sb = sorted([a, b])
-    return f"{sa}--{sb}", sa, sb
-
-
-def ensure_room(db, self_name: str, peer: str) -> sqlite3.Row:
-    """Get or create the room for self <-> peer."""
-    name, a, b = canonical_room_name(self_name, peer)
-    row = db.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
-    if row is None:
-        # First message into this room; creator becomes the initial turn-holder via send().
-        db.execute(
-            "INSERT INTO rooms (name, participant_a, participant_b, current_turn, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (name, a, b, self_name, int(time.time())),
-        )
-        row = db.execute("SELECT * FROM rooms WHERE name=?", (name,)).fetchone()
-    return row
-
-
 # ---------- commands ----------
 
 def cmd_init(args):
@@ -389,12 +435,12 @@ def cmd_init(args):
 
 
 def cmd_send(args):
-    """Insert a message; flip turn to peer atomically.
+    """Insert a message; turn is derived from recipient.
 
     Body can be passed:
-      - inline: room send self peer "hello"
-      - from stdin: echo "hello" | room send self peer -
-      - from file: room send self peer --body-file=/tmp/reply.md
+      - inline: meeting send self peer "hello"
+      - from stdin: echo "hello" | meeting send self peer -
+      - from file: meeting send self peer --body-file=/tmp/reply.md
     Stdin/file is the safe way when body contains backticks, $(...), or other
     shell-special chars that would otherwise get interpreted before argv reaches us.
     """
@@ -413,7 +459,7 @@ def cmd_send(args):
     if args.ask:
         payload["ask"] = args.ask
     r = http("POST", host, "/send", body=payload)
-    print(f"sent: room={r['room']} msg_id={r['msg_id']} turn→{r['turn']}")
+    print(f"sent: msg_id={r['msg_id']} turn→{r['turn']}")
     beacon("send")
 
 
@@ -498,7 +544,7 @@ def cmd_online(args):
 
 
 def cmd_rename(args):
-    """Rename a registered session, migrating all its rooms and messages."""
+    """Rename a registered session, migrating all its messages."""
     import re
     if not re.fullmatch(r"[A-Za-z0-9-]{2,20}", args.new) or "--" in args.new:
         print(f"invalid name '{args.new}': must be 2-20 chars, only [A-Za-z0-9-], no '--'",
@@ -509,7 +555,7 @@ def cmd_rename(args):
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
-    print(f"renamed: {r['old']} → {r['new']} (rooms: {r['rooms_migrated']}, messages: {r['messages_migrated']})")
+    print(f"renamed: {r['old']} → {r['new']} (messages: {r['messages_migrated']})")
 
 
 def cmd_offline(args):
