@@ -25,6 +25,7 @@ Usage:
   monitor.py <self-name>
 """
 
+import argparse
 import atexit
 import hashlib
 import json
@@ -36,11 +37,14 @@ import tempfile
 import time
 from pathlib import Path
 
-if len(sys.argv) < 2:
-    sys.stderr.write("usage: monitor.py <self-name>\n")
-    sys.exit(2)
+_parser = argparse.ArgumentParser(prog="monitor.py", add_help=True)
+_parser.add_argument("name", help="session name to monitor")
+_parser.add_argument("--director", action="store_true", default=False,
+                     help="register this session as director role (default: worker)")
+_args = _parser.parse_args()
 
-SELF = sys.argv[1]
+SELF = _args.name
+IS_DIRECTOR = _args.director
 HOME = Path.home()
 DATA = HOME / ".agent-meeting"
 MEETING_CLI = DATA / "bin" / "meeting"
@@ -125,7 +129,8 @@ def _register():
     # --force: the monitor IS the liveness owner of this name. The /meeting skill
     # may have just registered it seconds ago (fresh last_seen), which would make
     # a plain register fail the conflict check. The monitor legitimately takes over.
-    _run_meeting("online", SELF, "--cwd", _CWD, "--force")
+    extra = ["--director"] if IS_DIRECTOR else []
+    _run_meeting("online", SELF, "--cwd", _CWD, "--force", *extra)
     # Write pidfile so `meeting stop <name>` can locate this process.
     try:
         RUN_DIR.mkdir(parents=True, exist_ok=True)

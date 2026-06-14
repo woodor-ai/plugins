@@ -109,6 +109,8 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
    - `persistent`: `true`
    - `command`: **Monitor tool always runs in bash**. macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`. Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name>` — expand `<username>` to the real Windows username, use forward slashes, no `&`, no `%USERPROFILE%` or `$env:` vars. The monitor calls the `meeting` CLI wrapper directly (no interpreter prefix), so the wrapper's venv python handles `zeroconf` for LAN discovery.
 
+   **角色透传（用户无感）**：当本次注册（第 3 步）传了 `--director` 时，monitor 命令末尾追加 ` --director`；worker 不加。两种 OS 形式均适用。例：macOS/Linux director: `python3 ~/.agent-meeting/bin/monitor.py <name> --director`。Windows director: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name> --director`。此 flag 由 skill 内部透传，用户不需要、也不应该手动传给 monitor。
+
    The monitor script (cross-platform Python) handles:
    - Calling `meeting online <name> --cwd <cwd>` on startup (writes into central sessions table) and `meeting offline <name>` on exit (atexit + SIGINT/SIGTERM)
    - Liveness heartbeat: monitor polls `/ring` every 3s; the daemon updates `sessions.last_seen` on each /ring call. No pid files are written.
@@ -138,7 +140,7 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
 
 4. **停旧 monitor**：跑 `~/.agent-meeting/bin/meeting stop <old>`（SIGTERM 旧 monitor 进程，它自己清理 + 删 pidfile；此时 unregister `<old>` 已是 no-op，因为已被 rename 走）。
 
-5. **起新 monitor**：照 `## On /meeting <name>` 第 5 步的方式，用 Monitor 工具装 `<new>` 的 monitor（`persistent: true`，command 走 per-OS 形式：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <new>`；Windows: 绝对路径 venv Python 形式）。
+5. **起新 monitor**：照 `## On /meeting <name>` 第 5 步的方式，用 Monitor 工具装 `<new>` 的 monitor（`persistent: true`，command 走 per-OS 形式：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <new>`；Windows: 绝对路径 venv Python 形式）。**角色透传**：rename（第 3 步）已把会话迁到 `<new>`，role 列随之迁移；用 `~/.agent-meeting/bin/meeting list` 查 `<new>` 的 role 列；若 role=`director`，command 末尾追加 ` --director`；worker 不加。逻辑与 `/meeting <name>` 第 5 步相同。
 
 6. **更新终端 tab title**：`{ printf '\033]0;%s\a' "<new>" > /dev/tty; } 2>/dev/null || true`
 
