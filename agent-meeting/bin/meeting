@@ -34,6 +34,7 @@ import http.client as _http_client
 import json
 import os
 import secrets
+import signal
 import socket
 import sqlite3
 import sys
@@ -895,6 +896,52 @@ def cmd_controls(args):
         print(f"  url:     {c['url']}")
         print(f"  version: {c['version'] or '(unknown)'}")
 
+def cmd_stop(args):
+    """Stop the local monitor process for a session by sending SIGTERM.
+
+    Purely local — reads the pidfile written by monitor.py at startup.
+    The monitor's own cleanup handler unregisters and clears the statusline cache.
+    """
+    run_dir = os.path.join(MEETING_HOME, "run")
+    pid_file = os.path.join(run_dir, f"{args.name}.pid")
+
+    if not os.path.exists(pid_file):
+        print(f"no running monitor for '{args.name}'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+    except Exception as e:
+        print(f"could not read pidfile: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Probe liveness before sending signal.
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        try:
+            os.remove(pid_file)
+        except Exception:
+            pass
+        print(f"no running monitor for '{args.name}' (cleaned stale pidfile)", file=sys.stderr)
+        sys.exit(1)
+
+    os.kill(pid, signal.SIGTERM)
+
+    # Wait up to ~3s for the process to exit.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            print(f"stopped monitor: {args.name} (pid {pid})")
+            return
+
+    print(f"SIGTERM sent to monitor '{args.name}' (pid {pid}), but process has not exited within 3s")
+
+
 def cmd_list(args):
     """List all session names with liveness status and message count.
 
@@ -1011,6 +1058,11 @@ def main():
                        help="remove this session from the central sessions table (via the control daemon)")
     s.add_argument("name", help="session name to unregister")
     s.set_defaults(func=cmd_unregister)
+
+    sp = sub.add_parser("stop",
+                       help="stop the local monitor process for a session (sends SIGTERM; monitor self-unregisters)")
+    sp.add_argument("name")
+    sp.set_defaults(func=cmd_stop)
 
     rp = sub.add_parser("rename",
                         help="rename a session and migrate all its rooms and messages")

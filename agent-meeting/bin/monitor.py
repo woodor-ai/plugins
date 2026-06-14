@@ -67,6 +67,9 @@ STATUSLINE_FILE = STATUSLINE_DIR / _badge_key(SESSION_ID, _CWD)
 # Legacy cwd-keyed file — used for cleanup when we're running with session_id.
 _CWD_STATUSLINE_FILE = STATUSLINE_DIR / _badge_key(None, _CWD)
 
+RUN_DIR = DATA / "run"
+PID_FILE = RUN_DIR / f"{SELF}.pid"
+
 # Override MEETING_HOME if set (used in tests).
 MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
 
@@ -123,6 +126,12 @@ def _register():
     # may have just registered it seconds ago (fresh last_seen), which would make
     # a plain register fail the conflict check. The monitor legitimately takes over.
     _run_meeting("register", SELF, "--cwd", _CWD, "--force")
+    # Write pidfile so `meeting stop <name>` can locate this process.
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        PID_FILE.write_text(str(os.getpid()))
+    except Exception:
+        pass
     # Publish the room name + control info locally so the TUI status line can show
     # 📞 <name> 🛰 <control>. JSON format; statusline.py reads it.
     try:
@@ -151,6 +160,11 @@ def _register():
 def _unregister():
     try:
         _run_meeting("unregister", SELF)
+    except Exception:
+        pass
+    # Remove pidfile.
+    try:
+        PID_FILE.unlink()
     except Exception:
         pass
     # Clear the status-line badge — but only if it's still ours (another session
