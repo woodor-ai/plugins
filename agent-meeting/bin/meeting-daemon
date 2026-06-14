@@ -196,6 +196,10 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             if path == "/unregister":
                 return self._json(200, self._unregister(body["name"]))
+            if path == "/rename":
+                result = self._rename(body["old"], body["new"])
+                status = 400 if result.get("error") else 200
+                return self._json(status, result)
             return self._err(404, f"no such POST route: {path}")
         except KeyError as e:
             return self._err(400, f"missing param: {e}")
@@ -380,6 +384,60 @@ class Handler(BaseHTTPRequestHandler):
                 msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 conn.execute("COMMIT")
                 return {"msg_id": msg_id, "room": room["name"], "turn": peer}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def _rename(self, old: str, new: str):
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if not conn.execute("SELECT 1 FROM sessions WHERE name=?", (old,)).fetchone():
+                    conn.execute("ROLLBACK")
+                    return {"error": f"no such session: {old}"}
+                if conn.execute("SELECT 1 FROM sessions WHERE name=?", (new,)).fetchone():
+                    conn.execute("ROLLBACK")
+                    return {"error": f"name already taken: {new}"}
+
+                affected_rooms = conn.execute(
+                    "SELECT id, participant_a, participant_b FROM rooms WHERE participant_a=? OR participant_b=?",
+                    (old, old),
+                ).fetchall()
+
+                for room in affected_rooms:
+                    other = room["participant_b"] if room["participant_a"] == old else room["participant_a"]
+                    new_room_name, _, _ = canonical_room_name(new, other)
+                    existing = conn.execute(
+                        "SELECT id FROM rooms WHERE name=?", (new_room_name,)
+                    ).fetchone()
+                    if existing and existing["id"] != room["id"]:
+                        conn.execute("ROLLBACK")
+                        return {"error": f"rename would collide with existing room '{new_room_name}'; delete one side first"}
+
+                conn.execute("UPDATE sessions SET name=? WHERE name=?", (new, old))
+
+                rooms_migrated = 0
+                for room in affected_rooms:
+                    other = room["participant_b"] if room["participant_a"] == old else room["participant_a"]
+                    new_room_name, new_a, new_b = canonical_room_name(new, other)
+                    cur_turn = conn.execute(
+                        "SELECT current_turn FROM rooms WHERE id=?", (room["id"],)
+                    ).fetchone()["current_turn"]
+                    new_turn = new if cur_turn == old else cur_turn
+                    conn.execute(
+                        "UPDATE rooms SET name=?, participant_a=?, participant_b=?, current_turn=? WHERE id=?",
+                        (new_room_name, new_a, new_b, new_turn, room["id"]),
+                    )
+                    rooms_migrated += 1
+
+                result = conn.execute(
+                    "UPDATE messages SET sender=? WHERE sender=?", (new, old)
+                )
+                messages_migrated = result.rowcount
+
+                conn.execute("COMMIT")
+                return {"ok": True, "old": old, "new": new,
+                        "rooms_migrated": rooms_migrated, "messages_migrated": messages_migrated}
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
