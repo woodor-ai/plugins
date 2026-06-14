@@ -22,8 +22,8 @@ Usage:
   meeting turn <self> <peer>                            # whose turn is it
   meeting ring <self> --since <ID>                      # monitor query: new msgs in rooms where turn=self
   meeting list                                          # all rooms
-  meeting register <name> --cwd <cwd>                   # register session in central sessions table
-  meeting unregister <name>                             # remove session from central sessions table
+  meeting online <name> --cwd <cwd>                     # bring this session online (register in the directory)
+  meeting offline <name>                               # take this session offline (remove from the directory)
 
 All write operations are wrapped in BEGIN IMMEDIATE transactions, so two
 sessions writing the same room simultaneously serialize cleanly.
@@ -466,8 +466,8 @@ def cmd_ring(args):
         print(f"{r['id']}\t{r['peer']}\t{ask}")
 
 
-def cmd_register(args):
-    """Register this session in the central sessions table via daemon HTTP POST /register.
+def cmd_online(args):
+    """Bring this session online (register in the central sessions table via daemon HTTP POST /register).
 
     Conflict: if name already exists and last_seen is within ONLINE_THRESHOLD
     seconds, refuse unless --force.
@@ -493,7 +493,7 @@ def cmd_register(args):
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
-    print(f"registered: {name} (cwd={cwd}, host={host_name})")
+    print(f"online: {name} (cwd={cwd}, host={host_name})")
     beacon("register")
 
 
@@ -512,8 +512,8 @@ def cmd_rename(args):
     print(f"renamed: {r['old']} → {r['new']} (rooms: {r['rooms_migrated']}, messages: {r['messages_migrated']})")
 
 
-def cmd_unregister(args):
-    """Remove a session from the central sessions table. Silent if not present."""
+def cmd_offline(args):
+    """Take a session offline (remove from the central sessions table). Silent if not present."""
     name = args.name
 
     host = _resolve_host(getattr(args, "host", None))
@@ -521,7 +521,7 @@ def cmd_unregister(args):
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
-    print(f"unregistered: {name}")
+    print(f"offline: {name}")
 
 
 LAUNCHD_LABEL = "com.tommy.agent-meeting"
@@ -1042,9 +1042,9 @@ def main():
                    help="token value to write, or 'clear' to remove it; omit to show/generate")
     s.set_defaults(func=cmd_token)
 
-    s = sub.add_parser("register",
-                       help="register this session in the central sessions table")
-    s.add_argument("name", help="session name to register")
+    s = sub.add_parser("online",
+                       help="bring this session online (register in the directory)")
+    s.add_argument("name", help="session name to bring online")
     s.add_argument("--cwd", required=True, help="working directory of this session")
     s.add_argument("--force", action="store_true",
                    help="override even if monitor is still running")
@@ -1052,12 +1052,12 @@ def main():
                    help="register this session as a director (default: worker)")
     s.add_argument("--host", default=None,
                    help="explicitly specify control URL (e.g. http://10.0.0.5:8765); saved as preferred control")
-    s.set_defaults(func=cmd_register)
+    s.set_defaults(func=cmd_online)
 
-    s = sub.add_parser("unregister",
-                       help="remove this session from the central sessions table (via the control daemon)")
-    s.add_argument("name", help="session name to unregister")
-    s.set_defaults(func=cmd_unregister)
+    s = sub.add_parser("offline",
+                       help="take this session offline (remove from the directory via the control daemon)")
+    s.add_argument("name", help="session name to take offline")
+    s.set_defaults(func=cmd_offline)
 
     sp = sub.add_parser("stop",
                        help="stop the local monitor process for a session (sends SIGTERM; monitor self-unregisters)")

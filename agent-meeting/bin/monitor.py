@@ -6,9 +6,9 @@ Replaces the macOS-only zsh monitor that was embedded in SKILL.md. Runs as
 the persistent Monitor task spawned by Claude Code's /meeting registration.
 
 Behavior:
-  - On startup, calls `meeting register` to write this session into the
+  - On startup, calls `meeting online` to write this session into the
     central sessions table. On exit (atexit / SIGINT / SIGTERM), calls
-    `meeting unregister` to clean up.
+    `meeting offline` to clean up.
   - Liveness is tracked via heartbeat: the daemon updates last_seen in the
     sessions table whenever /ring is polled. Because monitor polls every 3s,
     a session is considered online if last_seen < 12s ago (4 missed heartbeats).
@@ -125,7 +125,7 @@ def _register():
     # --force: the monitor IS the liveness owner of this name. The /meeting skill
     # may have just registered it seconds ago (fresh last_seen), which would make
     # a plain register fail the conflict check. The monitor legitimately takes over.
-    _run_meeting("register", SELF, "--cwd", _CWD, "--force")
+    _run_meeting("online", SELF, "--cwd", _CWD, "--force")
     # Write pidfile so `meeting stop <name>` can locate this process.
     try:
         RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -159,7 +159,7 @@ def _register():
 
 def _unregister():
     try:
-        _run_meeting("unregister", SELF)
+        _run_meeting("offline", SELF)
     except Exception:
         pass
     # Remove pidfile.

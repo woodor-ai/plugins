@@ -1,7 +1,7 @@
 ---
 name: meeting
 description: Register this session in the meeting-room directory with a chosen name, and install the monitor (start watching for incoming calls). Required before /talkto can be used to or from this session. Backed by SQLite (~/.agent-meeting/db/rooms.db) — all room state lives there, no more .md file fiddling.
-argument-hint: "<name> | list | delete | setup [daemon|token|telemetry]"
+argument-hint: "<name> | list | delete | rename <new> | stop [<name>] | setup [daemon|token|telemetry] | help"
 ---
 
 ## Architecture (changed 2026-05-26; sessions table added 2026-06-01)
@@ -32,38 +32,35 @@ The first word after `/meeting` decides what to do:
 
 | Input | Action |
 |---|---|
-| `/meeting` (empty) | Show name picker (see "Picker" below) |
+| `/meeting` (empty) | Same as `/meeting help` — show the command usage summary |
+| `/meeting help` | Print a concise usage summary of all `/meeting` subcommands (human-readable form of this dispatch table). No state change. See "On `/meeting help`" below. |
 | `/meeting list` | Run `~/.agent-meeting/bin/meeting list` **and** `~/.agent-meeting/bin/meeting controls`, then present both together: first a markdown table with columns Status / Name / Msgs / Role (from `list`), then a "control 节点" subsection listing discovered controls (from `controls`). Do NOT just say "see above" or "如上" relying on the collapsed bash block — paste both results visible in the main chat area. Status is `empty` / `online` / `historical`. Role is `director` or `worker`. |
 | `/meeting delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/meeting delete <self> <peer>`. |
+| `/meeting rename <new>` | Rename THIS session to `<new>` (migrates rooms + messages) and restart the monitor under the new name. See "On `/meeting rename`" below. |
+| `/meeting stop [<name>]` | Stop a monitor process. No arg = stop THIS session's monitor (takes it offline). See "On `/meeting stop`" below. |
 | `/meeting setup` | Print brief usage of the three setup subcommands (daemon / token / telemetry). No action taken. See "On `/meeting setup`" below. |
 | `/meeting setup daemon [status\|stop\|restart]` | Manage the LAN-sharing daemon — see "On `/meeting setup daemon`" below. |
 | `/meeting setup token [<value>\|clear]` | Run `~/.agent-meeting/bin/meeting token [<value>\|clear]`. On the **host** machine with no args: generates a token (if none exists) and prints it — distribute this to every client. On a **client** machine with `<value>`: writes the host's token into local config. `clear` removes the token and returns the daemon to open mode. Note: the token is printed to the terminal and may appear in shell history — treat it like a password. After success, output: `✅ Token 已写入本机 config，本会话后续与其他 agent 的通信都会带此 token 鉴权。` |
 | `/meeting setup telemetry on\|off\|status` | Run `~/.agent-meeting/bin/meeting telemetry <action>` and paste the one-line output to the user. |
 | `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
 
-Reserved words `list`, `delete`, `setup`, `controls`, `daemon`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
+Reserved words `list`, `delete`, `rename`, `stop`, `setup`, `help`, `controls`, `daemon`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
 
-### Picker (when `/meeting` has no args)
+## On `/meeting help`
 
-1. Run `~/.agent-meeting/bin/meeting list` to get session-name candidates. Output is TSV: `<status>\t<name>\t<msgs>\t<role>\t<cwd>` where status is one of:
-   - `empty` — in sessions table but heartbeat expired (last_seen > 12s ago, monitor gone) → **safe to take over**, has historical msg context.
-   - `online` — in sessions table with recent heartbeat (last_seen ≤ 12s ago) → picking would conflict with the running session.
-   - `historical` — never in sessions table but appeared as sender in DB at some point → safe, fully fresh registration.
-2. Use the `AskUserQuestion` tool to let user pick. **AskUserQuestion takes 2-4 options that you fill, and TUI auto-appends "Other" on top (does NOT count toward the cap). So you have 4 actual slots, with "Other" as the 5th displayed entry handling anything skipped.**
+Print the following usage summary verbatim (no CLI calls, no state change):
 
-   **Selection rules — apply in order** (empty first because they're the most likely "I want my old name back" candidates):
-   a. ALL `empty` names go in first (sorted by msg count desc — most-active first). These are the recommended take-over candidates.
-   b. If slots remain after empty: fill with `online` names (sorted by msg count desc). Reference info — user can still pick to take over with confirmation.
-   c. If slots remain after online: fill with `historical` names (sorted by msg count desc).
-   d. The auto-added "Other" handles anything skipped — user just types the name.
-
-   **Label / description format**:
-   - empty: label=`<name>`, description=`(empty, safe to take over) — <N> msgs`
-   - online: label=`<name>`, description=`(online — will conflict if you take it) — <cwd>`
-   - historical: label=`<name>`, description=`(historical, safe) — <N> msgs`
-
-3. If user picks an `online` name, ask explicit confirmation before proceeding (their choice may have been informational).
-4. After user confirms a name (or types via Other), proceed to "On `/meeting <name>`" below with that name.
+```
+/meeting <name>                          — 注册本会话为 <name>，安装 monitor
+/meeting list                            — 列出所有会话状态 + control 节点
+/meeting delete <peer>                   — 删除与 <peer> 的房间（需确认）
+/meeting rename <new>                    — 重命名本会话为 <new>，迁移房间消息并重启 monitor
+/meeting stop [<name>]                   — 停止 monitor 进程（不传参则停本会话）
+/meeting setup daemon [status|stop|restart] — 管理 LAN 共享 daemon
+/meeting setup token [<value>|clear]     — 生成或写入鉴权 token
+/meeting setup telemetry on|off|status   — 开关遥测上报
+/meeting help                            — 显示本帮助
+```
 
 ## On `/meeting setup`
 
@@ -95,9 +92,9 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
    - **2+ controls**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on the one marked `★ 当前`. Do NOT add any language implying multiple controls is unusual or an error — it is a valid multi-machine office topology.
 
 2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20.
-3. **Register**: call the CLI register subcommand. When a specific control was chosen in step 1, pass `--host <url>`. Per the per-OS rule at the top:
-   - macOS/Linux: `~/.agent-meeting/bin/meeting register <name> --cwd <cwd> [--host <url>] [--director]`
-   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" register <name> --cwd <cwd> [--host <url>] [--director]`
+3. **Register**: call the CLI online subcommand. When a specific control was chosen in step 1, pass `--host <url>`. Per the per-OS rule at the top:
+   - macOS/Linux: `~/.agent-meeting/bin/meeting online <name> --cwd <cwd> [--host <url>] [--director]`
+   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" online <name> --cwd <cwd> [--host <url>] [--director]`
 
    Pass `--director` to register this session as a director role (default: worker).
 
@@ -109,7 +106,7 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
    - `command`: **Monitor tool always runs in bash**. macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`. Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name>` — expand `<username>` to the real Windows username, use forward slashes, no `&`, no `%USERPROFILE%` or `$env:` vars. The monitor calls the `meeting` CLI wrapper directly (no interpreter prefix), so the wrapper's venv python handles `zeroconf` for LAN discovery.
 
    The monitor script (cross-platform Python) handles:
-   - Calling `meeting register <name> --cwd <cwd>` on startup (writes into central sessions table) and `meeting unregister <name>` on exit (atexit + SIGINT/SIGTERM)
+   - Calling `meeting online <name> --cwd <cwd>` on startup (writes into central sessions table) and `meeting offline <name>` on exit (atexit + SIGINT/SIGTERM)
    - Liveness heartbeat: monitor polls `/ring` every 3s; the daemon updates `sessions.last_seen` on each /ring call. No pid files are written.
    - Seeding cursor on first launch to current MAX(msg_id) so a new registration doesn't replay history
    - Polling `meeting ring <name> --since <cursor>` every 3s and emitting `📬 New Message from <peer>(: <ask>)?` lines
@@ -119,6 +116,36 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
 7. **Confirm to user**: "Meeting registered as `<name>`. You can now /talkto <peer> or receive calls."
 
    The TUI status line shows `📞 <name>  |  <model>  |  <dir>  |  <branch>` automatically — no action needed here. `monitor.py` writes the room name to a local cache (`~/.agent-meeting/statusline/<cwd-hash>`) on register and removes it on exit; `bin/statusline.py` (registered as the `statusLine` command in `~/.claude/settings.json` by the SessionStart hook) reads that file. It is purely local — no SQLite query, no daemon/mDNS — so it stays fast and works on client machines too. The badge appears right after registration and disappears when the session ends. If the user had a custom `statusLine` already, the bootstrap leaves it untouched (it only installs/refreshes when statusLine is absent or already ours).
+
+## On `/meeting rename <new>`
+
+**顺序敏感**——步骤必须严格按序执行，原因见各步说明。
+
+1. **校验 `<new>`**：仅 `[A-Za-z0-9-]`，长度 2-20，不含 `--` 子串。不合法则报错中止，不做任何 CLI 调用。
+
+2. **确定当前会话名 `<old>`**：跑 `~/.agent-meeting/bin/meeting list`，找 status=`online` 且 cwd 等于当前工作目录、host 为本机的那一行——它的 name 就是 `<old>`。
+   - 若找不到匹配行 → 告诉用户"本会话未注册或已下线，无法 rename"，中止。
+   - 若有多行匹配 → 用 AskUserQuestion 让用户确认是哪一个。
+
+3. **先 rename，后停 monitor**（关键顺序）：跑 `~/.agent-meeting/bin/meeting rename <old> <new>`。
+   **必须趁旧 monitor 还活着、`<old>` 还在注册表里时执行**——rename 要求 old 是已注册 session；若先停 monitor，monitor 退出会 atexit `unregister <old>`，rename 就会报 "no such session" 失败，导致状态不一致。
+   - 若 rename 返回错误（如目标名已占用、房间撞名）→ 原样报给用户并中止。此时还没动 monitor，状态干净。
+
+4. **停旧 monitor**：跑 `~/.agent-meeting/bin/meeting stop <old>`（SIGTERM 旧 monitor 进程，它自己清理 + 删 pidfile；此时 unregister `<old>` 已是 no-op，因为已被 rename 走）。
+
+5. **起新 monitor**：照 `## On /meeting <name>` 第 5 步的方式，用 Monitor 工具装 `<new>` 的 monitor（`persistent: true`，command 走 per-OS 形式：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <new>`；Windows: 绝对路径 venv Python 形式）。
+
+6. **更新终端 tab title**：`{ printf '\033]0;%s\a' "<new>" > /dev/tty; } 2>/dev/null || true`
+
+7. **确认输出**：`Renamed to <new>; monitor restarted under new name.`
+
+## On `/meeting stop [<name>]`
+
+**给了 `<name>`**：直接跑 `~/.agent-meeting/bin/meeting stop <name>`，把命令输出贴给用户。
+
+**没给 `<name>`**：先按 `## On /meeting rename` 第 2 步的方法确定当前会话名 `<current>`，再跑 `~/.agent-meeting/bin/meeting stop <current>`。提醒用户：这会停掉本会话的 monitor 并让它下线（monitor 退出时自动 unregister）。
+
+**说明**：`meeting stop` 是本地操作——给 `~/.agent-meeting/run/<name>.pid` 记录的 monitor 进程发 SIGTERM，monitor 自己完成 unregister + 清缓存；不走 daemon。pidfile 不存在时命令会报 "no running monitor"。
 
 ## Behavior on incoming new-message event
 
