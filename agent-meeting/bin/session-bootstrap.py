@@ -287,14 +287,21 @@ def _read_plugin_version() -> str:
     return "unknown"
 
 
-def load_or_create_config() -> tuple[dict, bool, str]:
+def load_or_create_config(min_version: str | None = None) -> tuple[dict, bool, str]:
     """Return (cfg, is_new_install, machine_id).
 
     Side effects:
     - Generates machine_id if absent (new install → also returns is_new_install=True).
-    - Updates plugin_version in config if it changed.
+    - Updates plugin_version in config, but never downgrades below min_version.
+      Pass min_version=installed_ver when the downgrade guard fired so that
+      config.json plugin_version stays at the higher installed version.
     """
     version = _read_plugin_version()
+    # Honour the monotonic-upgrade invariant: if the caller knows a higher
+    # version is already installed, keep that version in config.json.
+    if min_version is not None and min_version != "unknown":
+        if _parse_semver(version) < _parse_semver(min_version):
+            version = min_version
     is_new_install = False
 
     if CONFIG.exists():
@@ -892,7 +899,9 @@ def main():
             ensure_bin_wrappers()
             ensure_statusline()
 
-        cfg, is_new_install, machine_id = load_or_create_config()
+        cfg, is_new_install, machine_id = load_or_create_config(
+            min_version=installed_ver if skip_runtime_rewrite else None
+        )
         version = cfg.get("plugin_version", "unknown")
 
         if is_new_install:
