@@ -322,6 +322,22 @@ CREATE TABLE IF NOT EXISTS read_cursors (
   cursor      INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS groups (
+  name       TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  creator    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+  group_name  TEXT NOT NULL,
+  member_name TEXT NOT NULL,
+  added_at    INTEGER NOT NULL,
+  PRIMARY KEY (group_name, member_name),
+  FOREIGN KEY (group_name) REFERENCES groups(name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_name);
 """
 
 
@@ -358,6 +374,23 @@ def init_db():
         "  cursor      INTEGER NOT NULL,"
         "  updated_at  INTEGER NOT NULL)"
     )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS groups ("
+        "  name TEXT PRIMARY KEY,"
+        "  created_at INTEGER NOT NULL,"
+        "  creator TEXT)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS group_members ("
+        "  group_name TEXT NOT NULL,"
+        "  member_name TEXT NOT NULL,"
+        "  added_at INTEGER NOT NULL,"
+        "  PRIMARY KEY (group_name, member_name),"
+        "  FOREIGN KEY (group_name) REFERENCES groups(name) ON DELETE CASCADE)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_name)"
+    )
     db.close()
 
 
@@ -393,7 +426,10 @@ def cmd_send(args):
     if args.ask:
         payload["ask"] = args.ask
     r = http("POST", host, "/send", body=payload)
-    print(f"sent: msg_id={r['msg_id']} turn→{r['turn']}")
+    if r.get("turn") is None:
+        print(f"sent: msg_id={r['msg_id']} broadcast→{args.peer}")
+    else:
+        print(f"sent: msg_id={r['msg_id']} turn→{r['turn']}")
     beacon("send")
 
 
@@ -816,6 +852,79 @@ def cmd_token(args):
     )
 
 
+_GROUP_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,18}[A-Za-z0-9]$|^[A-Za-z0-9]{2}$")
+_GROUP_NO_CONSECUTIVE_HYPHENS = __import__("re").compile(r"--")
+
+
+def _validate_group_name(name: str) -> str | None:
+    """Return error string if group name is invalid, else None."""
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9-]{2,20}", name) or "--" in name:
+        return f"invalid group name '{name}': must be 2-20 chars, only [A-Za-z0-9-], no '--'"
+    return None
+
+
+def cmd_group(args):
+    host = _resolve_host(getattr(args, "host", None))
+
+    if args.group_cmd == "create":
+        err = _validate_group_name(args.group_name)
+        if err:
+            print(err, file=sys.stderr)
+            sys.exit(1)
+        members = [m.strip() for m in args.members.split(",") if m.strip()]
+        r = http("POST", host, "/group/create",
+                 body={"name": args.group_name, "members": members,
+                       "creator": getattr(args, "creator", None)})
+        if r.get("error"):
+            print(r["error"], file=sys.stderr)
+            sys.exit(1)
+        print(f"group created: {args.group_name} members={members}")
+
+    elif args.group_cmd == "add":
+        err = _validate_group_name(args.member)
+        if err:
+            print(err, file=sys.stderr)
+            sys.exit(1)
+        r = http("POST", host, "/group/add",
+                 body={"group": args.group_name, "member": args.member})
+        if r.get("error"):
+            print(r["error"], file=sys.stderr)
+            sys.exit(1)
+        print(f"added {args.member} to {args.group_name}")
+
+    elif args.group_cmd == "remove":
+        r = http("POST", host, "/group/remove",
+                 body={"group": args.group_name, "member": args.member})
+        if r.get("error"):
+            print(r["error"], file=sys.stderr)
+            sys.exit(1)
+        print(f"removed {args.member} from {args.group_name}")
+
+    elif args.group_cmd == "list":
+        params = {}
+        if getattr(args, "member", None):
+            params["member"] = args.member
+        r = http("GET", host, "/group/list", params=params or None)
+        for g in r:
+            print(f"{g['name']}\t{g.get('member_count', '')}")
+
+    elif args.group_cmd == "members":
+        r = http("GET", host, "/group/members", params={"group": args.group_name})
+        if isinstance(r, dict) and r.get("error"):
+            print(r["error"], file=sys.stderr)
+            sys.exit(1)
+        for m in r:
+            print(m)
+
+    elif args.group_cmd == "delete":
+        r = http("DELETE", host, "/group", params={"name": args.group_name})
+        if r.get("error"):
+            print(r["error"], file=sys.stderr)
+            sys.exit(1)
+        print(f"group deleted: {args.group_name} ({r.get('purged', 0)} messages purged)")
+
+
 def cmd_controls(args):
     """List all discovered control nodes.
 
@@ -1031,6 +1140,35 @@ def main():
     rp.add_argument("--host", default=None,
                     help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
     rp.set_defaults(func=cmd_rename)
+
+    gp = sub.add_parser("group", help="manage groups")
+    gp.add_argument("--host", default=None,
+                    help="explicitly specify control URL; applies to this command only, not persisted")
+    gsub = gp.add_subparsers(dest="group_cmd", required=True)
+
+    gc = gsub.add_parser("create", help="create a group")
+    gc.add_argument("group_name")
+    gc.add_argument("--members", required=True, help="comma-separated member names")
+    gc.add_argument("--creator", default=None)
+
+    ga = gsub.add_parser("add", help="add a member to a group")
+    ga.add_argument("group_name")
+    ga.add_argument("member")
+
+    gr = gsub.add_parser("remove", help="remove a member from a group")
+    gr.add_argument("group_name")
+    gr.add_argument("member")
+
+    gl = gsub.add_parser("list", help="list groups (optionally filter by member)")
+    gl.add_argument("--member", default=None)
+
+    gm = gsub.add_parser("members", help="list members of a group")
+    gm.add_argument("group_name")
+
+    gd = gsub.add_parser("delete", help="delete a group and purge its messages")
+    gd.add_argument("group_name")
+
+    gp.set_defaults(func=cmd_group)
 
     args = p.parse_args()
     args.func(args)

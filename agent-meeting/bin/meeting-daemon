@@ -191,37 +191,61 @@ def _ws_read_frame(rfile) -> tuple[int, bytes]:
 
 
 def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None):
-    """Push a message to all live/draining subscribers for recipient.
+    """Push a message to all live/draining subscribers for recipient (or group members).
 
     Called after DB COMMIT. Uses per-subscriber send_lock + high_water_mark
     to ensure each subscriber sees each msg_id exactly once even if a
     backlog flush is in progress on the same connection's thread.
     """
-    with _sub_lock:
-        subs = list(_subscribers.get(recipient, []))
-    # TODO: group fanout — if is_group(recipient): look up members and fanout to each
+    with db() as conn:
+        is_grp = _is_group(conn, recipient)
+        if is_grp:
+            rows = conn.execute(
+                "SELECT member_name FROM group_members WHERE group_name=?", (recipient,)
+            ).fetchall()
+            target_names = [r["member_name"] for r in rows]
+        else:
+            target_names = [recipient]
+
+    group_field = recipient if is_grp else None
 
     frame = json.dumps({
         "type": "msg",
         "msg_id": msg_id,
         "sender": sender,
         "ask": ask or "",
-        "group": None,
+        "group": group_field,
         "phase": "live",
     }, ensure_ascii=False)
 
     dead = []
-    for sub in subs:
-        with sub.send_lock:
-            if sub.state != "live":
-                continue  # draining — backlog thread owns this sub's stream
-            if msg_id <= sub.high_water_mark:
-                continue  # already sent via backlog
-            ok = _ws_send_text(sub, frame)
-            if ok:
-                sub.high_water_mark = msg_id
-            else:
-                dead.append(sub)
+    now = int(time.time())
+    for target in target_names:
+        with _sub_lock:
+            subs = list(_subscribers.get(target, []))
+        for sub in subs:
+            with sub.send_lock:
+                if sub.state != "live":
+                    continue  # draining — backlog thread owns this sub's stream
+                if msg_id <= sub.high_water_mark:
+                    continue  # already sent via backlog
+                ok = _ws_send_text(sub, frame)
+                if ok:
+                    sub.high_water_mark = msg_id
+                    # Persist cursor advance for this target member.
+                    try:
+                        with db() as conn2:
+                            conn2.execute(
+                                "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
+                                " ON CONFLICT(member_name) DO UPDATE SET"
+                                "  cursor=MAX(excluded.cursor, read_cursors.cursor),"
+                                "  updated_at=excluded.updated_at",
+                                (target, msg_id, now),
+                            )
+                    except Exception:
+                        pass
+                else:
+                    dead.append(sub)
 
     for sub in dead:
         _ws_remove(sub)
@@ -277,6 +301,10 @@ def _conversation_clause(a: str, b: str) -> tuple[str, list]:
     """Return WHERE clause + params for messages between a and b (both directions)."""
     clause = "((sender=? AND recipient=?) OR (sender=? AND recipient=?))"
     return clause, [a, b, b, a]
+
+
+def _is_group(conn, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM groups WHERE name=?", (name,)).fetchone() is not None
 
 
 # ---------- HTTP handlers ----------
@@ -371,6 +399,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self._read(q["self"][0], q["peer"][0],
                                                   int(q.get("limit", ["30"])[0]),
                                                   int(q.get("since", ["0"])[0])))
+            if path == "/group/list":
+                return self._json(200, self._group_list(q.get("member", [None])[0]))
+            if path == "/group/members":
+                return self._json(200, self._group_members(q["group"][0]))
             return self._err(404, f"no such GET route: {path}")
         except KeyError as e:
             return self._err(400, f"missing param: {e}")
@@ -501,6 +533,9 @@ class Handler(BaseHTTPRequestHandler):
         We loop until the DB has no more rows past our high_water_mark, checking under
         send_lock before flipping to "live" so there is no window where a concurrent
         fanout could slip a message past us.
+
+        The backlog query is a union: recipient=self OR recipient IN groups that sub belongs to.
+        This covers both 1:1 messages and group messages in one cursor-ordered stream.
         """
         while True:
             with sub.send_lock:
@@ -508,17 +543,30 @@ class Handler(BaseHTTPRequestHandler):
 
             with db() as conn:
                 rows = conn.execute(
-                    "SELECT id, sender, ask FROM messages WHERE recipient=? AND id>? ORDER BY id ASC LIMIT 500",
-                    (sub.name, hwm),
+                    "SELECT id, sender, recipient, ask FROM messages"
+                    " WHERE (recipient=? OR recipient IN"
+                    "   (SELECT group_name FROM group_members WHERE member_name=?))"
+                    " AND id>? ORDER BY id ASC LIMIT 500",
+                    (sub.name, sub.name, hwm),
                 ).fetchall()
+                # Fetch group names in same conn for group field resolution
+                group_names: set[str] = set()
+                if rows:
+                    recipients = set(r["recipient"] for r in rows)
+                    for rcp in recipients:
+                        if conn.execute("SELECT 1 FROM groups WHERE name=?", (rcp,)).fetchone():
+                            group_names.add(rcp)
 
             if not rows:
                 # No rows past hwm — check once more under send_lock before flipping live
                 with sub.send_lock:
                     with db() as conn:
                         more = conn.execute(
-                            "SELECT 1 FROM messages WHERE recipient=? AND id>? LIMIT 1",
-                            (sub.name, sub.high_water_mark),
+                            "SELECT 1 FROM messages"
+                            " WHERE (recipient=? OR recipient IN"
+                            "   (SELECT group_name FROM group_members WHERE member_name=?))"
+                            " AND id>? LIMIT 1",
+                            (sub.name, sub.name, sub.high_water_mark),
                         ).fetchone()
                     if not more:
                         # Atomically flip to live inside send_lock — fanout's state check
@@ -548,12 +596,13 @@ class Handler(BaseHTTPRequestHandler):
                 continue
 
             for row in rows:
+                group_field = row["recipient"] if row["recipient"] in group_names else None
                 frame = json.dumps({
                     "type": "msg",
                     "msg_id": row["id"],
                     "sender": row["sender"],
                     "ask": row["ask"] or "",
-                    "group": None,
+                    "group": group_field,
                     "phase": "backlog",
                 }, ensure_ascii=False)
                 with sub.send_lock:
@@ -590,6 +639,18 @@ class Handler(BaseHTTPRequestHandler):
                 result = self._rename(body["old"], body["new"])
                 status = 400 if result.get("error") else 200
                 return self._json(status, result)
+            if path == "/group/create":
+                result = self._group_create(body["name"], body.get("members", []), body.get("creator"))
+                status = 400 if result.get("error") else 200
+                return self._json(status, result)
+            if path == "/group/add":
+                result = self._group_add(body["group"], body["member"])
+                status = 400 if result.get("error") else 200
+                return self._json(status, result)
+            if path == "/group/remove":
+                result = self._group_remove(body["group"], body["member"])
+                status = 400 if result.get("error") else 200
+                return self._json(status, result)
             return self._err(404, f"no such POST route: {path}")
         except KeyError as e:
             return self._err(400, f"missing param: {e}")
@@ -605,6 +666,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/conversation":
                 return self._json(200, self._delete(q["self"][0], q["peer"][0]))
+            if path == "/group":
+                return self._json(200, self._group_purge(q["name"][0]))
             return self._err(404, f"no such DELETE route: {path}")
         except KeyError as e:
             return self._err(400, f"missing param: {e}")
@@ -702,6 +765,23 @@ class Handler(BaseHTTPRequestHandler):
         return row["recipient"] if row else self_name
 
     def _show(self, self_name, peer, limit):
+        with db() as conn:
+            is_grp = _is_group(conn, peer)
+            if is_grp:
+                msgs = conn.execute(
+                    "SELECT * FROM messages WHERE recipient=? ORDER BY id DESC LIMIT ?",
+                    (peer, limit),
+                ).fetchall()
+                lines = [f"# Group: {peer}\n---\n"]
+                for row in reversed(msgs):
+                    ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
+                    lines.append(f"### [{row['sender']} @ {ts}] {row['kind']}")
+                    lines.append(row["body"])
+                    if row["ask"]:
+                        lines.append(f"\n**Ask**: {row['ask']}")
+                    lines.append("")
+                return "\n".join(lines)
+
         clause, params = _conversation_clause(self_name, peer)
         turn = self._turn(self_name, peer)
         with db() as conn:
@@ -721,7 +801,13 @@ class Handler(BaseHTTPRequestHandler):
         return "\n".join(lines)
 
     def _read(self, self_name, peer, limit, since):
-        clause, params = _conversation_clause(self_name, peer)
+        with db() as conn:
+            is_grp = _is_group(conn, peer)
+        if is_grp:
+            clause = "recipient=?"
+            params: list = [peer]
+        else:
+            clause, params = _conversation_clause(self_name, peer)
         if since:
             clause += " AND id > ?"
             params.append(since)
@@ -744,6 +830,7 @@ class Handler(BaseHTTPRequestHandler):
                     (self_name, peer, kind, body, ask, int(time.time())),
                 )
                 msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                is_grp = _is_group(conn, peer)
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -751,7 +838,128 @@ class Handler(BaseHTTPRequestHandler):
 
         # Fanout outside DB transaction — socket IO must not block DB writes.
         _ws_fanout(msg_id, peer, self_name, ask)
-        return {"msg_id": msg_id, "turn": peer}
+        return {"msg_id": msg_id, "turn": None if is_grp else peer}
+
+    def _group_create(self, name: str, members: list, creator: str | None):
+        now = int(time.time())
+        with db() as conn:
+            # Reject if active session name
+            if conn.execute("SELECT 1 FROM sessions WHERE name=?", (name,)).fetchone():
+                return {"error": f"name '{name}' is already an active session name"}
+            # Reject if existing group name
+            if conn.execute("SELECT 1 FROM groups WHERE name=?", (name,)).fetchone():
+                return {"error": f"group '{name}' already exists"}
+            # Reject if historical messages use this name (as recipient or sender)
+            if conn.execute(
+                "SELECT 1 FROM messages WHERE recipient=? OR sender=? LIMIT 1", (name, name)
+            ).fetchone():
+                return {"error": f"name '{name}' has existing message history (cannot reuse as group name)"}
+
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "INSERT INTO groups (name, created_at, creator) VALUES (?, ?, ?)",
+                    (name, now, creator),
+                )
+                seen = set()
+                for member in members:
+                    if member in seen:
+                        continue
+                    seen.add(member)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO group_members (group_name, member_name, added_at) VALUES (?, ?, ?)",
+                        (name, member, now),
+                    )
+                # Seed read_cursors for each member that doesn't have a row yet
+                max_row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM messages").fetchone()
+                max_id = max_row["m"]
+                for member in seen:
+                    existing = conn.execute(
+                        "SELECT 1 FROM read_cursors WHERE member_name=?", (member,)
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)",
+                            (member, max_id, now),
+                        )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return {"ok": True, "name": name, "members": list(seen)}
+
+    def _group_add(self, group: str, member: str):
+        now = int(time.time())
+        with db() as conn:
+            if not conn.execute("SELECT 1 FROM groups WHERE name=?", (group,)).fetchone():
+                return {"error": f"group '{group}' does not exist"}
+            conn.execute(
+                "INSERT OR IGNORE INTO group_members (group_name, member_name, added_at) VALUES (?, ?, ?)",
+                (group, member, now),
+            )
+            # Seed read_cursors for this member if no row exists
+            if not conn.execute(
+                "SELECT 1 FROM read_cursors WHERE member_name=?", (member,)
+            ).fetchone():
+                max_row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM messages").fetchone()
+                conn.execute(
+                    "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)",
+                    (member, max_row["m"], now),
+                )
+        return {"ok": True, "group": group, "member": member}
+
+    def _group_remove(self, group: str, member: str):
+        with db() as conn:
+            if not conn.execute("SELECT 1 FROM groups WHERE name=?", (group,)).fetchone():
+                return {"error": f"group '{group}' does not exist"}
+            conn.execute(
+                "DELETE FROM group_members WHERE group_name=? AND member_name=?", (group, member)
+            )
+        return {"ok": True, "group": group, "member": member}
+
+    def _group_list(self, member: str | None):
+        with db() as conn:
+            if member:
+                rows = conn.execute(
+                    "SELECT g.name, COUNT(gm2.member_name) AS member_count"
+                    " FROM groups g"
+                    " JOIN group_members gm ON g.name=gm.group_name AND gm.member_name=?"
+                    " LEFT JOIN group_members gm2 ON g.name=gm2.group_name"
+                    " GROUP BY g.name",
+                    (member,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT g.name, COUNT(gm.member_name) AS member_count"
+                    " FROM groups g LEFT JOIN group_members gm ON g.name=gm.group_name"
+                    " GROUP BY g.name",
+                ).fetchall()
+        return [{"name": r["name"], "member_count": r["member_count"]} for r in rows]
+
+    def _group_members(self, group: str):
+        with db() as conn:
+            if not conn.execute("SELECT 1 FROM groups WHERE name=?", (group,)).fetchone():
+                return {"error": f"group '{group}' does not exist"}
+            rows = conn.execute(
+                "SELECT member_name FROM group_members WHERE group_name=? ORDER BY member_name",
+                (group,),
+            ).fetchall()
+        return [r["member_name"] for r in rows]
+
+    def _group_purge(self, name: str):
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cnt = conn.execute(
+                    "SELECT COUNT(*) c FROM messages WHERE recipient=?", (name,)
+                ).fetchone()["c"]
+                conn.execute("DELETE FROM messages WHERE recipient=?", (name,))
+                conn.execute("DELETE FROM groups WHERE name=?", (name,))
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return {"ok": True, "purged": cnt}
 
     def _rename(self, old: str, new: str):
         with db() as conn:
@@ -924,6 +1132,23 @@ def main():
             "  member_name TEXT PRIMARY KEY,"
             "  cursor      INTEGER NOT NULL,"
             "  updated_at  INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS groups ("
+            "  name TEXT PRIMARY KEY,"
+            "  created_at INTEGER NOT NULL,"
+            "  creator TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS group_members ("
+            "  group_name TEXT NOT NULL,"
+            "  member_name TEXT NOT NULL,"
+            "  added_at INTEGER NOT NULL,"
+            "  PRIMARY KEY (group_name, member_name),"
+            "  FOREIGN KEY (group_name) REFERENCES groups(name) ON DELETE CASCADE)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_name)"
         )
 
     ThreadingHTTPServer.allow_reuse_address = True

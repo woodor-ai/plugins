@@ -193,6 +193,19 @@ def init_test_db(db_dir: str):
             cursor      INTEGER NOT NULL,
             updated_at  INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS groups (
+            name       TEXT PRIMARY KEY,
+            created_at INTEGER NOT NULL,
+            creator    TEXT
+        );
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_name  TEXT NOT NULL,
+            member_name TEXT NOT NULL,
+            added_at    INTEGER NOT NULL,
+            PRIMARY KEY (group_name, member_name),
+            FOREIGN KEY (group_name) REFERENCES groups(name) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_name);
     """)
     conn.close()
 
@@ -700,6 +713,42 @@ def test_m6_first_seed_zero_replay(db_dir: str):
         proc.wait(timeout=3)
 
 
+def test_mg1_group_notification(db_dir: str):
+    """TC-MG1: 群消息 → monitor 打出 📬 通知行（group 字段 non-None）。"""
+    global _daemon_proc
+    print("\n[TC-MG1] 群消息 → monitor 📬")
+
+    _http("/register", "POST", {"name": "mg1_sender"})
+    _http("/register", "POST", {"name": "mg1_member"})
+
+    # Create group with mg1_member
+    _http("/group/create", "POST", {"name": "mg1-chan",
+                                    "members": ["mg1_member"],
+                                    "creator": "mg1_sender"})
+
+    # Seed a direct msg to advance member's cursor past any history
+    seed = _http("/send", "POST", {"self": "mg1_sender", "peer": "mg1_member",
+                                   "body": "seed", "kind": "消息"})
+    _set_db_cursor(db_dir, "mg1_member", seed["msg_id"])
+
+    proc, shared, offset = start_monitor("mg1_member", db_dir)
+    try:
+        time.sleep(2.0)
+
+        # Send a group message — monitor should receive it and print 📬
+        _http("/send", "POST", {"self": "mg1_sender", "peer": "mg1-chan",
+                                "body": "group hello", "kind": "消息", "ask": "reply"})
+
+        lines = collect_stdout_lines(proc, "📬", count=1, timeout=6.0,
+                                     _shared_lines=shared, _shared_offset=offset)
+        check("TC-MG1: 📬 line for group msg", len(lines) >= 1, f"got {lines}")
+        if lines:
+            check("TC-MG1: sender in 📬 line", "mg1_sender" in lines[0], lines[0])
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
 # ---------- stdout format regression ----------
 
 def test_stdout_format_unchanged():
@@ -752,6 +801,7 @@ def main():
             test_m4_reconnect_backlog(tmp)
             test_m5_host_reresolution(tmp)
             test_m6_first_seed_zero_replay(tmp)
+            test_mg1_group_notification(tmp)
         finally:
             try:
                 _daemon_proc.terminate()
