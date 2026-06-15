@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-WS PR2 integration tests — monitor.py WS client.
+WS PR3 integration tests — monitor.py WS client.
 
-Tests the monitor's behavior after the main-loop switch from HTTP /ring polling
-to WebSocket long-connection. Never touches the live daemon on 8765.
+Tests the monitor's full WS behavior including cursor=-1 sentinel seeding
+introduced in PR3. Never touches the live daemon on 8765.
 
 Test cases:
   TC-M1: monitor 连上后能收到实时消息并打出正确的 📬 stdout 行
@@ -11,6 +11,7 @@ Test cases:
   TC-M3: server ping → monitor 回 masked pong（daemon 不报协议错、连接不掉）
   TC-M4: 杀掉测试 daemon → monitor 退避重连 → 重启 daemon → monitor 重连并按游标补发
   TC-M5: host 解析每次重连都重跑 controls 解析（mock controls 验证调用次数）
+  TC-M6: 首启 cursor=-1 播种 — daemon 回 caught_up(max)，monitor 不收历史消息
 
 Usage:
     python3 agent-meeting/tests/test_ws_monitor.py
@@ -331,6 +332,7 @@ def check(name: str, cond: bool, detail: str = ""):
 # monitor.py calls `meeting controls --json` to discover daemon ip:port.
 # In tests, MEETING_HOME points to our test db_dir. We install a fake
 # `meeting` binary there that returns the test daemon's address.
+# All other meeting subcommands (online, offline) fall through to the real binary.
 
 def install_controls_shim(db_dir: str, ip: str, port: int) -> str:
     """Write a fake `meeting` CLI stub that answers `controls --json`."""
@@ -348,7 +350,7 @@ if args == ["controls", "--json"]:
     print({payload!r})
     sys.exit(0)
 
-# For all other calls (online, offline, ring) fall through to the real binary
+# For all other calls (online, offline) fall through to the real binary
 # which is at the default location (~/.agent-meeting/bin/meeting).
 import pathlib
 real = pathlib.Path.home() / ".agent-meeting" / "bin" / "meeting"
@@ -406,10 +408,8 @@ def test_m1_realtime_stdout(db_dir: str):
         "self": "m1_alice", "peer": "m1_bob", "body": "seed", "kind": "消息"
     })
 
-    # Pre-set STATE_FILE to seed cursor so monitor doesn't try to replay
-    # backlog on startup. Without this, call_ring(0) may hit the live daemon
-    # and return 0 items (m1_bob unknown there), leaving cursor=0 and causing
-    # the seed message to arrive as unexpected backlog before the live msgs.
+    # Pre-set STATE_FILE to seed cursor so monitor starts past the seed message,
+    # avoiding it arriving as unexpected backlog before the live msgs.
     sf = _state_file("m1_bob")
     with open(sf, "w") as f:
         f.write(str(seed["msg_id"]))
@@ -471,7 +471,6 @@ def test_m2_backlog_replay(db_dir: str):
     r3 = _http("/send", "POST", {"self": "m2_sender", "peer": "m2_recv", "body": "c", "kind": "消息"})
 
     # Pre-set STATE_FILE to r1["msg_id"] so monitor treats msg1 as seen.
-    # Monitor reads STATE_FILE on startup; if it exists it won't call ring(0).
     state_file = _state_file("m2_recv")
     with open(state_file, "w") as f:
         f.write(str(r1["msg_id"]))
@@ -666,6 +665,63 @@ def test_m5_host_reresolution(db_dir: str):
         install_controls_shim(db_dir, HOST, TEST_PORT)
 
 
+def test_m6_sentinel_seed(db_dir: str):
+    """TC-M6: 首启 cursor=-1 播种 — 无 STATE_FILE 时 monitor 连 cursor=-1，
+    daemon 回 caught_up(max)，不补发任何历史消息。"""
+    print("\n[TC-M6] 首启 cursor=-1 哨兵播种")
+
+    _http("/register", "POST", {"name": "m6_sender"})
+    _http("/register", "POST", {"name": "m6_recv"})
+
+    # Insert 3 history messages before monitor starts
+    r1 = _http("/send", "POST", {"self": "m6_sender", "peer": "m6_recv", "body": "hist1", "kind": "消息"})
+    r2 = _http("/send", "POST", {"self": "m6_sender", "peer": "m6_recv", "body": "hist2", "kind": "消息"})
+    r3 = _http("/send", "POST", {"self": "m6_sender", "peer": "m6_recv", "body": "hist3", "kind": "消息"})
+
+    state_file = _state_file("m6_recv")
+    # Ensure no STATE_FILE exists — monitor must take the sentinel path
+    try:
+        os.unlink(state_file)
+    except FileNotFoundError:
+        pass
+
+    proc, shared, offset = start_monitor("m6_recv", db_dir, state_file=state_file)
+    try:
+        # Give monitor time to connect and receive caught_up
+        time.sleep(2.5)
+
+        # No 📬 lines should have appeared (history must be suppressed)
+        lines_before = collect_stdout_lines(proc, "📬", count=1, timeout=0.5,
+                                            _shared_lines=shared, _shared_offset=offset)
+        check("TC-M6: no history flood on fresh start",
+              len(lines_before) == 0, f"got {len(lines_before)} unexpected lines: {lines_before}")
+
+        # STATE_FILE must now exist and hold max(r1,r2,r3)
+        try:
+            seeded = int(open(state_file).read().strip())
+        except Exception:
+            seeded = -999
+        check("TC-M6: STATE_FILE written with correct cursor",
+              seeded == r3["msg_id"], f"got seeded={seeded}, expected={r3['msg_id']}")
+
+        # New live message after seeding must still arrive
+        _http("/send", "POST", {
+            "self": "m6_sender", "peer": "m6_recv", "body": "live", "kind": "消息"
+        })
+        lines_live = collect_stdout_lines(proc, "📬", count=1, timeout=6.0,
+                                          _shared_lines=shared, _shared_offset=offset)
+        check("TC-M6: live message delivered after sentinel seed",
+              len(lines_live) == 1, f"got {lines_live}")
+
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+        try:
+            os.unlink(state_file)
+        except Exception:
+            pass
+
+
 # ---------- stdout format regression ----------
 
 def test_stdout_format_unchanged():
@@ -717,6 +773,7 @@ def main():
             test_m3_ping_pong(tmp)
             test_m4_reconnect_backlog(tmp)
             test_m5_host_reresolution(tmp)
+            test_m6_sentinel_seed(tmp)
         finally:
             try:
                 _daemon_proc.terminate()

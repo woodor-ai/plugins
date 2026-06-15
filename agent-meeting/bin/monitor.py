@@ -13,10 +13,10 @@ Behavior:
     sessions table whenever it receives a pong from the monitor. Because
     monitor pings every ~5s and ONLINE_THRESHOLD=12s, liveness is maintained
     as long as the WS connection is alive.
-  - Cursor seed: first launch (no STATE_FILE) starts at current MAX(id)
-    so newly-registered names don't get flooded with history. Sources the
-    seed via `meeting ring --since 0` then immediately advancing the cursor
-    (works whether DB is local or behind HTTP daemon).
+  - Cursor seed: first launch (no STATE_FILE) uses sentinel cursor -1.
+    The daemon converts -1 to the current MAX(msg_id), sends zero backlog,
+    and echoes the max in the caught_up frame. Monitor writes that value
+    to STATE_FILE, so subsequent reconnects use the real cursor.
   - Connects WS to daemon /subscribe, receives pushed frames, and emits
     stdout lines `📬 New Message from <peer>(: <ask>)?` — Claude Code
     surfaces each as a task notification.
@@ -205,38 +205,15 @@ _register()
 
 # ---------- cursor seed ----------
 
-def call_ring(since: int) -> list[tuple[int, str, str]]:
-    """Returns list of (id, peer, ask)."""
-    try:
-        r = _run_meeting("ring", SELF, "--since", str(since))
-    except subprocess.TimeoutExpired:
-        return []
-    out = []
-    for line in r.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 2:
-            continue
-        try:
-            msg_id = int(parts[0])
-        except ValueError:
-            continue
-        peer = parts[1]
-        ask = parts[2] if len(parts) > 2 else ""
-        out.append((msg_id, peer, ask))
-    return out
-
-
 if STATE_FILE.exists():
     try:
         last = int(STATE_FILE.read_text().strip())
     except Exception:
         last = 0
 else:
-    # First launch: pull all current ring messages, treat as "already seen", set cursor
-    # to the max id so we only emit messages newer than this point. Avoids history flood.
-    initial = call_ring(0)
-    last = max((m[0] for m in initial), default=0)
-    STATE_FILE.write_text(str(last))
+    # First launch: use sentinel -1. The daemon will set our cursor to MAX(msg_id)
+    # and echo it back in the caught_up frame. We write STATE_FILE then.
+    last = -1
 
 
 print(f"[meeting {SELF}] monitor started (last_msg_id={last}, pid={os.getpid()})", flush=True)
@@ -522,9 +499,11 @@ while True:
                 ts = time.strftime("%Y-%m-%dT%H:%M:%S")
                 sys.stderr.write(f"[meeting {SELF}] {ts} caught_up cursor={cursor_val}\n")
                 sys.stderr.flush()
-                # Align local cursor if daemon reports higher (double-safety)
+                # Sentinel seed: daemon resolves -1 to MAX(msg_id) and echoes it back.
+                # Write STATE_FILE so subsequent reconnects use the real cursor.
                 if cursor_val is not None and cursor_val > last:
                     last = cursor_val
+                    STATE_FILE.write_text(str(last))
 
         elif opcode == 0x9:  # ping from daemon → reply with masked pong
             try:

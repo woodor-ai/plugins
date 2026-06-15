@@ -458,6 +458,99 @@ def test_concurrent_dedup():
     c.close()
 
 
+def test_sentinel_seed():
+    """TC8: cursor=-1 哨兵播种 — daemon 回 caught_up(max)，不补发历史；cursor>=0 正常补发。"""
+    print("\n[TC8] cursor=-1 哨兵播种")
+
+    _http("/register", "POST", {"name": "seed_sender"})
+    _http("/register", "POST", {"name": "seed_recv"})
+
+    # Insert 3 history messages
+    r1 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_recv", "body": "h1", "kind": "消息"})
+    r2 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_recv", "body": "h2", "kind": "消息"})
+    r3 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_recv", "body": "h3", "kind": "消息"})
+    max_id = r3["msg_id"]
+
+    # Connect with cursor=-1 (sentinel): should get caught_up(max), zero backlog msgs
+    c = WSClient("seed_recv", cursor=-1)
+    backlog_sentinel = c.read_until_caught_up(timeout=5)
+    check("TC8: sentinel cursor=-1 → zero backlog", len(backlog_sentinel) == 0,
+          f"got {len(backlog_sentinel)} msgs")
+
+    # Read the caught_up frame's cursor value — WSClient.read_until_caught_up breaks on it
+    # but doesn't return it. Re-read via a direct frame read to get caught_up cursor.
+    # Instead: open a second connection to get the caught_up frame explicitly.
+    c.close()
+
+    # Second connection with cursor=-1 to capture the caught_up frame value
+    c2_sock = socket.create_connection((HOST, TEST_PORT), timeout=5)
+    c2_sock.settimeout(5)
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = (
+        f"GET /subscribe HTTP/1.1\r\nHost: {HOST}:{TEST_PORT}\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+        f"X-Meeting-Name: seed_recv\r\nX-Meeting-Cursor: -1\r\nX-Meeting-Proto: 1\r\n\r\n"
+    )
+    c2_sock.sendall(req.encode())
+    # Drain HTTP upgrade response
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        buf += c2_sock.recv(256)
+    # Read frames until caught_up
+    caught_up_cursor = None
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        c2_sock.settimeout(max(0.1, deadline - time.time()))
+        try:
+            header = b""
+            while len(header) < 2:
+                chunk = c2_sock.recv(2 - len(header))
+                if not chunk:
+                    break
+                header += chunk
+            if len(header) < 2:
+                break
+            b0, b1 = header[0], header[1]
+            opcode = b0 & 0x0F
+            length = b1 & 0x7F
+            if length == 126:
+                ext = b""
+                while len(ext) < 2:
+                    ext += c2_sock.recv(2 - len(ext))
+                length = struct.unpack("!H", ext)[0]
+            payload = b""
+            while len(payload) < length:
+                payload += c2_sock.recv(length - len(payload))
+            if opcode == 0x1:
+                d = json.loads(payload.decode())
+                if d.get("type") == "caught_up":
+                    caught_up_cursor = d.get("cursor")
+                    break
+        except socket.timeout:
+            break
+    try:
+        c2_sock.close()
+    except Exception:
+        pass
+
+    check("TC8: caught_up cursor matches MAX(msg_id)",
+          caught_up_cursor == max_id,
+          f"caught_up cursor={caught_up_cursor}, expected max_id={max_id}")
+
+    # Non-sentinel: cursor=r1 should deliver r2 and r3 as backlog
+    c3 = WSClient("seed_recv", cursor=r1["msg_id"])
+    backlog_normal = c3.read_until_caught_up(timeout=5)
+    check("TC8: normal cursor>=0 → backlog delivered",
+          len(backlog_normal) == 2,
+          f"got {len(backlog_normal)} msgs")
+    if len(backlog_normal) == 2:
+        check("TC8: backlog ids correct",
+              sorted(m["msg_id"] for m in backlog_normal) == [r2["msg_id"], r3["msg_id"]],
+              str([m["msg_id"] for m in backlog_normal]))
+    c3.close()
+
+
 def _collect_all_msgs(c: WSClient, expect_count: int, timeout: float = 15.0) -> list[dict]:
     """Read frames until expect_count msg frames received or timeout, skipping pings."""
     msgs = []
@@ -574,6 +667,19 @@ def test_mid_drain_inject_race(db_dir: str, rounds: int = 20):
         print(f"    all {rounds} rounds passed")
 
 
+def test_unknown_get_route_404():
+    """TC9: 未知 GET 路由必须返回 404，不能悬挂。"""
+    print("\n[TC9] 未知 GET 路由 → 404")
+    url = f"http://{HOST}:{TEST_PORT}/nonexistent"
+    try:
+        urllib.request.urlopen(url, timeout=5)
+        check("TC9: unknown GET → 404", False, "expected HTTPError 404, got 200")
+    except urllib.error.HTTPError as e:
+        check("TC9: unknown GET → 404", e.code == 404, f"got HTTP {e.code}")
+    except Exception as e:
+        check("TC9: unknown GET → 404", False, f"unexpected error: {e}")
+
+
 # ---------- main ----------
 
 def main():
@@ -591,6 +697,8 @@ def main():
             test_ping_pong()
             test_reconnect_with_cursor()
             test_concurrent_dedup()
+            test_sentinel_seed()
+            test_unknown_get_route_404()
             test_mid_drain_inject_race(tmp, rounds=20)
         finally:
             proc.terminate()

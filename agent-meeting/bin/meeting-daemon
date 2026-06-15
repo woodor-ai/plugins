@@ -5,7 +5,7 @@ meeting-daemon — HTTP+mDNS server for LAN-wide agent-meeting.
 Single-host model: this process owns the SQLite DB. Other machines on the
 LAN discover us via mDNS (_agent-meeting._tcp.local.) and hit our HTTP API
 to do all room operations (register / unregister / send / read / show /
-turn / ring / list / delete) — no direct DB access from clients.
+turn / list / delete) — no direct DB access from clients.
 
 Localhost clients also go through HTTP (uniform code path; localhost RTT
 is <1ms so the cost is negligible).
@@ -420,8 +420,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self._read(q["self"][0], q["peer"][0],
                                                   int(q.get("limit", ["30"])[0]),
                                                   int(q.get("since", ["0"])[0])))
-            if path == "/ring":
-                return self._json(200, self._ring(q["self"][0], int(q.get("since", ["0"])[0])))
             return self._err(404, f"no such GET route: {path}")
         except KeyError as e:
             return self._err(400, f"missing param: {e}")
@@ -487,6 +485,13 @@ class Handler(BaseHTTPRequestHandler):
         # Clear the 30s socket timeout so the framework doesn't kill long-lived WS connections.
         self.connection.settimeout(None)
 
+        # cursor=-1 is the sentinel for a fresh monitor (no STATE_FILE).
+        # Set its cursor to MAX(msg_id) so _ws_send_backlog sends zero rows.
+        if cursor < 0:
+            with db() as conn:
+                row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM messages").fetchone()
+                cursor = row["m"]
+
         sub = Subscriber(name, self.connection, self.wfile, cursor)
 
         # Register as draining, send backlog, switch to live.
@@ -506,7 +511,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 if opcode == 0xA:  # pong
                     sub.last_pong = time.time()
-                    # Refresh liveness in DB (replaces /ring's last_seen update for WS clients)
+                    # Refresh liveness in DB (WS pong 时刷 last_seen)
                     try:
                         with db() as conn:
                             conn.execute(
@@ -756,18 +761,6 @@ class Handler(BaseHTTPRequestHandler):
         with db() as conn:
             rows = conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
-
-    def _ring(self, self_name, since):
-        with db() as conn:
-            rows = conn.execute(
-                "SELECT id, sender, ask FROM messages WHERE recipient=? AND id > ? ORDER BY id ASC",
-                (self_name, since),
-            ).fetchall()
-            conn.execute(
-                "UPDATE sessions SET last_seen=? WHERE name=?",
-                (time.time(), self_name),
-            )
-        return [{"id": r["id"], "peer": r["sender"], "ask": r["ask"] or ""} for r in rows]
 
     def _send(self, self_name, peer, body, kind, ask):
         if not body:

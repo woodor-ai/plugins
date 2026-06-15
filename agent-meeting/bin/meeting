@@ -20,7 +20,6 @@ Usage:
   meeting read <self> <peer> [--limit=30] [--since=ID]
   meeting show <self> <peer> [--limit=30]               # human-readable markdown render
   meeting turn <self> <peer>                            # whose turn is it
-  meeting ring <self> --since <ID>                      # monitor query: new msgs in rooms where turn=self
   meeting list                                          # all rooms
   meeting online <name> --cwd <cwd>                     # bring this session online (register in the directory)
   meeting offline <name>                               # take this session offline (remove from the directory)
@@ -93,14 +92,14 @@ def beacon(event: str):
     t = threading.Thread(target=_send, daemon=True)
     t.start()
 
-# Discovery cache: avoid 1-2s mDNS browse on every CLI call (monitor polls ring/3s).
+# Discovery cache: avoid 1-2s mDNS browse on every CLI call.
 HOST_CACHE = os.path.join(tempfile.gettempdir(), "meeting-host.cache")
 HOST_CACHE_TTL = 60  # seconds
 MDNS_BROWSE_TIMEOUT = 1.5  # seconds
 SERVICE_TYPE = "_agent-meeting._tcp.local."
 
 # A session is considered online if last_seen is within this many seconds.
-# monitor polls /ring every 3s, so 4 missed heartbeats = 12s.
+# Monitor sends a WS ping every ~5s; daemon updates last_seen on pong.
 ONLINE_THRESHOLD = 12
 
 _NO_CONTROL_MSG = (
@@ -320,7 +319,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   cwd TEXT,
   host TEXT,
   registered_at TEXT,
-  last_seen REAL,                       -- epoch seconds (float); heartbeat via /ring
+  last_seen REAL,                       -- epoch seconds (float); heartbeat via WS pong
   role TEXT NOT NULL DEFAULT 'worker'
 );
 """
@@ -497,19 +496,6 @@ def cmd_delete(args):
     host = _resolve_host(getattr(args, "host", None))
     r = http("DELETE", host, "/room", params={"self": args.self, "peer": args.peer})
     print(f"deleted: room={r['room']} ({r['msg_count']} msgs purged)")
-
-
-def cmd_ring(args):
-    """Monitor query: for self, list new messages in rooms where turn=self.
-
-    Output: one line per message: <msg_id>\t<peer>\t<ask_or_empty>
-    Monitor uses this to track the cursor and emit notifications.
-    """
-    host = _resolve_host(getattr(args, "host", None))
-    rows = http("GET", host, "/ring", params={"self": args.self, "since": args.since})
-    for r in rows:
-        ask = (r.get("ask") or "").replace("\n", " ").replace("\t", " ")
-        print(f"{r['id']}\t{r['peer']}\t{ask}")
 
 
 def cmd_online(args):
@@ -1045,13 +1031,6 @@ def main():
     s.add_argument("--host", default=None,
                    help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
     s.set_defaults(func=cmd_turn)
-
-    s = sub.add_parser("ring", help="monitor query: new msgs in rooms where turn=self")
-    s.add_argument("self")
-    s.add_argument("--since", type=int, default=0, help="only msgs with id > since")
-    s.add_argument("--host", default=None,
-                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
-    s.set_defaults(func=cmd_ring)
 
     s = sub.add_parser("list",
                        help="list all session names with status (online/empty/historical) + msg count")
