@@ -44,7 +44,7 @@ allowed-tools:
 
 1. **Read** 当前 cwd 的项目状态 doc（如 `docs/current-state.md` / `README.md` / `CLAUDE.md` 等，按项目惯例）的前两节确认 in-flight context
 2. 从对话上下文整理 3 段内容（每段都必填，无内容写"无"，**禁止超 50 行**——超就重写更精炼）
-3. **Write** 到 `<cwd>/.claude/handoff-pending.md`（如父目录不存在 `mkdir -p .claude/`）
+3. **Write** 到**当前 shell 实际工作目录**下的 `.claude/handoff-pending.md`（先 `pwd` 确认位置，如父目录不存在先 `mkdir -p .claude/`）。**不要**解析成 git 仓根目录或 `CLAUDE_PROJECT_DIR`——多 agent 共用一个 git 仓时，各自的卡必须落在各自子目录，否则会塌缩到 git 根互相覆盖。
 4. `wc -l` 验证 ≤50 行；超出 → 报错让用户决定是否压缩
 5. 报一行确认：文件路径 + 行数 + 3 段标题（让用户看到内容大纲）
 

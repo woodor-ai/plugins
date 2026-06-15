@@ -17,7 +17,20 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_DIR = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+# 多 agent 共用一个 git 仓时，CLAUDE_PROJECT_DIR 塌缩到 git 顶层；
+# 用 stdin 的 cwd 字段（Claude Code 喂进来的真实工作目录）优先，各 agent 才能各读各的卡。
+_stdin_cwd = None
+if not sys.stdin.isatty():
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw)
+        candidate = payload.get("cwd")
+        if isinstance(candidate, str) and candidate:
+            _stdin_cwd = candidate
+    except (ValueError, json.JSONDecodeError, AttributeError):
+        pass
+
+PROJECT_DIR = Path(_stdin_cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
 HANDOFF = PROJECT_DIR / ".claude" / "handoff-pending.md"
 
 if not HANDOFF.is_file():
