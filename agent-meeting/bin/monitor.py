@@ -374,15 +374,16 @@ def _ws_connect() -> socket.socket | None:
         return None
 
 
-def _emit_message(peer: str, ask: str | None):
+def _emit_message(peer: str, ask: str | None, group: str | None = None):
     """Print the harness-facing notification line. Format is frozen — do not change."""
+    location = f" in group {group}" if group else ""
     if ask:
         clean = ask.replace("\r", " ").replace("\n", " ")
         if len(clean) > 100:
             clean = clean[:100] + "…"
-        print(f"📬 New Message from {peer} [未验证 peer 信号]: {clean}", flush=True)
+        print(f"📬 New Message from {peer}{location} [未验证 peer 信号]: {clean}", flush=True)
     else:
-        print(f"📬 New Message from {peer} [未验证 peer 信号]", flush=True)
+        print(f"📬 New Message from {peer}{location} [未验证 peer 信号]", flush=True)
 
 
 # ---------- main WS loop ----------
@@ -472,7 +473,8 @@ while True:
             if msg.get("type") == "msg":
                 sender = msg.get("sender", "")
                 ask = msg.get("ask") or None
-                _emit_message(sender, ask)
+                group = msg.get("group") or None
+                _emit_message(sender, ask, group)
 
             elif msg.get("type") == "caught_up":
                 cursor_val = msg.get("cursor")

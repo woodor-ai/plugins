@@ -752,24 +752,91 @@ def test_mg1_group_notification(db_dir: str):
 # ---------- stdout format regression ----------
 
 def test_stdout_format_unchanged():
-    """Verify the exact stdout format strings match what the old poll loop emitted."""
+    """Verify the exact stdout format strings match what monitor.py emits."""
     print("\n[TC-FMT] stdout 行格式逐字一致")
 
-    # Old loop produced these two patterns (from monitor.py before PR2):
-    old_with_ask = "📬 New Message from {peer} [未验证 peer 信号]: {clean}"
-    old_without_ask = "📬 New Message from {peer} [未验证 peer 信号]"
-
-    # Read the current monitor.py and verify the format strings are present verbatim.
     with open(MONITOR_PATH, encoding="utf-8") as f:
         src = f.read()
 
-    template_with_ask = '📬 New Message from {peer} [未验证 peer 信号]: {clean}'
-    template_without_ask = '📬 New Message from {peer} [未验证 peer 信号]'
+    # 1:1 format: peer + empty location → no "in group"
+    template_with_ask = '📬 New Message from {peer}{location} [未验证 peer 信号]: {clean}'
+    template_without_ask = '📬 New Message from {peer}{location} [未验证 peer 信号]'
 
     check("FMT: with-ask format string present verbatim",
           template_with_ask in src, "not found in monitor.py source")
     check("FMT: without-ask format string present verbatim",
           template_without_ask in src, "not found in monitor.py source")
+
+
+def test_emit_message_unit():
+    """TC-MG2: _emit_message 群消息带 'in group <群名>'，1:1 不带。"""
+    import importlib.util
+    import io
+    from contextlib import redirect_stdout
+
+    print("\n[TC-MG2] _emit_message 单元测试（群消息 vs 1:1 格式）")
+
+    spec = importlib.util.spec_from_file_location("monitor", MONITOR_PATH)
+    mod = importlib.util.load_from_spec = None  # won't use this path
+
+    # Import _emit_message by exec-ing just that function from source
+    with open(MONITOR_PATH, encoding="utf-8") as f:
+        src = f.read()
+
+    ns: dict = {}
+    # Extract and exec just _emit_message so we don't trigger module-level side effects
+    lines = src.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("def _emit_message("))
+    # Collect lines until next top-level def/class or EOF
+    end = start + 1
+    while end < len(lines):
+        l = lines[end]
+        if l and not l[0].isspace() and not l.startswith("#"):
+            break
+        end += 1
+    func_src = "\n".join(lines[start:end])
+    exec(compile(func_src, MONITOR_PATH, "exec"), ns)
+    emit = ns["_emit_message"]
+
+    # Test group message
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        emit("alice", "请回复", "dev-chan")
+    line = buf.getvalue().strip()
+    check("TC-MG2: group msg has 'in group dev-chan'",
+          "in group dev-chan" in line, repr(line))
+    check("TC-MG2: group msg has sender",
+          "alice" in line, repr(line))
+    check("TC-MG2: group msg has ask",
+          "请回复" in line, repr(line))
+
+    # Test group message without ask
+    buf2 = io.StringIO()
+    with redirect_stdout(buf2):
+        emit("bob", None, "team-chat")
+    line2 = buf2.getvalue().strip()
+    check("TC-MG2: group no-ask has 'in group team-chat'",
+          "in group team-chat" in line2, repr(line2))
+    check("TC-MG2: group no-ask no colon suffix",
+          ":" not in line2.split("信号")[1] if "信号" in line2 else True, repr(line2))
+
+    # Test 1:1 message — must NOT contain "in group"
+    buf3 = io.StringIO()
+    with redirect_stdout(buf3):
+        emit("carol", "hi", None)
+    line3 = buf3.getvalue().strip()
+    check("TC-MG2: 1:1 msg no 'in group'",
+          "in group" not in line3, repr(line3))
+    check("TC-MG2: 1:1 msg has sender",
+          "carol" in line3, repr(line3))
+
+    # Test 1:1 message with group omitted (default)
+    buf4 = io.StringIO()
+    with redirect_stdout(buf4):
+        emit("dave", None)
+    line4 = buf4.getvalue().strip()
+    check("TC-MG2: 1:1 default no 'in group'",
+          "in group" not in line4, repr(line4))
 
 
 # ---------- main ----------
@@ -795,6 +862,7 @@ def main():
 
         try:
             test_stdout_format_unchanged()
+            test_emit_message_unit()
             test_m1_realtime_stdout(tmp)
             test_m2_backlog_replay(tmp)
             test_m3_ping_pong(tmp)
