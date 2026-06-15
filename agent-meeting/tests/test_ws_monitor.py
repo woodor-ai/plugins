@@ -516,8 +516,9 @@ def test_m3_ping_pong(db_dir: str):
     print("\n[TC-M3] server ping → monitor masked pong")
 
     _http("/register", "POST", {"name": "m3_user"})
+    _http("/register", "POST", {"name": "m3_other"})
 
-    seed = _http("/send", "POST", {"self": "m3_user", "peer": "m3_user",
+    seed = _http("/send", "POST", {"self": "m3_other", "peer": "m3_user",
                                    "body": "seed", "kind": "消息"})
 
     # Pre-set read_cursors so monitor connects past the seed.
@@ -525,16 +526,14 @@ def test_m3_ping_pong(db_dir: str):
 
     proc, shared, offset = start_monitor("m3_user", db_dir)
     try:
-        # Let monitor connect and sit for 12s — daemon pings every 4s.
-        # If monitor doesn't pong properly, daemon will remove the connection
-        # (pong timeout=15s, but we can observe via health check that daemon
-        # is still running and the connection is still alive by sending a live
-        # msg after 8s and checking monitor still outputs it).
+        # Let monitor connect and sit for 8s — daemon pings every 4s.
+        # If monitor doesn't pong properly, daemon will remove the connection.
         time.sleep(8.0)
 
-        # After 8s (2 daemon ping cycles), send a message — monitor should still deliver it.
+        # After 8s (2 daemon ping cycles), send a message from m3_other (not self)
+        # so the self-echo suppression does not filter it out.
         _http("/send", "POST", {
-            "self": "m3_user", "peer": "m3_user",
+            "self": "m3_other", "peer": "m3_user",
             "body": "still alive", "kind": "消息"
         })
         lines = collect_stdout_lines(proc, "📬", count=1, timeout=5.0,
@@ -749,6 +748,48 @@ def test_mg1_group_notification(db_dir: str):
         proc.wait(timeout=3)
 
 
+def test_ms1_self_echo_suppressed(db_dir: str):
+    """TC-MS1: sender==self 的帧不触发 📬（自回显抑制）；sender!=self 正常触发。"""
+    print("\n[TC-MS1] 自回显抑制")
+
+    _http("/register", "POST", {"name": "ms1_self"})
+    _http("/register", "POST", {"name": "ms1_other"})
+
+    # Advance cursor past any history
+    seed = _http("/send", "POST", {"self": "ms1_other", "peer": "ms1_self",
+                                   "body": "seed", "kind": "消息"})
+    _set_db_cursor(db_dir, "ms1_self", seed["msg_id"])
+
+    proc, shared, offset = start_monitor("ms1_self", db_dir)
+    try:
+        time.sleep(2.0)
+
+        # Send from self → self: should be suppressed
+        _http("/send", "POST", {"self": "ms1_self", "peer": "ms1_self",
+                                "body": "self-echo", "kind": "消息", "ask": "should not appear"})
+
+        # Short wait — if suppression works, no 📬 line appears
+        self_lines = collect_stdout_lines(proc, "📬", count=1, timeout=2.0,
+                                          _shared_lines=shared, _shared_offset=offset)
+        check("TC-MS1: self-echo not emitted", len(self_lines) == 0,
+              f"got unexpected lines: {self_lines}")
+
+        # Send from other → self: should arrive normally
+        _http("/send", "POST", {"self": "ms1_other", "peer": "ms1_self",
+                                "body": "from other", "kind": "消息", "ask": "hi"})
+        other_lines = collect_stdout_lines(proc, "📬", count=1, timeout=5.0,
+                                           _shared_lines=shared, _shared_offset=offset)
+        check("TC-MS1: other-sender msg emitted", len(other_lines) >= 1,
+              f"got {other_lines}")
+        if other_lines:
+            check("TC-MS1: other-sender name in line",
+                  "ms1_other" in other_lines[0], other_lines[0])
+
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
 # ---------- stdout format regression ----------
 
 def test_stdout_format_unchanged():
@@ -870,6 +911,7 @@ def main():
             test_m5_host_reresolution(tmp)
             test_m6_first_seed_zero_replay(tmp)
             test_mg1_group_notification(tmp)
+            test_ms1_self_echo_suppressed(tmp)
         finally:
             try:
                 _daemon_proc.terminate()

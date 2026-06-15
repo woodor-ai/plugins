@@ -474,6 +474,9 @@ while True:
                 sender = msg.get("sender", "")
                 ask = msg.get("ask") or None
                 group = msg.get("group") or None
+                # daemon 群扇出含发送者自己，自己发的不必唤醒自己
+                if sender == SELF:
+                    continue
                 _emit_message(sender, ask, group)
 
             elif msg.get("type") == "caught_up":
