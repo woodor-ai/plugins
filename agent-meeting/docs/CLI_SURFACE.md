@@ -110,8 +110,6 @@ skill 暴露的全部入口，分「使用面」和「供给面」两层：
 - `--bind`（默认 0.0.0.0）
 - `--no-mdns` — 关闭 mDNS 广播
 
-**`meeting-migrate`** — DB 迁移脚本。无 argparse，直接 `main()`，无参数。
-
 **`monitor.py`** — 被 SKILL 调起轮询来电，底层即 `ring`。
 - 用法：`python3 monitor.py <name>`
 

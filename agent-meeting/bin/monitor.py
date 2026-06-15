@@ -142,12 +142,12 @@ def _register():
         PID_FILE.write_text(str(os.getpid()))
     except Exception:
         pass
-    # Publish the room name + control info locally so the TUI status line can show
+    # Publish session name + control info locally so the TUI status line can show
     # 📞 <name> 🛰 <control>. JSON format; statusline.py reads it.
     try:
         STATUSLINE_DIR.mkdir(parents=True, exist_ok=True)
         ctrl = _discover_control_info()
-        payload = {"room": SELF, "control_host": ctrl.get("host", ""), "control_ip_port": ctrl.get("ip_port", "")}
+        payload = {"name": SELF, "control_host": ctrl.get("host", ""), "control_ip_port": ctrl.get("ip_port", "")}
         STATUSLINE_FILE.write_text(json.dumps(payload), encoding="utf-8")
     except Exception:
         pass
@@ -158,7 +158,7 @@ def _register():
         try:
             raw = _CWD_STATUSLINE_FILE.read_text(encoding="utf-8").strip()
             try:
-                owner = json.loads(raw).get("room", "")
+                owner = json.loads(raw).get("name", "")
             except Exception:
                 owner = raw
             if owner == SELF:
@@ -181,9 +181,8 @@ def _unregister():
     # in the same cwd may have taken over the file after we wrote it).
     try:
         raw = STATUSLINE_FILE.read_text(encoding="utf-8").strip()
-        # Support both old plain-text format and new JSON format.
         try:
-            owner = json.loads(raw).get("room", "")
+            owner = json.loads(raw).get("name", "")
         except Exception:
             owner = raw
         if owner == SELF:

@@ -140,22 +140,10 @@ daemon session-bound (dies with the SessionStart hook's parent shell).
     ├── meeting                 # main CLI (LAN-aware: HTTP if remote daemon found, local SQLite otherwise)
     ├── meeting-daemon          # HTTP+mDNS server (host machine only)
     ├── monitor.py              # cross-platform per-session message watcher
-    ├── meeting-migrate         # legacy .md → SQLite importer (v0.1.x → v0.2.x migration)
     └── session-bootstrap.py    # SessionStart hook (Python, cross-platform)
 ```
 
 When uninstalling, delete `~/.agent-meeting/` if you also want to discard conversation history.
-
-## Migrating from v0.1.x (markdown files)
-
-If you have data from the file-based version under `~/.claude/plugins/data/agent-meeting/rooms/canonical/*.md` or `~/.agent-meeting/rooms/canonical/*.md`, run:
-
-```
-meeting init                               # create DB if not exists
-~/.agent-meeting/bin/meeting-migrate       # parse all .md files + import to DB
-```
-
-The migration is idempotent (skips rooms already in DB). Legacy `.md` files are not deleted — safe to keep as snapshot or remove manually after verification.
 
 ## Requirements
 

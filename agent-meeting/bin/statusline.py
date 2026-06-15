@@ -12,7 +12,7 @@ The line is composed of, in order (segments are dropped when unavailable):
 
 The meeting name is NOT looked up from the central SQLite DB (that would be
 slow and would require mDNS/daemon discovery on every refresh, and wouldn't
-work on client machines). Instead, monitor.py writes the registered room name
+work on client machines). Instead, monitor.py writes the registered session name
 to a tiny local cache file keyed by the session's cwd when `/meeting <name>`
 registers, and removes it on exit. This script just reads that file — purely
 local, no network, no DB. When the session isn't registered (no cache file),
@@ -56,8 +56,8 @@ def _parse_cache_file(f: "Path") -> dict:
                 return data
         except Exception:
             pass
-        # Old plain-text format: just the room name.
-        return {"room": raw, "control_host": "", "control_ip_port": ""}
+        # Old plain-text format: just the session name.
+        return {"name": raw, "control_host": "", "control_ip_port": ""}
     except Exception:
         return {}
 
@@ -83,8 +83,8 @@ def _read_statusline_cache(cwd: str, session_id: str | None = None) -> dict:
 
 
 def meeting_name(cwd: str, session_id: str | None = None) -> str:
-    """Registered room name for this session/cwd, or '' if not registered."""
-    return _read_statusline_cache(cwd, session_id).get("room", "")
+    """Registered session name for this session/cwd, or '' if not registered."""
+    return _read_statusline_cache(cwd, session_id).get("name", "")
 
 
 def _control_label(cwd: str, session_id: str | None = None) -> str:
@@ -96,7 +96,7 @@ def _control_label(cwd: str, session_id: str | None = None) -> str:
     form).
     """
     cache = _read_statusline_cache(cwd, session_id)
-    if not cache.get("room"):
+    if not cache.get("name"):
         return ""
     ip_port = cache.get("control_ip_port", "")
     if not ip_port:

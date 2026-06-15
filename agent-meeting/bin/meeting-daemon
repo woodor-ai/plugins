@@ -4,7 +4,7 @@ meeting-daemon — HTTP+mDNS server for LAN-wide agent-meeting.
 
 Single-host model: this process owns the SQLite DB. Other machines on the
 LAN discover us via mDNS (_agent-meeting._tcp.local.) and hit our HTTP API
-to do all room operations (register / unregister / send / read / show /
+to do all operations (register / unregister / send / read / show /
 turn / list / delete) — no direct DB access from clients.
 
 Localhost clients also go through HTTP (uniform code path; localhost RTT
@@ -264,68 +264,6 @@ def _conversation_clause(a: str, b: str) -> tuple[str, list]:
     """Return WHERE clause + params for messages between a and b (both directions)."""
     clause = "((sender=? AND recipient=?) OR (sender=? AND recipient=?))"
     return clause, [a, b, b, a]
-
-
-def migrate_db(conn):
-    """Idempotent migration: rooms+room_id schema → sender/recipient schema."""
-    has_rooms = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rooms'"
-    ).fetchone() is not None
-    has_recipient = any(
-        col[1] == "recipient"
-        for col in conn.execute("PRAGMA table_info(messages)").fetchall()
-    )
-
-    if not has_rooms and has_recipient:
-        return  # already new schema
-
-    has_messages = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
-    ).fetchone() is not None
-    if not has_messages:
-        return  # fresh DB — schema will create everything
-
-    original_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-
-    if has_rooms and not has_recipient:
-        conn.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
-        conn.execute("""
-            UPDATE messages SET recipient = (
-                SELECT CASE
-                    WHEN r.participant_a = messages.sender THEN r.participant_b
-                    ELSE r.participant_a
-                END
-                FROM rooms r WHERE r.id = messages.room_id
-            )
-        """)
-
-    conn.executescript("""
-        CREATE TABLE messages_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          sender TEXT NOT NULL,
-          recipient TEXT NOT NULL,
-          kind TEXT NOT NULL,
-          body TEXT NOT NULL,
-          ask TEXT,
-          created_at INTEGER NOT NULL
-        );
-        INSERT INTO messages_new (id, sender, recipient, kind, body, ask, created_at)
-            SELECT id, sender, recipient, kind, body, ask, created_at FROM messages;
-        DROP TABLE messages;
-        ALTER TABLE messages_new RENAME TO messages;
-        DROP INDEX IF EXISTS idx_messages_room_id;
-        CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
-        CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
-    """)
-
-    if has_rooms:
-        conn.execute("DROP TABLE IF EXISTS rooms")
-
-    migrated_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    assert migrated_count == original_count, (
-        f"migration lost messages: {original_count} before, {migrated_count} after"
-    )
-    print(f"[migrate] completed: {migrated_count} messages migrated", flush=True)
 
 
 # ---------- HTTP handlers ----------
@@ -633,7 +571,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         q = self._query()
         try:
-            if path == "/room":
+            if path == "/conversation":
                 return self._json(200, self._delete(q["self"][0], q["peer"][0]))
             return self._err(404, f"no such DELETE route: {path}")
         except KeyError as e:
@@ -781,7 +719,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # Fanout outside DB transaction — socket IO must not block DB writes.
         _ws_fanout(msg_id, peer, self_name, ask)
-        return {"msg_id": msg_id, "room": "--".join(sorted([self_name, peer])), "turn": peer}
+        return {"msg_id": msg_id, "turn": peer}
 
     def _rename(self, old: str, new: str):
         with db() as conn:
@@ -800,7 +738,7 @@ class Handler(BaseHTTPRequestHandler):
                 messages_migrated = r1.rowcount + r2.rowcount
 
                 conn.execute("COMMIT")
-                return {"ok": True, "old": old, "new": new, "rooms_migrated": 0, "messages_migrated": messages_migrated}
+                return {"ok": True, "old": old, "new": new, "messages_migrated": messages_migrated}
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
@@ -815,7 +753,7 @@ class Handler(BaseHTTPRequestHandler):
                 ).fetchone()["c"]
                 conn.execute(f"DELETE FROM messages WHERE {clause}", params)
                 conn.execute("COMMIT")
-                return {"deleted": True, "room": f"{self_name}--{peer}", "msg_count": cnt}
+                return {"deleted": True, "msg_count": cnt}
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
@@ -938,10 +876,6 @@ def main():
     # WAL hygiene: compact the WAL file at startup so it doesn't grow unbounded.
     with db() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
-    # Schema migration: rooms+room_id → sender/recipient (0.8.x → 0.9.0).
-    with db() as conn:
-        migrate_db(conn)
 
     # Idempotent column additions for sessions table.
     with db() as conn:

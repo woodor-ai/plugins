@@ -200,7 +200,7 @@ def _http(path: str, method="GET", body=None) -> dict:
 def start_daemon(db_dir: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
-    # Initialize the DB by running meeting-migrate equivalent inline
+    # 初始化 DB inline
     daemon_path = os.path.join(
         os.path.dirname(__file__), "..", "bin", "meeting-daemon"
     )

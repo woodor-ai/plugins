@@ -158,7 +158,7 @@ def ensure_bin_wrappers():
     client fell back to local SQLite instead of connecting to the LAN daemon.
 
     New design: bin/ is a real directory. Extensionless scripts (meeting,
-    meeting-daemon, meeting-migrate) become thin shell wrappers that exec the venv
+    meeting-daemon) become thin shell wrappers that exec the venv
     python with the real plugin script path. .py files (monitor.py, statusline.py,
     session-bootstrap.py) are COPIED, because callers explicitly pass
     `python3 ~/.agent-meeting/bin/foo.py` and so they must be real .py files.
@@ -732,7 +732,7 @@ def claude_settings_path() -> Path:
 def ensure_statusline():
     """Idempotently register our status-line command in Claude Code settings.
 
-    Shows `📞 <room>  |  <model>  |  <dir>  |  <branch>` once a session has
+    Shows `📞 <name>  |  <model>  |  <dir>  |  <branch>` once a session has
     registered via /meeting (the badge self-gates: statusline.py only renders it
     when monitor.py has written the local name cache for this cwd).
 
@@ -781,7 +781,7 @@ def ensure_statusline():
 def online_peers_str() -> str:
     """Online peers = sessions-table rows with a fresh heartbeat (last_seen
     within 12s). Reads rooms.db read-only. The old directory.json + monitor
-    pid-file scheme was removed in the SQLite migration — never resurrect it."""
+    pid-file scheme was removed — never resurrect it."""
     if not DB.exists():
         return "(none online)"
     try:
@@ -822,9 +822,9 @@ def emit_context(cfg: dict):
         mon = f"python3 {monitor} <name>"
         os_label = "posix"
 
-    ctx = f"""📞 Meeting-room system is active.
+    ctx = f"""📞 Meeting system is active.
 
-This session has NO meeting name yet — and that's fine. The meeting room (peer-to-peer agent calls) is OPTIONAL. NEVER gate, block, or delay the user's work to make them register a name.
+This session has NO meeting name yet — and that's fine. Peer-to-peer agent messaging is OPTIONAL. NEVER gate, block, or delay the user's work to make them register a name.
 
 - Proceed with whatever the user asks, normally — registration is NOT a prerequisite for anything.
 - If the user's first message begins with the literal token `/meeting` (anything after it), run the meeting skill instead — they are explicitly opting in.

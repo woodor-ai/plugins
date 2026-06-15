@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
 """
-meeting-meeting CLI backed by SQLite.
+meeting — peer-to-peer agent messaging CLI backed by SQLite.
 
-Replaces the file-per-room storage (canonical/*.md) that suffered from:
-  - Edit/Write race conditions (no atomic locking)
-  - Lost-update on concurrent peer writes
-  - 150-line manual archive discipline that nobody followed
-  - Turn-flag parsing via grep
-  - Monitor mtime false positives (prefix matching bug)
-
+Messages are addressed sender→recipient; no room containers exist.
 SQLite gives us atomic transactions, version-based optimistic concurrency,
 unlimited history with O(log N) reads, and clean query semantics.
 
-Database: ~/.claude/meeting/db/rooms.db (WAL mode for concurrent readers).
+Database: ~/.agent-meeting/db/rooms.db (WAL mode for concurrent readers).
 
 Usage:
   meeting init                                          # ensure db + schema
@@ -20,12 +14,12 @@ Usage:
   meeting read <self> <peer> [--limit=30] [--since=ID]
   meeting show <self> <peer> [--limit=30]               # human-readable markdown render
   meeting turn <self> <peer>                            # whose turn is it
-  meeting list                                          # all rooms
+  meeting list                                          # all sessions
   meeting online <name> --cwd <cwd>                     # bring this session online (register in the directory)
   meeting offline <name>                               # take this session offline (remove from the directory)
 
-All write operations are wrapped in BEGIN IMMEDIATE transactions, so two
-sessions writing the same room simultaneously serialize cleanly.
+All write operations are wrapped in BEGIN IMMEDIATE transactions so
+concurrent peer writes serialize cleanly.
 """
 
 import argparse
@@ -340,80 +334,9 @@ def _conversation_clause(a: str, b: str) -> tuple[str, list]:
     return clause, [a, b, b, a]
 
 
-def migrate_db(db):
-    """Idempotent migration: rooms+room_id schema → sender/recipient schema.
-
-    Detects old schema by checking for 'rooms' table or absence of 'recipient' column.
-    Counts messages before/after to assert no data loss.
-    """
-    # Check whether migration is needed
-    has_rooms = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rooms'"
-    ).fetchone() is not None
-    has_recipient = any(
-        col[1] == "recipient"
-        for col in db.execute("PRAGMA table_info(messages)").fetchall()
-    )
-
-    if not has_rooms and has_recipient:
-        return  # already new schema — no-op
-
-    has_messages = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
-    ).fetchone() is not None
-    if not has_messages:
-        return  # fresh DB — schema will create everything
-
-    # Count original messages for integrity check
-    original_count = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-
-    if has_rooms and not has_recipient:
-        # Add recipient column and backfill from rooms table
-        db.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
-        db.execute("""
-            UPDATE messages SET recipient = (
-                SELECT CASE
-                    WHEN r.participant_a = messages.sender THEN r.participant_b
-                    ELSE r.participant_a
-                END
-                FROM rooms r WHERE r.id = messages.room_id
-            )
-        """)
-
-    # Rebuild messages table without room_id, with recipient NOT NULL
-    db.executescript("""
-        CREATE TABLE messages_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          sender TEXT NOT NULL,
-          recipient TEXT NOT NULL,
-          kind TEXT NOT NULL,
-          body TEXT NOT NULL,
-          ask TEXT,
-          created_at INTEGER NOT NULL
-        );
-        INSERT INTO messages_new (id, sender, recipient, kind, body, ask, created_at)
-            SELECT id, sender, recipient, kind, body, ask, created_at FROM messages;
-        DROP TABLE messages;
-        ALTER TABLE messages_new RENAME TO messages;
-        DROP INDEX IF EXISTS idx_messages_room_id;
-        CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
-        CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
-    """)
-
-    if has_rooms:
-        db.execute("DROP TABLE IF EXISTS rooms")
-
-    migrated_count = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    assert migrated_count == original_count, (
-        f"migration lost messages: {original_count} before, {migrated_count} after"
-    )
-
-
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = connect()
-    # Run migration first on existing DBs, then apply schema for new installs
-    migrate_db(db)
     db.executescript(SCHEMA)
     try:
         db.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
@@ -488,14 +411,14 @@ def cmd_turn(args):
 
 
 def cmd_delete(args):
-    """Delete a room (and all its messages) atomically.
+    """Clear all messages exchanged with a peer (hard delete, atomic).
 
-    Hard delete — no soft-delete / archive. The caller (SKILL.md) is responsible
+    No soft-delete / archive. The caller (SKILL.md) is responsible
     for confirming with the user before invoking this.
     """
     host = _resolve_host(getattr(args, "host", None))
-    r = http("DELETE", host, "/room", params={"self": args.self, "peer": args.peer})
-    print(f"deleted: room={r['room']} ({r['msg_count']} msgs purged)")
+    r = http("DELETE", host, "/conversation", params={"self": args.self, "peer": args.peer})
+    print(f"deleted: {args.self}↔{args.peer} ({r['msg_count']} msgs purged)")
 
 
 def cmd_online(args):
@@ -1038,7 +961,7 @@ def main():
                    help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
     s.set_defaults(func=cmd_list)
 
-    s = sub.add_parser("delete", help="delete a room and all its messages (hard delete, atomic)")
+    s = sub.add_parser("delete", help="clear all messages with a peer (hard delete, atomic)")
     s.add_argument("self")
     s.add_argument("peer")
     s.add_argument("--host", default=None,
@@ -1090,7 +1013,7 @@ def main():
     sp.set_defaults(func=cmd_stop)
 
     rp = sub.add_parser("rename",
-                        help="rename a session and migrate all its rooms and messages")
+                        help="rename a session and migrate all its messages")
     rp.add_argument("old", help="current session name")
     rp.add_argument("new", help="new session name (2-20 chars, [A-Za-z0-9-], no '--')")
     rp.add_argument("--host", default=None,
