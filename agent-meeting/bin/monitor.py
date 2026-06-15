@@ -13,10 +13,10 @@ Behavior:
     sessions table whenever it receives a pong from the monitor. Because
     monitor pings every ~5s and ONLINE_THRESHOLD=12s, liveness is maintained
     as long as the WS connection is alive.
-  - Cursor seed: first launch (no STATE_FILE) uses sentinel cursor -1.
-    The daemon converts -1 to the current MAX(msg_id), sends zero backlog,
-    and echoes the max in the caught_up frame. Monitor writes that value
-    to STATE_FILE, so subsequent reconnects use the real cursor.
+  - Cursor is DB-authoritative (stored server-side in read_cursors). Monitor
+    does not send X-Meeting-Cursor and does not maintain local cursor state.
+    On first connect the daemon seeds to MAX(id); on reconnect it resumes
+    from the last persisted cursor — zero re-play guaranteed.
   - Connects WS to daemon /subscribe, receives pushed frames, and emits
     stdout lines `📬 New Message from <peer>(: <ask>)?` — Claude Code
     surfaces each as a task notification.
@@ -40,7 +40,6 @@ import socket
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -56,8 +55,6 @@ HOME = Path.home()
 _MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
 DATA = Path(_MEETING_HOME_ENV) if _MEETING_HOME_ENV else HOME / ".agent-meeting"
 MEETING_CLI = DATA / "bin" / "meeting"
-TMP = Path(tempfile.gettempdir())
-STATE_FILE = TMP / f"meeting-{SELF}.last_msg_id"
 
 # Local cache that statusline.py reads to render the 📞 badge. Keyed by
 # session_id when available (so multiple named sessions in the same cwd each
@@ -201,21 +198,7 @@ for sig in (signal.SIGINT, signal.SIGTERM):
 
 _register()
 
-
-# ---------- cursor seed ----------
-
-if STATE_FILE.exists():
-    try:
-        last = int(STATE_FILE.read_text().strip())
-    except Exception:
-        last = 0
-else:
-    # First launch: use sentinel -1. The daemon will set our cursor to MAX(msg_id)
-    # and echo it back in the caught_up frame. We write STATE_FILE then.
-    last = -1
-
-
-print(f"[meeting {SELF}] monitor started (last_msg_id={last}, pid={os.getpid()})", flush=True)
+print(f"[meeting {SELF}] monitor started (pid={os.getpid()})", flush=True)
 
 
 # ---------- WS client helpers ----------
@@ -307,8 +290,11 @@ def _resolve_ws_host() -> tuple[str, int] | None:
         return None
 
 
-def _ws_connect(cursor: int) -> socket.socket | None:
-    """Open TCP connection and perform WS handshake. Returns connected socket or None."""
+def _ws_connect() -> socket.socket | None:
+    """Open TCP connection and perform WS handshake. Returns connected socket or None.
+
+    Does not send X-Meeting-Cursor — cursor is DB-authoritative on the daemon side.
+    """
     addr = _resolve_ws_host()
     if not addr:
         return None
@@ -333,7 +319,6 @@ def _ws_connect(cursor: int) -> socket.socket | None:
         f"Sec-WebSocket-Key: {ws_key}",
         "Sec-WebSocket-Version: 13",
         f"X-Meeting-Name: {SELF}",
-        f"X-Meeting-Cursor: {cursor}",
         "X-Meeting-Proto: 1",
     ]
     if token:
@@ -411,7 +396,7 @@ _BACKOFF_JITTER = 0.20     # ±20%
 backoff = _BACKOFF_BASE
 
 while True:
-    sock = _ws_connect(last)
+    sock = _ws_connect()
     if sock is None:
         # Host resolution or connection failed — back off then retry
         jitter = random.uniform(1 - _BACKOFF_JITTER, 1 + _BACKOFF_JITTER)
@@ -426,7 +411,7 @@ while True:
     # Connected — reset backoff
     backoff = _BACKOFF_BASE
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")
-    sys.stderr.write(f"[meeting {SELF}] {ts} ws connected (cursor={last})\n")
+    sys.stderr.write(f"[meeting {SELF}] {ts} ws connected\n")
     sys.stderr.flush()
 
     last_frame_time = time.time()
@@ -485,24 +470,15 @@ while True:
                 continue
 
             if msg.get("type") == "msg":
-                msg_id = msg.get("msg_id", 0)
-                if msg_id > last:
-                    sender = msg.get("sender", "")
-                    ask = msg.get("ask") or None
-                    _emit_message(sender, ask)
-                    last = msg_id
-                    STATE_FILE.write_text(str(last))
+                sender = msg.get("sender", "")
+                ask = msg.get("ask") or None
+                _emit_message(sender, ask)
 
             elif msg.get("type") == "caught_up":
                 cursor_val = msg.get("cursor")
                 ts = time.strftime("%Y-%m-%dT%H:%M:%S")
                 sys.stderr.write(f"[meeting {SELF}] {ts} caught_up cursor={cursor_val}\n")
                 sys.stderr.flush()
-                # Sentinel seed: daemon resolves -1 to MAX(msg_id) and echoes it back.
-                # Write STATE_FILE so subsequent reconnects use the real cursor.
-                if cursor_val is not None and cursor_val > last:
-                    last = cursor_val
-                    STATE_FILE.write_text(str(last))
 
         elif opcode == 0x9:  # ping from daemon → reply with masked pong
             try:

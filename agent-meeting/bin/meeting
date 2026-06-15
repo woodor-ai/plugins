@@ -316,6 +316,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_seen REAL,                       -- epoch seconds (float); heartbeat via WS pong
   role TEXT NOT NULL DEFAULT 'worker'
 );
+
+CREATE TABLE IF NOT EXISTS read_cursors (
+  member_name TEXT PRIMARY KEY,
+  cursor      INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
 """
 
 
@@ -346,6 +352,12 @@ def init_db():
         db.execute("ALTER TABLE sessions ADD COLUMN os TEXT")
     except sqlite3.OperationalError:
         pass
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS read_cursors ("
+        "  member_name TEXT PRIMARY KEY,"
+        "  cursor      INTEGER NOT NULL,"
+        "  updated_at  INTEGER NOT NULL)"
+    )
     db.close()
 
 

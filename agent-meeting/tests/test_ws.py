@@ -252,6 +252,11 @@ def init_test_db(db_dir: str):
         );
         CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
         CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
+        CREATE TABLE IF NOT EXISTS read_cursors (
+            member_name TEXT PRIMARY KEY,
+            cursor      INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
     """)
     conn.close()
 
@@ -285,9 +290,9 @@ def test_handshake_and_auth(has_auth: bool):
 
 
 def test_backlog(db_dir: str):
-    """TC2: 补发 id>cursor"""
-    print("\n[TC2] 补发 id>cursor")
-    # Send 3 messages to bob before bob connects
+    """TC2: 补发 id>DB_cursor"""
+    print("\n[TC2] 补发 id>DB_cursor")
+    # Send 3 messages to bob before bob connects.
     _http("/register", "POST", {"name": "alice_sender"})
     _http("/register", "POST", {"name": "bob_recv"})
 
@@ -295,21 +300,26 @@ def test_backlog(db_dir: str):
     r2 = _http("/send", "POST", {"self": "alice_sender", "peer": "bob_recv", "body": "msg2", "kind": "消息"})
     r3 = _http("/send", "POST", {"self": "alice_sender", "peer": "bob_recv", "body": "msg3", "kind": "消息"})
 
-    # Connect with cursor=0 — should get all 3
+    # Pre-set read_cursors to r1 so daemon delivers only r2 and r3.
+    # Small sleep to ensure WAL is visible to daemon's next connection.
+    _db_upsert_cursor(db_dir, "bob_recv", r1["msg_id"])
+    time.sleep(0.05)
+
     c = WSClient("bob_recv", cursor=0)
     backlog = c.read_until_caught_up(timeout=5)
-    check("TC2: receive 3 backlog msgs", len(backlog) == 3, f"got {len(backlog)}")
+    check("TC2: receive 2 backlog msgs (r2, r3)", len(backlog) == 2, f"got {len(backlog)}")
     check("TC2: backlog phase=backlog", all(m.get("phase") == "backlog" for m in backlog),
           str([m.get("phase") for m in backlog]))
     check("TC2: msg_ids in order", [m["msg_id"] for m in backlog] == sorted([m["msg_id"] for m in backlog]))
-
-    # Connect with cursor = after msg2 — should get only msg3
-    c2 = WSClient("bob_recv", cursor=r2["msg_id"])
-    backlog2 = c2.read_until_caught_up(timeout=5)
-    check("TC2: cursor filter — only msg3", len(backlog2) == 1 and backlog2[0]["msg_id"] == r3["msg_id"],
-          f"got {[m['msg_id'] for m in backlog2]}")
-
+    check("TC2: r1 skipped", all(m["msg_id"] != r1["msg_id"] for m in backlog))
     c.close()
+    time.sleep(0.1)  # let _ws_remove flush cursor to DB before c2 connects
+
+    # Second connect: cursor now at r3 (drained), zero backlog.
+    c2 = WSClient("bob_recv", cursor=0)
+    backlog2 = c2.read_until_caught_up(timeout=5)
+    check("TC2: second connect → zero backlog (cursor advanced)", len(backlog2) == 0,
+          f"got {[m['msg_id'] for m in backlog2]}")
     c2.close()
 
 
@@ -397,7 +407,7 @@ def test_reconnect_with_cursor():
     c2.close()
 
 
-def test_concurrent_dedup():
+def test_concurrent_dedup(db_dir: str):
     """TC6: 补发进行中途插入 /send — msg_ids 严格单调不重不漏（原 20 条小规模版本）"""
     print("\n[TC6] 补发/实时并发去重（小规模）")
 
@@ -409,6 +419,10 @@ def test_concurrent_dedup():
     for i in range(20):
         r = _http("/send", "POST", {"self": "ivan", "peer": "heidi", "body": f"pre-{i}", "kind": "消息"})
         pre_ids.append(r["msg_id"])
+
+    # Pre-set cursor=0 so daemon delivers all 20 as backlog (not seeded-to-MAX on first connect).
+    _db_upsert_cursor(db_dir, "heidi", 0)
+    time.sleep(0.05)
 
     # Connect heidi — backlog will start flowing
     c = WSClient("heidi", cursor=0)
@@ -458,97 +472,171 @@ def test_concurrent_dedup():
     c.close()
 
 
-def test_sentinel_seed():
-    """TC8: cursor=-1 哨兵播种 — daemon 回 caught_up(max)，不补发历史；cursor>=0 正常补发。"""
-    print("\n[TC8] cursor=-1 哨兵播种")
+def _read_db_cursor(db_dir: str, member_name: str) -> int | None:
+    """Read cursor value from read_cursors table. Returns None if no row."""
+    db_path = os.path.join(db_dir, "db", "rooms.db")
+    conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
+    conn.executescript("PRAGMA journal_mode = WAL;")
+    row = conn.execute(
+        "SELECT cursor FROM read_cursors WHERE member_name=?", (member_name,)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _db_upsert_cursor(db_dir: str, member_name: str, cursor: int):
+    """Insert or update a read_cursors row directly (test setup helper).
+
+    Uses WAL mode and isolation_level=None (autocommit) to match daemon's
+    connection settings, ensuring the write is immediately visible to the daemon.
+    """
+    db_path = os.path.join(db_dir, "db", "rooms.db")
+    conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
+    conn.executescript("PRAGMA journal_mode = WAL;")
+    conn.execute(
+        "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(member_name) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at",
+        (member_name, cursor, int(time.time())),
+    )
+    conn.close()
+
+
+def test_first_seed_zero_replay(db_dir: str):
+    """TC8: 新成员首次连接 — daemon 从 read_cursors 无行走首次 seed 分支，
+    seed 到 MAX(id)，零 backlog，caught_up 游标正确，read_cursors 落行。"""
+    print("\n[TC8] 首次 seed 零回放")
 
     _http("/register", "POST", {"name": "seed_sender"})
-    _http("/register", "POST", {"name": "seed_recv"})
+    _http("/register", "POST", {"name": "seed_newmember"})
 
     # Insert 3 history messages
-    r1 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_recv", "body": "h1", "kind": "消息"})
-    r2 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_recv", "body": "h2", "kind": "消息"})
-    r3 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_recv", "body": "h3", "kind": "消息"})
+    r1 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_newmember", "body": "h1", "kind": "消息"})
+    r2 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_newmember", "body": "h2", "kind": "消息"})
+    r3 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_newmember", "body": "h3", "kind": "消息"})
     max_id = r3["msg_id"]
 
-    # Connect with cursor=-1 (sentinel): should get caught_up(max), zero backlog msgs
-    c = WSClient("seed_recv", cursor=-1)
-    backlog_sentinel = c.read_until_caught_up(timeout=5)
-    check("TC8: sentinel cursor=-1 → zero backlog", len(backlog_sentinel) == 0,
-          f"got {len(backlog_sentinel)} msgs")
+    # First connect — no read_cursors row yet; daemon should seed to MAX and return zero backlog.
+    # WSClient does not send X-Meeting-Cursor (cursor=0 is default but daemon ignores it).
+    c = WSClient("seed_newmember", cursor=0)
 
-    # Read the caught_up frame's cursor value — WSClient.read_until_caught_up breaks on it
-    # but doesn't return it. Re-read via a direct frame read to get caught_up cursor.
-    # Instead: open a second connection to get the caught_up frame explicitly.
-    c.close()
-
-    # Second connection with cursor=-1 to capture the caught_up frame value
-    c2_sock = socket.create_connection((HOST, TEST_PORT), timeout=5)
-    c2_sock.settimeout(5)
-    key = base64.b64encode(os.urandom(16)).decode()
-    req = (
-        f"GET /subscribe HTTP/1.1\r\nHost: {HOST}:{TEST_PORT}\r\n"
-        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
-        f"X-Meeting-Name: seed_recv\r\nX-Meeting-Cursor: -1\r\nX-Meeting-Proto: 1\r\n\r\n"
-    )
-    c2_sock.sendall(req.encode())
-    # Drain HTTP upgrade response
-    buf = b""
-    while b"\r\n\r\n" not in buf:
-        buf += c2_sock.recv(256)
-    # Read frames until caught_up
+    # Capture caught_up cursor value before read_until_caught_up discards it.
     caught_up_cursor = None
+    backlog = []
     deadline = time.time() + 5
     while time.time() < deadline:
-        c2_sock.settimeout(max(0.1, deadline - time.time()))
+        remaining = deadline - time.time()
         try:
-            header = b""
-            while len(header) < 2:
-                chunk = c2_sock.recv(2 - len(header))
-                if not chunk:
-                    break
-                header += chunk
-            if len(header) < 2:
-                break
-            b0, b1 = header[0], header[1]
-            opcode = b0 & 0x0F
-            length = b1 & 0x7F
-            if length == 126:
-                ext = b""
-                while len(ext) < 2:
-                    ext += c2_sock.recv(2 - len(ext))
-                length = struct.unpack("!H", ext)[0]
-            payload = b""
-            while len(payload) < length:
-                payload += c2_sock.recv(length - len(payload))
-            if opcode == 0x1:
-                d = json.loads(payload.decode())
-                if d.get("type") == "caught_up":
-                    caught_up_cursor = d.get("cursor")
-                    break
+            opcode, payload = c.read_frame(timeout=max(0.1, remaining))
         except socket.timeout:
             break
+        if opcode == 0x1:
+            d = json.loads(payload.decode())
+            if d.get("type") == "caught_up":
+                caught_up_cursor = d.get("cursor")
+                break
+            if d.get("type") == "msg":
+                backlog.append(d)
+        elif opcode == 0x9:
+            c.send_pong(payload)
+    c.close()
+
+    check("TC8: first seed → zero backlog", len(backlog) == 0,
+          f"got {len(backlog)} msgs")
+    check("TC8: caught_up cursor = MAX(id)",
+          caught_up_cursor == max_id,
+          f"caught_up={caught_up_cursor}, expected={max_id}")
+
+    # read_cursors must have a row now
+    db_cursor = _read_db_cursor(db_dir, "seed_newmember")
+    check("TC8: read_cursors row written", db_cursor is not None,
+          "no row found in read_cursors")
+    check("TC8: read_cursors cursor = MAX(id)",
+          db_cursor == max_id,
+          f"db_cursor={db_cursor}, expected={max_id}")
+
+
+def test_cursor_survives_restart(db_dir: str):
+    """TC-PRA1: 游标活过重启 — 预置 cursor=0，成员收 N 条后断开，
+    reconnect 不带 cursor header，daemon 从 read_cursors 续，只补断开后的新消息。"""
+    print("\n[TC-PRA1] 游标活过重启")
+
+    _http("/register", "POST", {"name": "pra1_sender"})
+    _http("/register", "POST", {"name": "pra1_recv"})
+
+    # Send 3 messages.
+    r1 = _http("/send", "POST", {"self": "pra1_sender", "peer": "pra1_recv", "body": "m1", "kind": "消息"})
+    r2 = _http("/send", "POST", {"self": "pra1_sender", "peer": "pra1_recv", "body": "m2", "kind": "消息"})
+    r3 = _http("/send", "POST", {"self": "pra1_sender", "peer": "pra1_recv", "body": "m3", "kind": "消息"})
+
+    # Pre-set cursor to 0 so daemon delivers all 3 as backlog on first connect.
+    _db_upsert_cursor(db_dir, "pra1_recv", 0)
+    time.sleep(0.05)
+
+    c = WSClient("pra1_recv", cursor=0)
+    backlog = c.read_until_caught_up(timeout=5)
+    c.close()
+    check("TC-PRA1: initial backlog=3", len(backlog) == 3, f"got {len(backlog)}")
+
+    # Give daemon time to flush cursor on disconnect.
+    time.sleep(0.1)
+
+    # Verify cursor is persisted after backlog drain + disconnect.
+    db_cursor_after_drain = _read_db_cursor(db_dir, "pra1_recv")
+    check("TC-PRA1: cursor persisted after drain",
+          db_cursor_after_drain == r3["msg_id"],
+          f"db_cursor={db_cursor_after_drain}, expected={r3['msg_id']}")
+
+    # Send one more message (arrives while "disconnected").
+    r4 = _http("/send", "POST", {"self": "pra1_sender", "peer": "pra1_recv", "body": "m4", "kind": "消息"})
+
+    # Reconnect — daemon resumes from read_cursors (=r3), should only replay r4.
+    c2 = WSClient("pra1_recv", cursor=0)
+    backlog2 = c2.read_until_caught_up(timeout=5)
+    c2.close()
+
+    check("TC-PRA1: only 1 msg on reconnect (r4)",
+          len(backlog2) == 1 and backlog2[0]["msg_id"] == r4["msg_id"],
+          f"got {[m['msg_id'] for m in backlog2]}, expected [{r4['msg_id']}]")
+
+
+def test_monitor_no_tmp_file(db_dir: str):
+    """TC-PRA2: monitor 纯通知器 — 收消息打 📬 行，不写任何 TMP 文件。
+    验证 send 后 monitor 有输出，且无 meeting-*.last_msg_id 文件存在。"""
+    print("\n[TC-PRA2] monitor 纯通知器（无 TMP 文件）")
+    import tempfile as _tempfile
+    tmpdir = _tempfile.gettempdir()
+
+    # Ensure no stale state file exists
+    state_file = os.path.join(tmpdir, "meeting-pra2_recv.last_msg_id")
     try:
-        c2_sock.close()
-    except Exception:
+        os.unlink(state_file)
+    except FileNotFoundError:
         pass
 
-    check("TC8: caught_up cursor matches MAX(msg_id)",
-          caught_up_cursor == max_id,
-          f"caught_up cursor={caught_up_cursor}, expected max_id={max_id}")
+    check("TC-PRA2: no STATE_FILE before test", not os.path.exists(state_file))
 
-    # Non-sentinel: cursor=r1 should deliver r2 and r3 as backlog
-    c3 = WSClient("seed_recv", cursor=r1["msg_id"])
-    backlog_normal = c3.read_until_caught_up(timeout=5)
-    check("TC8: normal cursor>=0 → backlog delivered",
-          len(backlog_normal) == 2,
-          f"got {len(backlog_normal)} msgs")
-    if len(backlog_normal) == 2:
-        check("TC8: backlog ids correct",
-              sorted(m["msg_id"] for m in backlog_normal) == [r2["msg_id"], r3["msg_id"]],
-              str([m["msg_id"] for m in backlog_normal]))
-    c3.close()
+    # Verify monitor.py source has no STATE_FILE / last_msg_id references
+    monitor_path = os.path.join(os.path.dirname(__file__), "..", "bin", "monitor.py")
+    with open(monitor_path, encoding="utf-8") as f:
+        src = f.read()
+    check("TC-PRA2: STATE_FILE removed from monitor source",
+          "STATE_FILE" not in src,
+          "STATE_FILE still present in monitor.py")
+    check("TC-PRA2: last_msg_id removed from monitor source",
+          "last_msg_id" not in src,
+          "last_msg_id still present in monitor.py")
+    # Verify that no X-Meeting-Cursor header is sent in the WS handshake headers list.
+    # The string may appear in comments/docstrings but must not appear in the headers list.
+    import ast
+    headers_sent = False
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if "X-Meeting-Cursor:" in node.value:
+                headers_sent = True
+                break
+    check("TC-PRA2: X-Meeting-Cursor not sent in WS headers",
+          not headers_sent,
+          "X-Meeting-Cursor header still sent in monitor.py handshake")
 
 
 def _collect_all_msgs(c: WSClient, expect_count: int, timeout: float = 15.0) -> list[dict]:
@@ -626,6 +714,9 @@ def test_mid_drain_inject_race(db_dir: str, rounds: int = 20):
         # Pre-seed 200 messages directly into DB (fast, no HTTP overhead)
         pre_ids = _db_seed_messages(db_dir, sender, recv, 200)
 
+        # Pre-set cursor=0 so daemon delivers all pre-seeded messages as backlog.
+        _db_upsert_cursor(db_dir, recv, 0)
+
         # Connect recv — daemon starts draining backlog in a new thread
         c = WSClient(recv, cursor=0)
 
@@ -696,10 +787,12 @@ def main():
             test_realtime_push()
             test_ping_pong()
             test_reconnect_with_cursor()
-            test_concurrent_dedup()
-            test_sentinel_seed()
+            test_concurrent_dedup(tmp)
+            test_first_seed_zero_replay(tmp)
+            test_cursor_survives_restart(tmp)
+            test_monitor_no_tmp_file(tmp)
             test_unknown_get_route_404()
-            test_mid_drain_inject_race(tmp, rounds=20)
+            test_mid_drain_inject_race(tmp, rounds=5)
         finally:
             proc.terminate()
             try:

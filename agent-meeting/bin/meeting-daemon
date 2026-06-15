@@ -84,6 +84,19 @@ def _ws_remove(sub: "Subscriber"):
                 pass
             if not lst:
                 del _subscribers[sub.name]
+    # Flush in-memory high_water_mark to DB so reconnect resumes from here.
+    if sub.high_water_mark > 0:
+        try:
+            with db() as conn:
+                conn.execute(
+                    "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
+                    " ON CONFLICT(member_name) DO UPDATE SET"
+                    "  cursor=MAX(excluded.cursor, read_cursors.cursor),"
+                    "  updated_at=excluded.updated_at",
+                    (sub.name, sub.high_water_mark, int(time.time())),
+                )
+        except Exception:
+            pass
     try:
         sub.sock.close()
     except Exception:
@@ -398,12 +411,6 @@ class Handler(BaseHTTPRequestHandler):
             self._err(400, "X-Meeting-Name required")
             return
 
-        cursor_str = self.headers.get("X-Meeting-Cursor", "0").strip()
-        try:
-            cursor = int(cursor_str)
-        except ValueError:
-            cursor = 0
-
         ws_key = self.headers.get("Sec-WebSocket-Key", "")
         if not ws_key:
             self._err(400, "Sec-WebSocket-Key required")
@@ -423,12 +430,24 @@ class Handler(BaseHTTPRequestHandler):
         # Clear the 30s socket timeout so the framework doesn't kill long-lived WS connections.
         self.connection.settimeout(None)
 
-        # cursor=-1 is the sentinel for a fresh monitor (no STATE_FILE).
-        # Set its cursor to MAX(msg_id) so _ws_send_backlog sends zero rows.
-        if cursor < 0:
-            with db() as conn:
-                row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM messages").fetchone()
-                cursor = row["m"]
+        # Cursor is DB-authoritative. Ignore any client-supplied header.
+        # First connect (no row): seed to MAX(id) so zero backlog is replayed.
+        now = int(time.time())
+        with db() as conn:
+            row = conn.execute(
+                "SELECT cursor FROM read_cursors WHERE member_name=?", (name,)
+            ).fetchone()
+            if row is None:
+                max_row = conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) AS m FROM messages"
+                ).fetchone()
+                cursor = max_row["m"]
+                conn.execute(
+                    "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)",
+                    (name, cursor, now),
+                )
+            else:
+                cursor = row["cursor"]
 
         sub = Subscriber(name, self.connection, self.wfile, cursor)
 
@@ -506,11 +525,24 @@ class Handler(BaseHTTPRequestHandler):
                         # uses the same lock, so there is no gap between "no more rows"
                         # and "fanout starts delivering".
                         sub.state = "live"
+                        hwm = sub.high_water_mark
                         caught_up_frame = json.dumps(
-                            {"type": "caught_up", "cursor": sub.high_water_mark},
+                            {"type": "caught_up", "cursor": hwm},
                             ensure_ascii=False,
                         )
                         _ws_send_text(sub, caught_up_frame)
+                        # Persist the drained cursor to DB.
+                        try:
+                            with db() as conn:
+                                conn.execute(
+                                    "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
+                                    " ON CONFLICT(member_name) DO UPDATE SET"
+                                    "  cursor=MAX(excluded.cursor, read_cursors.cursor),"
+                                    "  updated_at=excluded.updated_at",
+                                    (sub.name, hwm, int(time.time())),
+                                )
+                        except Exception:
+                            pass
                         return
                     # New rows appeared between our DB read and the lock — loop again
                 continue
@@ -877,7 +909,7 @@ def main():
     with db() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
-    # Idempotent column additions for sessions table.
+    # Idempotent column additions and table creations.
     with db() as conn:
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
@@ -887,6 +919,12 @@ def main():
             conn.execute("ALTER TABLE sessions ADD COLUMN os TEXT")
         except sqlite3.OperationalError:
             pass
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS read_cursors ("
+            "  member_name TEXT PRIMARY KEY,"
+            "  cursor      INTEGER NOT NULL,"
+            "  updated_at  INTEGER NOT NULL)"
+        )
 
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((args.bind, args.port), Handler)

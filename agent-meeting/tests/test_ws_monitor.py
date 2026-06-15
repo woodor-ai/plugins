@@ -30,13 +30,6 @@ import sys
 import tempfile
 import threading
 
-# macOS: tempfile.gettempdir() returns /var/folders/..., NOT /tmp (which is /private/tmp).
-# Monitor uses TMP = Path(tempfile.gettempdir()), so we must use the same base.
-_TMPDIR = tempfile.gettempdir()
-
-
-def _state_file(name: str) -> str:
-    return os.path.join(_TMPDIR, f"meeting-{name}.last_msg_id")
 import time
 import urllib.request
 import urllib.error
@@ -195,7 +188,40 @@ def init_test_db(db_dir: str):
         );
         CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
         CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
+        CREATE TABLE IF NOT EXISTS read_cursors (
+            member_name TEXT PRIMARY KEY,
+            cursor      INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
     """)
+    conn.close()
+
+
+def _read_db_cursor(db_dir: str, member_name: str) -> int | None:
+    """Read cursor from read_cursors table. Returns None if no row."""
+    db_path = os.path.join(db_dir, "db", "rooms.db")
+    conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
+    conn.executescript("PRAGMA journal_mode = WAL;")
+    row = conn.execute(
+        "SELECT cursor FROM read_cursors WHERE member_name=?", (member_name,)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _set_db_cursor(db_dir: str, member_name: str, cursor: int):
+    """Insert/update a read_cursors row directly (test setup helper).
+
+    Uses WAL mode and isolation_level=None to match daemon connection settings.
+    """
+    db_path = os.path.join(db_dir, "db", "rooms.db")
+    conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
+    conn.executescript("PRAGMA journal_mode = WAL;")
+    conn.execute(
+        "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(member_name) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at",
+        (member_name, cursor, int(time.time())),
+    )
     conn.close()
 
 
@@ -222,8 +248,7 @@ def start_daemon(db_dir: str, port: int = TEST_PORT) -> subprocess.Popen:
 
 # ---------- monitor process helpers ----------
 
-def start_monitor(name: str, db_dir: str,
-                  state_file: str | None = None) -> "tuple[subprocess.Popen, list[str], list[int]]":
+def start_monitor(name: str, db_dir: str) -> "tuple[subprocess.Popen, list[str], list[int]]":
     """Start monitor.py in a subprocess.
 
     Returns (proc, shared_lines, offset) where shared_lines is populated
@@ -232,11 +257,6 @@ def start_monitor(name: str, db_dir: str,
     """
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
-    if state_file:
-        try:
-            os.unlink(state_file)
-        except FileNotFoundError:
-            pass
 
     proc = subprocess.Popen(
         [sys.executable, MONITOR_PATH, name],
@@ -403,16 +423,11 @@ def test_m1_realtime_stdout(db_dir: str):
     _http("/register", "POST", {"name": "m1_alice"})
     _http("/register", "POST", {"name": "m1_bob"})
 
-    # Seed one message so monitor has something to set cursor at.
+    # Seed one message, then pre-set read_cursors so monitor starts past it.
     seed = _http("/send", "POST", {
         "self": "m1_alice", "peer": "m1_bob", "body": "seed", "kind": "消息"
     })
-
-    # Pre-set STATE_FILE to seed cursor so monitor starts past the seed message,
-    # avoiding it arriving as unexpected backlog before the live msgs.
-    sf = _state_file("m1_bob")
-    with open(sf, "w") as f:
-        f.write(str(seed["msg_id"]))
+    _set_db_cursor(db_dir, "m1_bob", seed["msg_id"])
 
     proc, shared, offset = start_monitor("m1_bob", db_dir)
     try:
@@ -452,10 +467,6 @@ def test_m1_realtime_stdout(db_dir: str):
     finally:
         proc.terminate()
         proc.wait(timeout=3)
-        try:
-            os.unlink(_state_file("m1_bob"))
-        except Exception:
-            pass
 
 
 def test_m2_backlog_replay(db_dir: str):
@@ -470,10 +481,8 @@ def test_m2_backlog_replay(db_dir: str):
     r2 = _http("/send", "POST", {"self": "m2_sender", "peer": "m2_recv", "body": "b", "kind": "消息"})
     r3 = _http("/send", "POST", {"self": "m2_sender", "peer": "m2_recv", "body": "c", "kind": "消息"})
 
-    # Pre-set STATE_FILE to r1["msg_id"] so monitor treats msg1 as seen.
-    state_file = _state_file("m2_recv")
-    with open(state_file, "w") as f:
-        f.write(str(r1["msg_id"]))
+    # Pre-set read_cursors to r1 so daemon treats msg1 as already delivered.
+    _set_db_cursor(db_dir, "m2_recv", r1["msg_id"])
 
     proc, shared, offset = start_monitor("m2_recv", db_dir)
     try:
@@ -487,10 +496,6 @@ def test_m2_backlog_replay(db_dir: str):
     finally:
         proc.terminate()
         proc.wait(timeout=3)
-        try:
-            os.unlink(state_file)
-        except Exception:
-            pass
 
 
 def test_m3_ping_pong(db_dir: str):
@@ -502,10 +507,8 @@ def test_m3_ping_pong(db_dir: str):
     seed = _http("/send", "POST", {"self": "m3_user", "peer": "m3_user",
                                    "body": "seed", "kind": "消息"})
 
-    # Pre-set STATE_FILE to seed cursor so monitor connects past the seed.
-    sf = _state_file("m3_user")
-    with open(sf, "w") as f:
-        f.write(str(seed["msg_id"]))
+    # Pre-set read_cursors so monitor connects past the seed.
+    _set_db_cursor(db_dir, "m3_user", seed["msg_id"])
 
     proc, shared, offset = start_monitor("m3_user", db_dir)
     try:
@@ -533,10 +536,6 @@ def test_m3_ping_pong(db_dir: str):
     finally:
         proc.terminate()
         proc.wait(timeout=3)
-        try:
-            os.unlink(_state_file("m3_user"))
-        except Exception:
-            pass
 
 
 def test_m4_reconnect_backlog(db_dir: str):
@@ -547,14 +546,12 @@ def test_m4_reconnect_backlog(db_dir: str):
     _http("/register", "POST", {"name": "m4_sender"})
     _http("/register", "POST", {"name": "m4_recv"})
 
-    # Establish baseline — send 1 msg, start monitor, wait for connection
+    # Establish baseline — send 1 msg, pre-set cursor, start monitor.
     r0 = _http("/send", "POST", {"self": "m4_sender", "peer": "m4_recv",
                                   "body": "before", "kind": "消息"})
 
-    # Pre-set STATE_FILE so monitor starts with cursor=r0
-    state_file = _state_file("m4_recv")
-    with open(state_file, "w") as f:
-        f.write(str(r0["msg_id"]))
+    # Pre-set read_cursors so daemon starts monitor past r0.
+    _set_db_cursor(db_dir, "m4_recv", r0["msg_id"])
 
     proc, shared, offset = start_monitor("m4_recv", db_dir)
     try:
@@ -588,7 +585,8 @@ def test_m4_reconnect_backlog(db_dir: str):
         # Restart daemon on same port with same DB
         _daemon_proc = start_daemon(db_dir, TEST_PORT)
 
-        # Monitor should reconnect and get the 2 missed messages as backlog
+        # Monitor should reconnect and get the 2 missed messages as backlog.
+        # Daemon reads read_cursors (=r0) and replays everything after it.
         lines = collect_stdout_lines(proc, "📬", count=2, timeout=40.0,
                                      _shared_lines=shared, _shared_offset=offset)
         check("TC-M4: received 2 missed msgs after reconnect",
@@ -597,10 +595,6 @@ def test_m4_reconnect_backlog(db_dir: str):
     finally:
         proc.terminate()
         proc.wait(timeout=3)
-        try:
-            os.unlink(state_file)
-        except Exception:
-            pass
 
 
 def test_m5_host_reresolution(db_dir: str):
@@ -608,7 +602,8 @@ def test_m5_host_reresolution(db_dir: str):
     global _daemon_proc
     print("\n[TC-M5] 重连时重解析 host (controls 调用计数)")
 
-    counter_file = os.path.join(_TMPDIR, "ws-pr2-controls-counter.txt")
+    import tempfile as _tempfile
+    counter_file = os.path.join(_tempfile.gettempdir(), "ws-pr2-controls-counter.txt")
     try:
         os.unlink(counter_file)
     except FileNotFoundError:
@@ -621,9 +616,7 @@ def test_m5_host_reresolution(db_dir: str):
     seed = _http("/send", "POST", {"self": "m5_user", "peer": "m5_user",
                                    "body": "seed", "kind": "消息"})
 
-    state_file = _state_file("m5_user")
-    with open(state_file, "w") as f:
-        f.write(str(seed["msg_id"]))
+    _set_db_cursor(db_dir, "m5_user", seed["msg_id"])
 
     proc, shared, offset = start_monitor("m5_user", db_dir)
     try:
@@ -657,52 +650,41 @@ def test_m5_host_reresolution(db_dir: str):
     finally:
         proc.terminate()
         proc.wait(timeout=3)
-        try:
-            os.unlink(state_file)
-        except Exception:
-            pass
         # Restore plain shim for any subsequent tests
         install_controls_shim(db_dir, HOST, TEST_PORT)
 
 
-def test_m6_sentinel_seed(db_dir: str):
-    """TC-M6: 首启 cursor=-1 播种 — 无 STATE_FILE 时 monitor 连 cursor=-1，
-    daemon 回 caught_up(max)，不补发任何历史消息。"""
-    print("\n[TC-M6] 首启 cursor=-1 哨兵播种")
+def test_m6_first_seed_zero_replay(db_dir: str):
+    """TC-M6: 新成员无 read_cursors 行 — daemon 首次 seed 到 MAX，monitor 零历史回放，
+    read_cursors 落行，后续实时消息正常投递。"""
+    print("\n[TC-M6] 首次 seed 零回放（DB 权威）")
 
     _http("/register", "POST", {"name": "m6_sender"})
     _http("/register", "POST", {"name": "m6_recv"})
 
-    # Insert 3 history messages before monitor starts
+    # Insert 3 history messages before monitor starts; no read_cursors row for m6_recv.
     r1 = _http("/send", "POST", {"self": "m6_sender", "peer": "m6_recv", "body": "hist1", "kind": "消息"})
     r2 = _http("/send", "POST", {"self": "m6_sender", "peer": "m6_recv", "body": "hist2", "kind": "消息"})
     r3 = _http("/send", "POST", {"self": "m6_sender", "peer": "m6_recv", "body": "hist3", "kind": "消息"})
 
-    state_file = _state_file("m6_recv")
-    # Ensure no STATE_FILE exists — monitor must take the sentinel path
-    try:
-        os.unlink(state_file)
-    except FileNotFoundError:
-        pass
-
-    proc, shared, offset = start_monitor("m6_recv", db_dir, state_file=state_file)
+    proc, shared, offset = start_monitor("m6_recv", db_dir)
     try:
         # Give monitor time to connect and receive caught_up
         time.sleep(2.5)
 
-        # No 📬 lines should have appeared (history must be suppressed)
+        # No 📬 lines should have appeared (history must be suppressed by first-seed)
         lines_before = collect_stdout_lines(proc, "📬", count=1, timeout=0.5,
                                             _shared_lines=shared, _shared_offset=offset)
         check("TC-M6: no history flood on fresh start",
               len(lines_before) == 0, f"got {len(lines_before)} unexpected lines: {lines_before}")
 
-        # STATE_FILE must now exist and hold max(r1,r2,r3)
-        try:
-            seeded = int(open(state_file).read().strip())
-        except Exception:
-            seeded = -999
-        check("TC-M6: STATE_FILE written with correct cursor",
-              seeded == r3["msg_id"], f"got seeded={seeded}, expected={r3['msg_id']}")
+        # read_cursors must have a row for m6_recv seeded to MAX(id)
+        db_cursor = _read_db_cursor(db_dir, "m6_recv")
+        check("TC-M6: read_cursors row written after seed",
+              db_cursor is not None, "no row in read_cursors")
+        check("TC-M6: read_cursors cursor = MAX(id)",
+              db_cursor == r3["msg_id"],
+              f"db_cursor={db_cursor}, expected={r3['msg_id']}")
 
         # New live message after seeding must still arrive
         _http("/send", "POST", {
@@ -710,16 +692,12 @@ def test_m6_sentinel_seed(db_dir: str):
         })
         lines_live = collect_stdout_lines(proc, "📬", count=1, timeout=6.0,
                                           _shared_lines=shared, _shared_offset=offset)
-        check("TC-M6: live message delivered after sentinel seed",
+        check("TC-M6: live message delivered after seed",
               len(lines_live) == 1, f"got {lines_live}")
 
     finally:
         proc.terminate()
         proc.wait(timeout=3)
-        try:
-            os.unlink(state_file)
-        except Exception:
-            pass
 
 
 # ---------- stdout format regression ----------
@@ -773,7 +751,7 @@ def main():
             test_m3_ping_pong(tmp)
             test_m4_reconnect_backlog(tmp)
             test_m5_host_reresolution(tmp)
-            test_m6_sentinel_seed(tmp)
+            test_m6_first_seed_zero_replay(tmp)
         finally:
             try:
                 _daemon_proc.terminate()
