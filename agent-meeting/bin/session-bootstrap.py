@@ -428,13 +428,16 @@ def ensure_launchd():
 
     策略：OS 持久化为主，SessionStart hook 降级为兜底体检。
     - 每次调用先做 launchctl enable（幂等清除 disabled 覆盖，确保登录自启）。
-    - plist 未变且已 loaded → no-op 返回（但 enable 已做过）。
+    - plist 未变且已 loaded 且 /health 通 → no-op 返回。
+    - listed 但 /health 不通（卡死/crashloop）→ 走重装自愈路径。
     - plist 变了 → 先 bootout 再重新 bootstrap。
     - bootstrap 后轮询最多 5 秒校验 /health；若不健康最多重试 2 次自愈。
     - 失败落盘到 ~/.agent-meeting/logs/bootstrap.log；成功/失败均写日志。
     - 最终仍失败 → 设 LAUNCHD_WARNING 供 emit_context() 注入 additionalContext。
+    - 整段 launchd 操作用跨进程文件锁串行，防并发 SessionStart 交错。
     """
     global LAUNCHD_WARNING
+    import fcntl
     import plistlib
 
     LAUNCHD_PLIST.parent.mkdir(parents=True, exist_ok=True)
@@ -458,6 +461,39 @@ def ensure_launchd():
         "ProcessType": "Background",
     }
     new_bytes = plistlib.dumps(plist)
+
+    lock_path = DATA / "run" / "launchd.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(lock_path, "w")
+    try:
+        # 阻塞等锁，最多 30 秒；超时放弃避免卡死 SessionStart。
+        import errno as _errno
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as e:
+                if e.errno not in (_errno.EACCES, _errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    msg = "ensure_launchd: 拿锁超时（30s），跳过本次 launchd 操作"
+                    log(msg)
+                    blog(msg)
+                    return
+                time.sleep(0.5)
+
+        _ensure_launchd_locked(new_bytes, py, log_file)
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
+
+
+def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
+    """ensure_launchd 的实体逻辑；调用方持有跨进程文件锁后才能进入。"""
+    global LAUNCHD_WARNING
+    import plistlib  # noqa: F811 — 此函数独立可调用，保留 import
+
     old_bytes = LAUNCHD_PLIST.read_bytes() if LAUNCHD_PLIST.exists() else b""
     plist_changed = new_bytes != old_bytes
     if plist_changed:
@@ -479,10 +515,13 @@ def ensure_launchd():
     ).returncode == 0
 
     if listed and not plist_changed:
-        log(f"launchd already manages {LAUNCHD_LABEL}")
-        return
+        if _daemon_healthy():
+            log(f"launchd already manages {LAUNCHD_LABEL} (healthy)")
+            return
+        # listed 但 /health 不通 → daemon 卡死/crashloop，走重装自愈路径
+        blog(f"launchd listed 但 /health 不通，进入自愈路径")
 
-    if listed and plist_changed:
+    if listed:
         subprocess.run(
             ["launchctl", "bootout", service_target],
             capture_output=True,
