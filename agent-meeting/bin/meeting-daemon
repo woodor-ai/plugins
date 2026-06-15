@@ -22,13 +22,16 @@ Run forever; stop with SIGINT/SIGTERM (mDNS unregister + clean shutdown).
 """
 
 import argparse
+import base64
 import contextlib
+import hashlib
 import json
 import os
 import ipaddress
 import signal
 import socket
 import sqlite3
+import struct
 import sys
 import threading
 import time
@@ -49,6 +52,197 @@ except Exception:
 
 # A session is considered online if last_seen is within this many seconds.
 ONLINE_THRESHOLD = 12
+
+# ---------- WebSocket global state ----------
+
+class Subscriber:
+    __slots__ = ("name", "sock", "wfile", "high_water_mark", "state", "send_lock", "last_pong")
+
+    def __init__(self, name: str, sock, wfile, cursor: int):
+        self.name = name
+        self.sock = sock
+        self.wfile = wfile
+        self.high_water_mark = cursor  # only msgs with id > this are sent
+        self.state = "draining"        # "draining" | "live"
+        self.send_lock = threading.Lock()
+        self.last_pong = time.time()
+
+
+# name → list[Subscriber]  (list because same name can reconnect before old conn dies)
+_subscribers: dict[str, list["Subscriber"]] = {}
+_sub_lock = threading.Lock()
+
+
+def _ws_remove(sub: "Subscriber"):
+    """Remove a Subscriber from the global table. Safe to call multiple times."""
+    with _sub_lock:
+        lst = _subscribers.get(sub.name)
+        if lst:
+            try:
+                lst.remove(sub)
+            except ValueError:
+                pass
+            if not lst:
+                del _subscribers[sub.name]
+    try:
+        sub.sock.close()
+    except Exception:
+        pass
+
+
+# ---------- RFC6455 minimal frame helpers ----------
+
+def _ws_send_text(sub: "Subscriber", payload: str) -> bool:
+    """Send a WebSocket text frame. Returns False on write failure → caller should remove sub."""
+    data = payload.encode("utf-8")
+    length = len(data)
+    if length < 126:
+        header = struct.pack("!BB", 0x81, length)
+    elif length < 65536:
+        header = struct.pack("!BBH", 0x81, 126, length)
+    else:
+        header = struct.pack("!BBQ", 0x81, 127, length)
+    try:
+        sub.wfile.write(header + data)
+        sub.wfile.flush()
+        return True
+    except Exception:
+        return False
+
+
+def _ws_send_ping(sub: "Subscriber") -> bool:
+    """Send a WebSocket ping frame (opcode 0x9, empty payload)."""
+    try:
+        sub.wfile.write(b"\x89\x00")
+        sub.wfile.flush()
+        return True
+    except Exception:
+        return False
+
+
+def _ws_send_close(sub: "Subscriber"):
+    """Send a WebSocket close frame (best-effort)."""
+    try:
+        sub.wfile.write(b"\x88\x00")
+        sub.wfile.flush()
+    except Exception:
+        pass
+
+
+def _ws_read_frame(rfile) -> tuple[int, bytes]:
+    """Read one complete WebSocket frame from rfile.
+
+    Returns (opcode, payload). Raises IOError / struct.error on EOF or
+    malformed frame. Handles client masking (unmasks payload). Does NOT
+    handle fragmentation — fragmented frames raise IOError.
+    """
+    header = rfile.read(2)
+    if len(header) < 2:
+        raise IOError("EOF reading frame header")
+    b0, b1 = header[0], header[1]
+    fin = (b0 & 0x80) != 0
+    opcode = b0 & 0x0F
+    masked = (b1 & 0x80) != 0
+    length = b1 & 0x7F
+
+    if not fin:
+        raise IOError("fragmented frame not supported")
+
+    if length == 126:
+        ext = rfile.read(2)
+        if len(ext) < 2:
+            raise IOError("EOF reading 16-bit length")
+        length = struct.unpack("!H", ext)[0]
+    elif length == 127:
+        ext = rfile.read(8)
+        if len(ext) < 8:
+            raise IOError("EOF reading 64-bit length")
+        length = struct.unpack("!Q", ext)[0]
+
+    mask_key = b""
+    if masked:
+        mask_key = rfile.read(4)
+        if len(mask_key) < 4:
+            raise IOError("EOF reading mask key")
+
+    payload = b""
+    if length:
+        payload = rfile.read(length)
+        if len(payload) < length:
+            raise IOError("EOF reading payload")
+
+    if masked:
+        payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+
+    return opcode, payload
+
+
+def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None):
+    """Push a message to all live/draining subscribers for recipient.
+
+    Called after DB COMMIT. Uses per-subscriber send_lock + high_water_mark
+    to ensure each subscriber sees each msg_id exactly once even if a
+    backlog flush is in progress on the same connection's thread.
+    """
+    with _sub_lock:
+        subs = list(_subscribers.get(recipient, []))
+    # TODO: group fanout — if is_group(recipient): look up members and fanout to each
+
+    frame = json.dumps({
+        "type": "msg",
+        "msg_id": msg_id,
+        "sender": sender,
+        "ask": ask or "",
+        "group": None,
+        "phase": "live",
+    }, ensure_ascii=False)
+
+    dead = []
+    for sub in subs:
+        with sub.send_lock:
+            if msg_id <= sub.high_water_mark:
+                continue  # already sent via backlog
+            ok = _ws_send_text(sub, frame)
+            if ok:
+                sub.high_water_mark = msg_id
+            else:
+                dead.append(sub)
+
+    for sub in dead:
+        _ws_remove(sub)
+
+
+# ---------- heartbeat + pong-timeout sweep ----------
+
+_WS_PING_INTERVAL = 4      # seconds between pings
+_WS_PONG_TIMEOUT = 15      # seconds without pong → dead
+
+
+def _ws_heartbeat_loop():
+    """Background thread: ping all connected subscribers every 4s,
+    and sweep for pong-timeout dead connections every 5s."""
+    last_sweep = time.time()
+    while True:
+        time.sleep(_WS_PING_INTERVAL)
+        now = time.time()
+
+        with _sub_lock:
+            all_subs = [s for lst in _subscribers.values() for s in lst]
+
+        dead = []
+        for sub in all_subs:
+            if not _ws_send_ping(sub):
+                dead.append(sub)
+
+        # sweep for pong timeout every ~5s (one ping interval is close enough)
+        if now - last_sweep >= 5:
+            last_sweep = now
+            for sub in all_subs:
+                if now - sub.last_pong > _WS_PONG_TIMEOUT and sub not in dead:
+                    dead.append(sub)
+
+        for sub in dead:
+            _ws_remove(sub)
 
 
 # ---------- DB helpers ----------
@@ -199,6 +393,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if not self._check_auth(path):
             return
+
+        # WebSocket upgrade — must be checked before the normal HTTP dispatch.
+        if (path == "/subscribe" and
+                self.headers.get("Upgrade", "").lower() == "websocket"):
+            self._ws_upgrade()
+            return  # _ws_upgrade blocks until connection closes
+
         if path == "/health":
             return self._json(200, {
                 "ok": True,
@@ -225,6 +426,146 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             sys.stderr.write(traceback.format_exc())
             return self._err(500, f"internal error: {e}")
+
+    def _ws_upgrade(self):
+        """Handle WebSocket upgrade on /subscribe.
+
+        Performs the RFC6455 handshake, then blocks in the WS read loop
+        until the connection closes. The Handler.timeout=30 is cleared after
+        the handshake so the framework doesn't kill a long-lived connection.
+        """
+        # --- validate protocol version ---
+        proto = self.headers.get("X-Meeting-Proto", "")
+        if proto != "1":
+            self._text(426, "Upgrade Required: X-Meeting-Proto must be 1")
+            return
+
+        # --- auth (mirrors _check_auth but without sending JSON 401) ---
+        expected_token = None
+        try:
+            with open(_CONFIG_PATH) as _f:
+                expected_token = json.load(_f).get("auth_token") or None
+        except Exception:
+            pass
+        if expected_token:
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header != f"Bearer {expected_token}":
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+        name = self.headers.get("X-Meeting-Name", "").strip()
+        if not name:
+            self._err(400, "X-Meeting-Name required")
+            return
+
+        cursor_str = self.headers.get("X-Meeting-Cursor", "0").strip()
+        try:
+            cursor = int(cursor_str)
+        except ValueError:
+            cursor = 0
+
+        ws_key = self.headers.get("Sec-WebSocket-Key", "")
+        if not ws_key:
+            self._err(400, "Sec-WebSocket-Key required")
+            return
+
+        # --- RFC6455 accept key ---
+        accept = base64.b64encode(
+            hashlib.sha1((ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+        ).decode()
+
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+
+        # Clear the 30s socket timeout so the framework doesn't kill long-lived WS connections.
+        self.connection.settimeout(None)
+
+        sub = Subscriber(name, self.connection, self.wfile, cursor)
+
+        # Register as draining, send backlog, switch to live.
+        with _sub_lock:
+            _subscribers.setdefault(name, []).append(sub)
+
+        try:
+            self._ws_send_backlog(sub, cursor)
+            # Send caught_up marker
+            caught_up_frame = json.dumps({"type": "caught_up", "cursor": cursor}, ensure_ascii=False)
+            with sub.send_lock:
+                _ws_send_text(sub, caught_up_frame)
+            sub.state = "live"
+            sys.stderr.write(f"[ws] {name} connected, cursor={cursor}\n")
+
+            # Read loop — blocks until connection closes
+            while True:
+                try:
+                    opcode, payload = _ws_read_frame(self.rfile)
+                except Exception:
+                    break  # EOF or malformed frame → close
+
+                if opcode == 0xA:  # pong
+                    sub.last_pong = time.time()
+                    # Refresh liveness in DB (replaces /ring's last_seen update for WS clients)
+                    try:
+                        with db() as conn:
+                            conn.execute(
+                                "UPDATE sessions SET last_seen=? WHERE name=?",
+                                (time.time(), name),
+                            )
+                    except Exception:
+                        pass
+                elif opcode == 0x9:  # ping from client — send pong
+                    try:
+                        self.wfile.write(b"\x8A" + bytes([len(payload)]) + payload)
+                        self.wfile.flush()
+                    except Exception:
+                        break
+                elif opcode == 0x8:  # close
+                    _ws_send_close(sub)
+                    break
+                else:
+                    # unexpected opcode — close per RFC6455
+                    _ws_send_close(sub)
+                    break
+        finally:
+            _ws_remove(sub)
+            sys.stderr.write(f"[ws] {name} disconnected\n")
+
+    def _ws_send_backlog(self, sub: "Subscriber", cursor: int):
+        """Send all messages with id > cursor to sub as backlog frames.
+
+        Uses send_lock + high_water_mark so concurrent _ws_fanout calls
+        on the same subscriber won't double-send a message that arrives
+        while backlog is in flight.
+        """
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT id, sender, ask FROM messages WHERE recipient=? AND id>? ORDER BY id ASC",
+                (sub.name, cursor),
+            ).fetchall()
+
+        for row in rows:
+            frame = json.dumps({
+                "type": "msg",
+                "msg_id": row["id"],
+                "sender": row["sender"],
+                "ask": row["ask"] or "",
+                "group": None,
+                "phase": "backlog",
+            }, ensure_ascii=False)
+            with sub.send_lock:
+                if row["id"] <= sub.high_water_mark:
+                    continue  # already sent by concurrent fanout
+                ok = _ws_send_text(sub, frame)
+                if ok:
+                    sub.high_water_mark = row["id"]
+                else:
+                    _ws_remove(sub)
+                    return
 
     def do_POST(self):
         path = urlparse(self.path).path
@@ -417,10 +758,13 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 conn.execute("COMMIT")
-                return {"msg_id": msg_id, "room": "--".join(sorted([self_name, peer])), "turn": peer}
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
+
+        # Fanout outside DB transaction — socket IO must not block DB writes.
+        _ws_fanout(msg_id, peer, self_name, ask)
+        return {"msg_id": msg_id, "room": "--".join(sorted([self_name, peer])), "turn": peer}
 
     def _rename(self, old: str, new: str):
         with db() as conn:
@@ -641,6 +985,7 @@ def main():
             time.sleep(10)
 
     threading.Thread(target=_watchdog, args=(args.port,), daemon=True).start()
+    threading.Thread(target=_ws_heartbeat_loop, daemon=True).start()
 
     print(f"[http] listening on {args.bind}:{args.port}", flush=True)
     server.serve_forever()
