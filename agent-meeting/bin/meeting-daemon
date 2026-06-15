@@ -200,6 +200,8 @@ def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None):
     dead = []
     for sub in subs:
         with sub.send_lock:
+            if sub.state != "live":
+                continue  # draining — backlog thread owns this sub's stream
             if msg_id <= sub.high_water_mark:
                 continue  # already sent via backlog
             ok = _ws_send_text(sub, frame)
@@ -493,11 +495,6 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             self._ws_send_backlog(sub, cursor)
-            # Send caught_up marker
-            caught_up_frame = json.dumps({"type": "caught_up", "cursor": cursor}, ensure_ascii=False)
-            with sub.send_lock:
-                _ws_send_text(sub, caught_up_frame)
-            sub.state = "live"
             sys.stderr.write(f"[ws] {name} connected, cursor={cursor}\n")
 
             # Read loop — blocks until connection closes
@@ -536,36 +533,63 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write(f"[ws] {name} disconnected\n")
 
     def _ws_send_backlog(self, sub: "Subscriber", cursor: int):
-        """Send all messages with id > cursor to sub as backlog frames.
+        """Drain all messages with id > cursor to sub, then atomically flip state to live.
 
-        Uses send_lock + high_water_mark so concurrent _ws_fanout calls
-        on the same subscriber won't double-send a message that arrives
-        while backlog is in flight.
+        Invariant: while state=="draining", only this thread sends to sub (fanout skips it).
+        We loop until the DB has no more rows past our high_water_mark, checking under
+        send_lock before flipping to "live" so there is no window where a concurrent
+        fanout could slip a message past us.
         """
-        with db() as conn:
-            rows = conn.execute(
-                "SELECT id, sender, ask FROM messages WHERE recipient=? AND id>? ORDER BY id ASC",
-                (sub.name, cursor),
-            ).fetchall()
-
-        for row in rows:
-            frame = json.dumps({
-                "type": "msg",
-                "msg_id": row["id"],
-                "sender": row["sender"],
-                "ask": row["ask"] or "",
-                "group": None,
-                "phase": "backlog",
-            }, ensure_ascii=False)
+        while True:
             with sub.send_lock:
-                if row["id"] <= sub.high_water_mark:
-                    continue  # already sent by concurrent fanout
-                ok = _ws_send_text(sub, frame)
-                if ok:
-                    sub.high_water_mark = row["id"]
-                else:
-                    _ws_remove(sub)
-                    return
+                hwm = sub.high_water_mark
+
+            with db() as conn:
+                rows = conn.execute(
+                    "SELECT id, sender, ask FROM messages WHERE recipient=? AND id>? ORDER BY id ASC LIMIT 500",
+                    (sub.name, hwm),
+                ).fetchall()
+
+            if not rows:
+                # No rows past hwm — check once more under send_lock before flipping live
+                with sub.send_lock:
+                    with db() as conn:
+                        more = conn.execute(
+                            "SELECT 1 FROM messages WHERE recipient=? AND id>? LIMIT 1",
+                            (sub.name, sub.high_water_mark),
+                        ).fetchone()
+                    if not more:
+                        # Atomically flip to live inside send_lock — fanout's state check
+                        # uses the same lock, so there is no gap between "no more rows"
+                        # and "fanout starts delivering".
+                        sub.state = "live"
+                        caught_up_frame = json.dumps(
+                            {"type": "caught_up", "cursor": sub.high_water_mark},
+                            ensure_ascii=False,
+                        )
+                        _ws_send_text(sub, caught_up_frame)
+                        return
+                    # New rows appeared between our DB read and the lock — loop again
+                continue
+
+            for row in rows:
+                frame = json.dumps({
+                    "type": "msg",
+                    "msg_id": row["id"],
+                    "sender": row["sender"],
+                    "ask": row["ask"] or "",
+                    "group": None,
+                    "phase": "backlog",
+                }, ensure_ascii=False)
+                with sub.send_lock:
+                    if row["id"] <= sub.high_water_mark:
+                        continue  # fanout cannot have sent this (state is draining), but be safe
+                    ok = _ws_send_text(sub, frame)
+                    if ok:
+                        sub.high_water_mark = row["id"]
+                    else:
+                        _ws_remove(sub)
+                        return
 
     def do_POST(self):
         path = urlparse(self.path).path

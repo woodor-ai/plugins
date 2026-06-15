@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -397,8 +398,8 @@ def test_reconnect_with_cursor():
 
 
 def test_concurrent_dedup():
-    """TC6: 补发进行中途插入 /send — msg_ids 严格单调不重不漏"""
-    print("\n[TC6] 补发/实时并发去重")
+    """TC6: 补发进行中途插入 /send — msg_ids 严格单调不重不漏（原 20 条小规模版本）"""
+    print("\n[TC6] 补发/实时并发去重（小规模）")
 
     _http("/register", "POST", {"name": "heidi"})
     _http("/register", "POST", {"name": "ivan"})
@@ -452,10 +453,125 @@ def test_concurrent_dedup():
           f"total={len(all_msgs)} unique={len(set(m['msg_id'] for m in all_msgs))}")
     check("TC6: no missing msgs", got_ids == expected_ids,
           f"expected {expected_ids}, got {got_ids}")
-    # Strict monotone: each subscriber's stream is monotone (order might mix backlog/live but IDs strict)
     check("TC6: no gaps in coverage", set(got_ids) == set(expected_ids))
 
     c.close()
+
+
+def _collect_all_msgs(c: WSClient, expect_count: int, timeout: float = 15.0) -> list[dict]:
+    """Read frames until expect_count msg frames received or timeout, skipping pings."""
+    msgs = []
+    deadline = time.time() + timeout
+    while len(msgs) < expect_count and time.time() < deadline:
+        remaining = deadline - time.time()
+        try:
+            opcode, payload = c.read_frame(timeout=max(0.1, remaining))
+        except socket.timeout:
+            break
+        if opcode == 0x9:
+            c.send_pong(payload)
+        elif opcode == 0x1:
+            d = json.loads(payload.decode())
+            if d.get("type") == "msg":
+                msgs.append(d)
+    return msgs
+
+
+def _db_seed_messages(db_dir: str, sender: str, recv: str, count: int) -> list[int]:
+    """Insert `count` messages directly into the DB and return their ids.
+
+    Bypasses HTTP so we can seed large backlogs quickly without hammering
+    the daemon's thread pool.
+    """
+    db_path = os.path.join(db_dir, "db", "rooms.db")
+    conn = sqlite3.connect(db_path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    now = int(time.time())
+    ids = []
+    for i in range(count):
+        cur = conn.execute(
+            "INSERT INTO messages (sender, recipient, kind, body, ask, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
+            (sender, recv, "消息", f"pre-{i}", now),
+        )
+        ids.append(cur.lastrowid)
+    conn.commit()
+    conn.close()
+    return ids
+
+
+def test_mid_drain_inject_race(db_dir: str, rounds: int = 20):
+    """TC7: 大补发队列 + 补发途中注入高 id 消息 — 检验消息连续、不缺、不重。
+
+    Designed to catch the PR1 race: old code did one-shot fetchall for backlog;
+    a concurrent fanout (no draining check) could bump hwm to a high id, causing
+    the backlog loop to skip all rows between the injected id and end of snapshot.
+
+    Old code behaviour:
+      - fanout fires for msg 201 while backlog is at row 100/200
+      - fanout acquires send_lock, sends 201, sets hwm=201
+      - backlog loop resumes at row 101: id=101 <= hwm=201 → skip ... repeat for 101..200
+      - rows 101..200 permanently lost
+
+    New code: fanout skips state==draining subs; backlog loop owns the stream;
+    state flip is inside send_lock with a terminal DB check — no gap.
+
+    Pre-seeding uses direct SQLite writes (not HTTP) to keep the daemon's thread
+    pool free for the actual test traffic.
+    """
+    print(f"\n[TC7] 补发途中注入高id消息竞态（{rounds}轮）")
+
+    pass_rounds = 0
+    fail_rounds = 0
+
+    for rnd in range(rounds):
+        suffix = f"tc7r{rnd}"
+        sender = f"ivan7_{suffix}"
+        recv = f"heidi7_{suffix}"
+        _http("/register", "POST", {"name": sender})
+        _http("/register", "POST", {"name": recv})
+
+        # Pre-seed 200 messages directly into DB (fast, no HTTP overhead)
+        pre_ids = _db_seed_messages(db_dir, sender, recv, 200)
+
+        # Connect recv — daemon starts draining backlog in a new thread
+        c = WSClient(recv, cursor=0)
+
+        # Inject 10 live messages via HTTP while backlog drain is in progress.
+        injected_ids = []
+
+        def inject(s=sender, rc=recv, ids=injected_ids):
+            time.sleep(0.02)  # let backlog drain start (200 rows takes >20ms)
+            for i in range(10):
+                r = _http("/send", "POST", {"self": s, "peer": rc, "body": f"live-{i}", "kind": "消息"})
+                ids.append(r["msg_id"])
+
+        t = threading.Thread(target=inject, daemon=True)
+        t.start()
+
+        expected_count = 200 + 10
+        all_msgs = _collect_all_msgs(c, expected_count, timeout=20.0)
+        t.join(timeout=10)
+        c.close()
+
+        expected_ids = sorted(pre_ids + injected_ids)
+        got_ids = sorted(m["msg_id"] for m in all_msgs)
+
+        no_dup = len(all_msgs) == len(set(m["msg_id"] for m in all_msgs))
+        no_miss = got_ids == expected_ids
+
+        if no_dup and no_miss:
+            pass_rounds += 1
+        else:
+            fail_rounds += 1
+            missing = sorted(set(expected_ids) - set(got_ids))
+            extra = sorted(set(got_ids) - set(expected_ids))
+            print(f"    round {rnd}: FAIL — missing={missing[:10]} extra={extra[:10]}")
+
+    check(f"TC7: no duplicates/missing across {rounds} rounds",
+          fail_rounds == 0,
+          f"{fail_rounds} failed rounds out of {rounds}")
+    if fail_rounds == 0:
+        print(f"    all {rounds} rounds passed")
 
 
 # ---------- main ----------
@@ -475,6 +591,7 @@ def main():
             test_ping_pong()
             test_reconnect_with_cursor()
             test_concurrent_dedup()
+            test_mid_drain_inject_race(tmp, rounds=20)
         finally:
             proc.terminate()
             try:
