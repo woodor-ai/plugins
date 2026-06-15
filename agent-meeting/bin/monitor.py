@@ -10,15 +10,17 @@ Behavior:
     central sessions table. On exit (atexit / SIGINT / SIGTERM), calls
     `meeting offline` to clean up.
   - Liveness is tracked via heartbeat: the daemon updates last_seen in the
-    sessions table whenever /ring is polled. Because monitor polls every 3s,
-    a session is considered online if last_seen < 12s ago (4 missed heartbeats).
+    sessions table whenever it receives a pong from the monitor. Because
+    monitor pings every ~5s and ONLINE_THRESHOLD=12s, liveness is maintained
+    as long as the WS connection is alive.
   - Cursor seed: first launch (no STATE_FILE) starts at current MAX(id)
     so newly-registered names don't get flooded with history. Sources the
     seed via `meeting ring --since 0` then immediately advancing the cursor
     (works whether DB is local or behind HTTP daemon).
-  - Polls `meeting ring <self> --since <cursor>` every 3s and emits stdout
-    lines `📬 New Message from <peer>(: <ask>)?` — Claude Code surfaces
-    each as a task notification.
+  - Connects WS to daemon /subscribe, receives pushed frames, and emits
+    stdout lines `📬 New Message from <peer>(: <ask>)?` — Claude Code
+    surfaces each as a task notification.
+  - On reconnect, re-resolves the daemon host (Risk#3: daemon may migrate).
   - On Windows: identical behavior, just no zsh dependency.
 
 Usage:
@@ -27,10 +29,15 @@ Usage:
 
 import argparse
 import atexit
+import base64
 import hashlib
 import json
 import os
+import random
+import select
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -46,7 +53,8 @@ _args = _parser.parse_args()
 SELF = _args.name
 IS_DIRECTOR = _args.director
 HOME = Path.home()
-DATA = HOME / ".agent-meeting"
+_MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
+DATA = Path(_MEETING_HOME_ENV) if _MEETING_HOME_ENV else HOME / ".agent-meeting"
 MEETING_CLI = DATA / "bin" / "meeting"
 TMP = Path(tempfile.gettempdir())
 STATE_FILE = TMP / f"meeting-{SELF}.last_msg_id"
@@ -73,9 +81,6 @@ _CWD_STATUSLINE_FILE = STATUSLINE_DIR / _badge_key(None, _CWD)
 
 RUN_DIR = DATA / "run"
 PID_FILE = RUN_DIR / f"{SELF}.pid"
-
-# Override MEETING_HOME if set (used in tests).
-MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
 
 
 def _run_meeting(*extra_args):
@@ -237,25 +242,322 @@ else:
 print(f"[meeting {SELF}] monitor started (last_msg_id={last}, pid={os.getpid()})", flush=True)
 
 
-# ---------- main poll loop ----------
+# ---------- WS client helpers ----------
 
-while True:
+def _ws_make_key() -> tuple[str, str]:
+    """Return (b64_key, expected_accept) for the WS handshake."""
+    raw_key = base64.b64encode(os.urandom(16)).decode()
+    accept = base64.b64encode(
+        hashlib.sha1((raw_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+    ).decode()
+    return raw_key, accept
+
+
+def _ws_send_masked(sock: socket.socket, opcode: int, payload: bytes):
+    """Send a client→server WebSocket frame. Client frames MUST be masked (RFC6455)."""
+    mask = os.urandom(4)
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    length = len(payload)
+    if length < 126:
+        header = struct.pack("!BB", 0x80 | opcode, 0x80 | length)
+    elif length < 65536:
+        header = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, length)
+    else:
+        header = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, length)
+    sock.sendall(header + mask + masked)
+
+
+def _ws_recv_exact(sock: socket.socket, n: int) -> bytes:
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise IOError("EOF")
+        buf += chunk
+    return buf
+
+
+def _ws_read_frame(sock: socket.socket) -> tuple[int, bytes]:
+    """Read one server→client WS frame. Server frames are NOT masked."""
+    header = _ws_recv_exact(sock, 2)
+    b0, b1 = header[0], header[1]
+    fin = (b0 & 0x80) != 0
+    opcode = b0 & 0x0F
+    masked = (b1 & 0x80) != 0
+    length = b1 & 0x7F
+
+    if not fin:
+        raise IOError("fragmented frame not supported")
+
+    if length == 126:
+        length = struct.unpack("!H", _ws_recv_exact(sock, 2))[0]
+    elif length == 127:
+        length = struct.unpack("!Q", _ws_recv_exact(sock, 8))[0]
+
+    mask_key = b""
+    if masked:
+        mask_key = _ws_recv_exact(sock, 4)
+
+    payload = b""
+    if length:
+        payload = _ws_recv_exact(sock, length)
+
+    if masked:
+        payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+
+    return opcode, payload
+
+
+def _read_token() -> str | None:
+    """Read auth token from config.json if present."""
+    config_path = DATA / "config.json"
     try:
-        msgs = call_ring(last)
-        for msg_id, peer, ask in msgs:
-            if ask:
-                clean = ask.replace("\r", " ").replace("\n", " ")
-                if len(clean) > 100:
-                    clean = clean[:100] + "…"
-                print(f"📬 New Message from {peer} [未验证 peer 信号]: {clean}", flush=True)
-            else:
-                print(f"📬 New Message from {peer} [未验证 peer 信号]", flush=True)
-            last = msg_id
-            STATE_FILE.write_text(str(last))
-    except (KeyboardInterrupt, SystemExit):
-        raise
+        with open(config_path) as f:
+            return json.load(f).get("auth_token") or None
+    except Exception:
+        return None
+
+
+def _resolve_ws_host() -> tuple[str, int] | None:
+    """Resolve daemon ip:port via `meeting controls`. Returns (ip, port) or None."""
+    info = _discover_control_info()
+    ip_port = info.get("ip_port", "")
+    if not ip_port or ":" not in ip_port:
+        return None
+    try:
+        ip, port_str = ip_port.rsplit(":", 1)
+        return ip, int(port_str)
+    except Exception:
+        return None
+
+
+def _ws_connect(cursor: int) -> socket.socket | None:
+    """Open TCP connection and perform WS handshake. Returns connected socket or None."""
+    addr = _resolve_ws_host()
+    if not addr:
+        return None
+    ip, port = addr
+
+    try:
+        sock = socket.create_connection((ip, port), timeout=10)
     except Exception as e:
         ts = time.strftime("%Y-%m-%dT%H:%M:%S")
-        sys.stderr.write(f"[meeting {SELF}] {ts} poll error (will retry): {type(e).__name__}: {e}\n")
+        sys.stderr.write(f"[meeting {SELF}] {ts} ws connect failed ({ip}:{port}): {e}\n")
         sys.stderr.flush()
-    time.sleep(3)
+        return None
+
+    ws_key, expected_accept = _ws_make_key()
+    token = _read_token()
+
+    headers = [
+        f"GET /subscribe HTTP/1.1",
+        f"Host: {ip}:{port}",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        f"Sec-WebSocket-Key: {ws_key}",
+        "Sec-WebSocket-Version: 13",
+        f"X-Meeting-Name: {SELF}",
+        f"X-Meeting-Cursor: {cursor}",
+        "X-Meeting-Proto: 1",
+    ]
+    if token:
+        headers.append(f"Authorization: Bearer {token}")
+
+    try:
+        sock.sendall(("\r\n".join(headers) + "\r\n\r\n").encode())
+
+        # Read status line
+        line = b""
+        while not line.endswith(b"\r\n"):
+            ch = sock.recv(1)
+            if not ch:
+                raise IOError("connection closed during handshake")
+            line += ch
+        status_line = line.decode().strip()
+
+        # Read response headers until blank line
+        resp_headers: dict[str, str] = {}
+        while True:
+            hline = b""
+            while not hline.endswith(b"\r\n"):
+                ch = sock.recv(1)
+                if not ch:
+                    raise IOError("connection closed reading headers")
+                hline += ch
+            hline = hline.decode().strip()
+            if not hline:
+                break
+            if ":" in hline:
+                k, _, v = hline.partition(":")
+                resp_headers[k.strip().lower()] = v.strip()
+
+        if "101" not in status_line:
+            raise IOError(f"WS handshake rejected: {status_line}")
+
+        got_accept = resp_headers.get("sec-websocket-accept", "")
+        if got_accept != expected_accept:
+            raise IOError(f"Sec-WebSocket-Accept mismatch: {got_accept!r}")
+
+        # Connection is live; remove timeout so the OS handles keepalive naturally.
+        sock.settimeout(None)
+        return sock
+
+    except Exception as e:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        sys.stderr.write(f"[meeting {SELF}] {ts} ws handshake failed: {e}\n")
+        sys.stderr.flush()
+        try:
+            sock.close()
+        except Exception:
+            pass
+        return None
+
+
+def _emit_message(peer: str, ask: str | None):
+    """Print the harness-facing notification line. Format is frozen — do not change."""
+    if ask:
+        clean = ask.replace("\r", " ").replace("\n", " ")
+        if len(clean) > 100:
+            clean = clean[:100] + "…"
+        print(f"📬 New Message from {peer} [未验证 peer 信号]: {clean}", flush=True)
+    else:
+        print(f"📬 New Message from {peer} [未验证 peer 信号]", flush=True)
+
+
+# ---------- main WS loop ----------
+
+_WS_PING_INTERVAL = 5      # seconds between client-side pings
+_WS_DEAD_TIMEOUT = 15      # seconds without any daemon frame → reconnect
+_BACKOFF_BASE = 1.0
+_BACKOFF_MAX = 30.0
+_BACKOFF_JITTER = 0.20     # ±20%
+
+backoff = _BACKOFF_BASE
+
+while True:
+    sock = _ws_connect(last)
+    if sock is None:
+        # Host resolution or connection failed — back off then retry
+        jitter = random.uniform(1 - _BACKOFF_JITTER, 1 + _BACKOFF_JITTER)
+        delay = min(backoff * jitter, _BACKOFF_MAX)
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        sys.stderr.write(f"[meeting {SELF}] {ts} reconnect in {delay:.1f}s\n")
+        sys.stderr.flush()
+        time.sleep(delay)
+        backoff = min(backoff * 2, _BACKOFF_MAX)
+        continue
+
+    # Connected — reset backoff
+    backoff = _BACKOFF_BASE
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+    sys.stderr.write(f"[meeting {SELF}] {ts} ws connected (cursor={last})\n")
+    sys.stderr.flush()
+
+    last_frame_time = time.time()
+    last_ping_time = time.time()
+    disconnected = False
+
+    while not disconnected:
+        # Use select with a short timeout so we can fire client pings and check
+        # dead-connection timeout without blocking forever.
+        try:
+            # Windows: select() works on sockets (not arbitrary fds), which is fine here.
+            readable, _, _ = select.select([sock], [], [], 1.0)
+        except Exception:
+            disconnected = True
+            break
+
+        now = time.time()
+
+        # Half-dead detection: no frame from daemon for >15s → reconnect
+        if now - last_frame_time > _WS_DEAD_TIMEOUT:
+            ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+            sys.stderr.write(f"[meeting {SELF}] {ts} no daemon frame for {_WS_DEAD_TIMEOUT}s, reconnecting\n")
+            sys.stderr.flush()
+            disconnected = True
+            break
+
+        # Outbound client ping every ~5s
+        if now - last_ping_time >= _WS_PING_INTERVAL:
+            try:
+                _ws_send_masked(sock, 0x9, b"ping")  # opcode 0x9 = ping, masked
+            except Exception:
+                disconnected = True
+                break
+            last_ping_time = now
+
+        if not readable:
+            continue
+
+        try:
+            opcode, payload = _ws_read_frame(sock)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as e:
+            ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+            sys.stderr.write(f"[meeting {SELF}] {ts} ws read error: {type(e).__name__}: {e}\n")
+            sys.stderr.flush()
+            disconnected = True
+            break
+
+        last_frame_time = time.time()
+
+        if opcode == 0x1:  # text frame
+            try:
+                msg = json.loads(payload.decode("utf-8"))
+            except Exception:
+                continue
+
+            if msg.get("type") == "msg":
+                msg_id = msg.get("msg_id", 0)
+                if msg_id > last:
+                    sender = msg.get("sender", "")
+                    ask = msg.get("ask") or None
+                    _emit_message(sender, ask)
+                    last = msg_id
+                    STATE_FILE.write_text(str(last))
+
+            elif msg.get("type") == "caught_up":
+                cursor_val = msg.get("cursor")
+                ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+                sys.stderr.write(f"[meeting {SELF}] {ts} caught_up cursor={cursor_val}\n")
+                sys.stderr.flush()
+                # Align local cursor if daemon reports higher (double-safety)
+                if cursor_val is not None and cursor_val > last:
+                    last = cursor_val
+
+        elif opcode == 0x9:  # ping from daemon → reply with masked pong
+            try:
+                _ws_send_masked(sock, 0xA, payload)  # opcode 0xA = pong
+            except Exception:
+                disconnected = True
+
+        elif opcode == 0xA:  # pong from daemon (response to our ping)
+            pass  # last_frame_time already updated above
+
+        elif opcode == 0x8:  # close
+            disconnected = True
+
+        else:
+            # Unexpected opcode — close and reconnect
+            try:
+                _ws_send_masked(sock, 0x8, b"")
+            except Exception:
+                pass
+            disconnected = True
+
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+    # Exponential backoff before reconnect.
+    # Re-resolving the host happens at the top of the outer loop via _ws_connect
+    # which calls _resolve_ws_host() → _discover_control_info() each time.
+    jitter = random.uniform(1 - _BACKOFF_JITTER, 1 + _BACKOFF_JITTER)
+    delay = min(backoff * jitter, _BACKOFF_MAX)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+    sys.stderr.write(f"[meeting {SELF}] {ts} reconnecting in {delay:.1f}s\n")
+    sys.stderr.flush()
+    time.sleep(delay)
+    backoff = min(backoff * 2, _BACKOFF_MAX)
