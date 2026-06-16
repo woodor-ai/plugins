@@ -33,13 +33,16 @@ image there, returns a text description, then discards the image entirely.
 { "image_delegate": { "enabled": true } }
 ```
 
-**Default behavior when config is missing, malformed, or the `image_delegate`
-key is absent: `enabled=true` (guard is on).** Only an explicit
-`"enabled": false` disables it.
+**Opt-in: default OFF.** The guard activates only when `image_delegate.enabled`
+is explicitly `true`. Missing config, malformed JSON, a missing `image_delegate`
+key, or an unset value all leave it **off** (the Read is allowed). This guard is
+invasive — it blocks every main-agent image read globally — so it stays dormant
+until explicitly enabled (e.g. via the PWA Save Money toggle) rather than
+intercepting the moment it's installed.
 
-To let the main agent read an image directly:
+To turn it on:
 ```json
-{ "image_delegate": { "enabled": false } }
+{ "image_delegate": { "enabled": true } }
 ```
 
 ## Image extensions recognized

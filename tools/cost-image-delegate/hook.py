@@ -28,19 +28,18 @@ DENY_REASON = (
 
 def load_enabled():
     """
-    Returns True if the hook should be active.
-    Missing config / bad JSON / missing image_delegate key → True (default on).
-    Only explicit enabled=false turns it off.
+    Returns True only when image_delegate.enabled is explicitly true.
+    Missing config / bad JSON / missing key / unset → False (opt-in, default off).
+    This guard is invasive — it blocks ALL main-agent image reads — so it stays
+    off until explicitly enabled (e.g. via the PWA Save Money toggle), rather
+    than intercepting the moment it's installed.
     """
     try:
         with open(CONFIG_PATH) as f:
             data = json.load(f)
-        section = data.get("image_delegate", {})
-        if section.get("enabled") is False:
-            return False
-        return True
+        return data.get("image_delegate", {}).get("enabled") is True
     except Exception:
-        return True
+        return False
 
 
 def is_image_path(path):

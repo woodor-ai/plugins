@@ -125,12 +125,11 @@ class TestCostImageDelegate(unittest.TestCase):
         result = run_hook(read_stdin("/some/photo.jpg"), cfg_off)
         self.assertIsNone(result)
 
-    # Case 6: config missing → defaults to enabled=True → main agent reads .png → deny
-    def test_missing_config_defaults_on(self):
+    # Case 6: config missing → opt-in default off → main agent reads .png → allow
+    def test_missing_config_defaults_off(self):
         missing = os.path.join(self.tmp, "nonexistent.json")
         result = run_hook(read_stdin("/some/image.webp"), missing)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIsNone(result)
 
     # Case 7: various image extensions — uppercase and mixed case
     def test_uppercase_png_denied(self):
@@ -167,14 +166,13 @@ class TestCostImageDelegate(unittest.TestCase):
         result = run_hook(read_stdin("/img/photo.Jpg"), self.cfg)
         self.assertIsNotNone(result)
 
-    # Case 8: bad JSON config → treat as enabled=True → main agent reads .png → deny
-    def test_bad_json_config_defaults_on(self):
+    # Case 8: bad JSON config → opt-in default off → main agent reads .png → allow
+    def test_bad_json_config_defaults_off(self):
         bad_cfg = os.path.join(self.tmp, "bad.json")
         with open(bad_cfg, "w") as f:
             f.write("{not valid json:::}")
         result = run_hook(read_stdin("/img/photo.png"), bad_cfg)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIsNone(result)
 
 
 # ---------------------------------------------------------------------------
