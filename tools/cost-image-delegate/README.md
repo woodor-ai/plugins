@@ -45,6 +45,14 @@ To turn it on:
 { "image_delegate": { "enabled": true } }
 ```
 
+### Path allowlist
+
+Image reads whose path starts with a prefix in `ALLOWLIST_PREFIXES` (hardcoded in
+`hook.py`) are allowed for the main agent even when the guard is on. Currently:
+`/tmp/amb-shot` — AMBridge's PWA render self-check screenshots, which it must read
+itself for pixel-level verification. The allowlist lives in the hook, NOT in
+`cost-opt.json`, because amp overwrites that file and would clobber it.
+
 ## Image extensions recognized
 
 `.png` `.jpg` `.jpeg` `.gif` `.webp` `.bmp` `.svg` (case-insensitive)

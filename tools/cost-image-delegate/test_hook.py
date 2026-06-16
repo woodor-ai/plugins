@@ -99,6 +99,11 @@ class TestCostImageDelegate(unittest.TestCase):
         reason = result["hookSpecificOutput"]["permissionDecisionReason"]
         self.assertIn("explore subagent", reason)
 
+    # Allowlist: main agent reads an /tmp/amb-shot* image → allowed even with guard on
+    def test_allowlisted_path_is_allowed(self):
+        result = run_hook(read_stdin("/tmp/amb-shot9/render.png"), self.cfg)
+        self.assertIsNone(result)
+
     # Case 2: subagent (has agent_id) reads same .png → allow (no deny output)
     def test_subagent_png_is_allowed(self):
         result = run_hook(read_stdin("/some/screenshot.png", agent_id="sub-123"), self.cfg)

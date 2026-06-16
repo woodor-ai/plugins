@@ -18,6 +18,13 @@ CONFIG_PATH = os.path.expanduser("~/.claude/cost-opt.json")
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
+# Path prefixes exempt from the guard: the main agent may read images here
+# directly even when the guard is on. AMBridge writes its PWA render self-check
+# screenshots under /tmp/amb-shot* and needs to read them itself (pixel-level
+# verification an explore subagent can't do). Hardcoded here, NOT in cost-opt.json
+# — amp overwrites that file and would clobber an allowlist living there.
+ALLOWLIST_PREFIXES = ("/tmp/amb-shot",)
+
 DENY_REASON = (
     "默认不在主上下文直接读图片（图会赖在主会话每轮复读、涨成本）。"
     "请改派一个 explore subagent 去看这张图、回文字结论——"
@@ -64,6 +71,10 @@ def main():
 
         file_path = stdin_data.get("tool_input", {}).get("file_path", "")
         if not is_image_path(file_path):
+            sys.exit(0)
+
+        # Allowlisted paths bypass the guard (e.g. AMBridge self-check screenshots).
+        if any(file_path.startswith(prefix) for prefix in ALLOWLIST_PREFIXES):
             sys.exit(0)
 
         # At this point: main agent + Read + image file.
