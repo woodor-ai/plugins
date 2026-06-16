@@ -1,0 +1,38 @@
+{
+  "description": "Cost-control hooks: auto-handoff on Stop, truncate oversized Bash/Read output on PostToolUse, intercept main-agent image reads on PreToolUse.",
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/auto-handoff.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/auto-handoff.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/auto-handoff.py\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/truncate-output.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/truncate-output.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/truncate-output.py\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/image-delegate.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/image-delegate.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/image-delegate.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

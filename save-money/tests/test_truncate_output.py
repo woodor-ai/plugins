@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 # Load hook module from its file path so no package structure is needed.
-_HOOK_PATH = os.path.join(os.path.dirname(__file__), "hook.py")
+_HOOK_PATH = os.path.join(os.path.dirname(__file__), "..", "bin", "truncate-output.py")
 _spec = importlib.util.spec_from_file_location("hook", _HOOK_PATH)
 _hook = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_hook)

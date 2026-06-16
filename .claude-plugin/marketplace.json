@@ -22,6 +22,12 @@
       "displayName": "Woodor: Handoff",
       "source": "./handoff",
       "description": "Session-end handoff cards with auto-pickup. Write a 50-line cue card at session end; next session's SessionStart hook auto-loads it and archives to docs/handoff/archive/. Zero re-typing needed to resume work."
+    },
+    {
+      "name": "save-money",
+      "displayName": "Woodor: Save Money",
+      "source": "./save-money",
+      "description": "Cost-control hooks for Claude Code sessions: auto-handoff when context nears window limit, truncate oversized tool text output, and delegate main-agent image reads to an explore subagent. All gated by ~/.claude/cost-opt.json (written by the AMBridge PWA Save Money page)."
     }
   ]
 }

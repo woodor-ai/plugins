@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 # ---------------------------------------------------------------------------
 # Load hook module from sibling path without installing it
 # ---------------------------------------------------------------------------
-_HOOK_PATH = os.path.join(os.path.dirname(__file__), "hook.py")
+_HOOK_PATH = os.path.join(os.path.dirname(__file__), "..", "bin", "auto-handoff.py")
 _spec = importlib.util.spec_from_file_location("hook", _HOOK_PATH)
 _hook = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_hook)
