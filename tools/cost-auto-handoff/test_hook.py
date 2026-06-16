@@ -278,6 +278,47 @@ class TestCostAutoHandoff(unittest.TestCase):
         # No flag file created (no session_id to key on)
         self.assertFalse(os.path.exists(self.fired))
 
+    # Case 9a: MIN_FIRE_TOKENS floor — haiku pct=20 (→40k), context=60k >40k but <100k → no trigger
+    def test_min_fire_floor_blocks_low_pct(self):
+        cfg = make_config(self.tmp, enabled=True, thresholds={"haiku": 20})
+        # 20% of 200_000 = 40_000; context=60_000 exceeds pct threshold but is below 100k floor
+        transcript = make_transcript(self.tmp, "claude-haiku-4-5", 60000, 0, 0)
+        stdin = make_stdin_json(self.tmp, transcript)
+        result = run_hook(self.tmp, stdin, cfg, self.triggers, self.fired)
+        self.assertIsNone(result)
+
+    # Case 9b: MIN_FIRE_TOKENS floor — haiku pct=20 (→40k), context=120k >100k floor → triggers,
+    # trigger file threshold_tokens == 100_000 (effective, not pct-derived 40k)
+    def test_min_fire_floor_trigger_uses_effective_threshold(self):
+        cfg = make_config(self.tmp, enabled=True, thresholds={"haiku": 20})
+        # 20% of 200_000 = 40_000; context=120_000 exceeds 100k floor → fires
+        transcript = make_transcript(self.tmp, "claude-haiku-4-5", 120000, 0, 0)
+        stdin = make_stdin_json(self.tmp, transcript)
+        result = run_hook(self.tmp, stdin, cfg, self.triggers, self.fired)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["threshold_tokens"], 100000)  # effective, not 40k
+        self.assertEqual(result["context_tokens"], 120000)
+
+    # Case 9c: production opus 60% (→600k) is above floor → effective stays 600k, not clamped to 100k
+    def test_production_opus_threshold_unaffected_by_floor(self):
+        cfg = make_config(self.tmp, enabled=True, thresholds={"opus": 60})
+        # 60% of 1_000_000 = 600_000 > 100_000 floor → effective = 600_000
+        # context=500_000: below effective → no trigger
+        transcript = make_transcript(self.tmp, "claude-opus-4-8", 500000, 0, 0)
+        stdin = make_stdin_json(self.tmp, transcript)
+        result = run_hook(self.tmp, stdin, cfg, self.triggers, self.fired)
+        self.assertIsNone(result)
+
+    def test_production_opus_above_threshold_writes_pct_value(self):
+        cfg = make_config(self.tmp, enabled=True, thresholds={"opus": 60})
+        # 60% of 1_000_000 = 600_000; context=650_000 > 600_000 → fires
+        transcript = make_transcript(self.tmp, "claude-opus-4-8", 650000, 0, 0)
+        stdin = make_stdin_json(self.tmp, transcript)
+        result = run_hook(self.tmp, stdin, cfg, self.triggers, self.fired)
+        self.assertIsNotNone(result)
+        # threshold_tokens must be 600_000 (the pct-derived value), not 100_000
+        self.assertEqual(result["threshold_tokens"], 600000)
+
 
 # ---------------------------------------------------------------------------
 # Entry point

@@ -44,6 +44,33 @@ fire at ~120k for opus, far too early.
 Edit the map in `hook.py` if the deployment changes (e.g. haiku gains a 1M
 window, or a new family is added).
 
+## Absolute fire floor (MIN_FIRE_TOKENS = 100 000)
+
+In addition to the per-family pct threshold, the hook enforces an absolute
+lower bound of **100 000 context tokens** before it will fire, regardless of
+how low `thresholds_pct` is set.
+
+**Why it exists — restart-loop guard.**  
+Dedup tracks fires by `session_id`. A killed+respawned session gets a fresh
+`session_id`, so the dedup flag from the previous run does not protect it. If
+the pct threshold is set aggressively low (e.g. haiku 20% → 40k), a newly
+spawned session's baseline context (system prompt + handoff card + tool
+definitions + CLAUDE.md) can already exceed that threshold before the user
+types a single message. That causes the very first Stop hook of the new session
+to re-trigger → another kill+respawn → instant loop.
+
+**When it matters.**  
+Production thresholds are 600k (opus 60% × 1M) and 160k (haiku 80% × 200k),
+both well above 100k, so the floor has zero effect in normal operation. It only
+activates when someone sets a pct so low that the derived threshold falls below
+100k — at which point the floor overrides it and the new session cannot
+immediately self-trigger.
+
+**Effect on trigger file.**  
+`threshold_tokens` in the written JSON reflects the *effective* threshold
+(i.e. `max(pct_derived, 100_000)`), so amp/debug tooling sees the actual
+decision boundary, not the raw pct arithmetic.
+
 ## Dedup flag (v1)
 
 To prevent the same session from firing multiple times (e.g. several Stop

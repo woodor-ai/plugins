@@ -26,6 +26,15 @@ import time
 # Edit this map if the deployment changes (e.g. haiku gains a 1M window).
 WINDOW_TOKENS = {"opus": 1_000_000, "sonnet": 1_000_000, "haiku": 200_000}
 
+# Absolute floor: never fire below this many context tokens, regardless of the
+# per-family pct threshold. Guards against a restart-loop where a freshly
+# respawned session's baseline context (system prompt + handoff card + tool defs
+# + CLAUDE.md) already exceeds an aggressively-low pct threshold, re-triggering
+# immediately on its first Stop. Any real session baseline is far below 100k;
+# production thresholds (600k/160k) are far above it, so this only bites when a
+# pct is set pathologically low.
+MIN_FIRE_TOKENS = 100_000
+
 CONFIG_PATH = os.path.expanduser("~/.claude/cost-opt.json")
 TRIGGERS_DIR = os.path.expanduser("~/.ambridge/handoff-triggers")
 FIRED_DIR = os.path.expanduser("~/.cache/cost-auto-handoff/fired")
@@ -181,8 +190,9 @@ def main():
         sys.exit(0)
 
     threshold_tokens = int(threshold_pct / 100 * WINDOW_TOKENS[family])
+    effective_threshold = max(threshold_tokens, MIN_FIRE_TOKENS)
 
-    if context_tokens <= threshold_tokens:
+    if context_tokens <= effective_threshold:
         sys.exit(0)
 
     # Dedup: same session_id should only fire once per session.
@@ -196,7 +206,7 @@ def main():
     if agent is None:
         sys.exit(0)
 
-    write_trigger(agent, context_tokens, threshold_tokens)
+    write_trigger(agent, context_tokens, effective_threshold)
 
     # Mark this session as fired so subsequent Stop hooks are no-ops.
     if session_id:
