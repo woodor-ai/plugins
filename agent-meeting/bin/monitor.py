@@ -374,9 +374,10 @@ def _ws_connect() -> socket.socket | None:
         return None
 
 
-def _emit_message(peer: str, ask: str | None, group: str | None = None):
+def _emit_message(peer: str, ask: str | None, group: str | None = None, mentioned: bool = False):
     """Print the harness-facing notification line. Format is frozen — do not change."""
-    location = f" in group {group}" if group else ""
+    at_tag = " @你" if (group and mentioned) else ""
+    location = f" in group {group}{at_tag}" if group else ""
     if ask:
         clean = ask.replace("\r", " ").replace("\n", " ")
         if len(clean) > 100:
@@ -477,7 +478,16 @@ while True:
                 # daemon 群扇出含发送者自己，自己发的不必唤醒自己
                 if sender == SELF:
                     continue
-                _emit_message(sender, ask, group)
+                # mention gating: frame has "mention" field only when message is
+                # directed (@-mention). mention=false → silent delivery (cursor
+                # advances via daemon push; no wake-up). mention=true → wake with
+                # @你 tag. No mention field → broadcast, wake all.
+                if "mention" in msg:
+                    if not msg["mention"]:
+                        continue  # silently delivered, do not wake
+                    _emit_message(sender, ask, group, mentioned=True)
+                else:
+                    _emit_message(sender, ask, group)
 
             elif msg.get("type") == "caught_up":
                 cursor_val = msg.get("cursor")

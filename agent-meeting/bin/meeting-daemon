@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import ipaddress
+import re as _re
 import signal
 import socket
 import sqlite3
@@ -190,12 +191,28 @@ def _ws_read_frame(rfile) -> tuple[int, bytes]:
     return opcode, payload
 
 
-def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None):
+_AT_TOKEN_RE = _re.compile(r"@([A-Za-z0-9-]+)")
+
+
+def _parse_mentions(body: str, member_set: set) -> set:
+    """Return the intersection of @-tokens in body with member_set.
+
+    Empty set means no valid mentions → broadcast semantics (no mention field).
+    """
+    tokens = set(_AT_TOKEN_RE.findall(body))
+    return tokens & member_set
+
+
+def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None, body: str = ""):
     """Push a message to all live/draining subscribers for recipient (or group members).
 
     Called after DB COMMIT. Uses per-subscriber send_lock + high_water_mark
     to ensure each subscriber sees each msg_id exactly once even if a
     backlog flush is in progress on the same connection's thread.
+
+    For group messages: if the body contains @name tokens that resolve to group
+    members, only those members' frames carry mention=true; others get mention=false.
+    No @-mentions (or all invalid) → broadcast: no mention field added.
     """
     with db() as conn:
         is_grp = _is_group(conn, recipient)
@@ -209,18 +226,32 @@ def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None):
 
     group_field = recipient if is_grp else None
 
-    frame = json.dumps({
+    # Compute mention set only for group messages.
+    mention_targets: set = set()
+    directed = False
+    if is_grp and body:
+        member_set = set(target_names)
+        mention_targets = _parse_mentions(body, member_set)
+        directed = bool(mention_targets)
+
+    base_payload = {
         "type": "msg",
         "msg_id": msg_id,
         "sender": sender,
         "ask": ask or "",
         "group": group_field,
         "phase": "live",
-    }, ensure_ascii=False)
+    }
 
     dead = []
     now = int(time.time())
     for target in target_names:
+        if directed:
+            payload = {**base_payload, "mention": target in mention_targets}
+        else:
+            payload = base_payload
+        frame = json.dumps(payload, ensure_ascii=False)
+
         with _sub_lock:
             subs = list(_subscribers.get(target, []))
         for sub in subs:
@@ -837,7 +868,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise
 
         # Fanout outside DB transaction — socket IO must not block DB writes.
-        _ws_fanout(msg_id, peer, self_name, ask)
+        _ws_fanout(msg_id, peer, self_name, ask, body)
         return {"msg_id": msg_id, "turn": None if is_grp else peer}
 
     def _group_create(self, name: str, members: list, creator: str | None):
