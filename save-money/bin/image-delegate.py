@@ -44,7 +44,7 @@ def load_enabled():
     try:
         with open(CONFIG_PATH) as f:
             data = json.load(f)
-        return data.get("image_delegate", {}).get("enabled") is True
+        return (data.get("image_delegate") or {}).get("enabled") is True
     except Exception:
         return False
 

@@ -319,6 +319,16 @@ class TestCostAutoHandoff(unittest.TestCase):
         # threshold_tokens must be 600_000 (the pct-derived value), not 100_000
         self.assertEqual(result["threshold_tokens"], 600000)
 
+    def test_null_section_no_trigger(self):
+        """auto_handoff section is null → treated as disabled, no trigger."""
+        cfg_path = os.path.join(self.tmp, "cost-opt-null.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"auto_handoff": None}, f)
+        transcript = make_transcript(self.tmp, "claude-opus-4-8", 700000, 0, 0)
+        stdin = make_stdin_json(self.tmp, transcript)
+        result = run_hook(self.tmp, stdin, cfg_path, self.triggers, self.fired)
+        self.assertIsNone(result)
+
 
 # ---------------------------------------------------------------------------
 # Entry point

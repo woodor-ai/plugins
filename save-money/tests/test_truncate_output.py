@@ -186,15 +186,46 @@ class TestTruncateOutput(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(stdout.strip(), "")
 
-    def test_missing_config_defaults_on(self):
-        """Missing config → defaults to enabled+25k; big text is truncated."""
+    def test_missing_config_defaults_off(self):
+        """Missing config → disabled (opt-in); big text passes through without truncation."""
         big = self._big_text(200_001)
-        # Pass config_content=None to simulate missing file
-        stdout, code = run_hook(self._bash_stdin(big), config_content=None, tmp_dir=self.tmp_dir)
+        stdout, code = run_hook(self._bash_stdin(big), config_content=None)
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "")
+
+    def test_missing_key_defaults_off(self):
+        """Config exists but text_truncate key absent → disabled; big text passes through."""
+        big = self._big_text(200_001)
+        config = '{"auto_handoff": {"enabled": true}}'
+        stdout, code = run_hook(self._bash_stdin(big), config_content=config)
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "")
+
+    def test_null_section_defaults_off(self):
+        """text_truncate: null → disabled; big text passes through."""
+        big = self._big_text(200_001)
+        config = '{"text_truncate": null}'
+        stdout, code = run_hook(self._bash_stdin(big), config_content=config)
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "")
+
+    def test_explicit_true_truncates(self):
+        """text_truncate.enabled=true → big text is truncated."""
+        big = self._big_text(200_001)
+        config = '{"text_truncate": {"enabled": true, "threshold_tokens": 25000}}'
+        stdout, code = run_hook(self._bash_stdin(big), config_content=config, tmp_dir=self.tmp_dir)
         self.assertEqual(code, 0)
         result = json.loads(stdout)
         updated = result["hookSpecificOutput"]["updatedToolOutput"]
         self.assertIn("输出过大已截断", updated["stdout"])
+
+    def test_explicit_false_passthrough(self):
+        """text_truncate.enabled=false → big text passes through."""
+        big = self._big_text(200_001)
+        config = '{"text_truncate": {"enabled": false, "threshold_tokens": 25000}}'
+        stdout, code = run_hook(self._bash_stdin(big), config_content=config)
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "")
 
     def test_unknown_tool_passthrough(self):
         """Unknown tool structure → passthrough (no updatedToolOutput)."""

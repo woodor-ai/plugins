@@ -48,9 +48,9 @@ def load_config():
     try:
         with open(CONFIG_PATH) as f:
             data = json.load(f)
-        ah = data.get("auto_handoff", {})
+        ah = data.get("auto_handoff") or {}
         enabled = ah.get("enabled") is True
-        thresholds = ah.get("thresholds_pct", {})
+        thresholds = ah.get("thresholds_pct") or {}
         if not isinstance(thresholds, dict):
             return False, {}
         return enabled, thresholds

@@ -34,22 +34,19 @@ TAIL_TOKENS = 3_000
 def load_config():
     """
     Returns (enabled, threshold_tokens).
-    Missing / malformed config → (True, DEFAULT_THRESHOLD_TOKENS).
-    Only explicit enabled=False disables the hook.
+    Only explicit enabled=True activates the hook; missing / null / false → disabled.
     """
     try:
         with open(CONFIG_PATH) as f:
             data = json.load(f)
-        tt = data.get("text_truncate", {})
-        enabled = tt.get("enabled", True)
-        if enabled is False:
-            return False, DEFAULT_THRESHOLD_TOKENS
+        tt = data.get("text_truncate") or {}
+        enabled = tt.get("enabled") is True
         threshold = tt.get("threshold_tokens", DEFAULT_THRESHOLD_TOKENS)
         if not isinstance(threshold, int) or threshold <= 0:
             threshold = DEFAULT_THRESHOLD_TOKENS
-        return True, threshold
+        return enabled, threshold
     except Exception:
-        return True, DEFAULT_THRESHOLD_TOKENS
+        return False, DEFAULT_THRESHOLD_TOKENS
 
 
 def is_image_response(tool_name, tool_response):

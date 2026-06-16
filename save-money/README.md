@@ -51,7 +51,7 @@
 }
 ```
 
-**默认值**：配置缺失或 `enabled` 非 `false` 时**默认开启**，阈值默认 25000 token（≈100k 字符，1 token ≈ 4 字符）。只有显式 `enabled: false` 才关。
+**默认值**：仅当 `text_truncate.enabled` 显式为 `true` 时开启；配置缺失、section 为 null、`enabled` 缺失或为 false 一律关闭。由 PWA Save Money 页写入控制。开启时阈值默认 25000 token（≈100k 字符，1 token ≈ 4 字符）。
 
 **关键行为**：
 - 图片输出（`isImage: true` 或 content block 含 `type: image`）**永远放行**，不截断，避免破坏 base64 数据。

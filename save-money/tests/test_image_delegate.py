@@ -179,6 +179,14 @@ class TestCostImageDelegate(unittest.TestCase):
         result = run_hook(read_stdin("/img/photo.png"), bad_cfg)
         self.assertIsNone(result)
 
+    # Case 9: image_delegate section is null → treated as disabled → main agent reads .png → allow
+    def test_null_section_defaults_off(self):
+        null_cfg = os.path.join(self.tmp, "cost-opt-null.json")
+        with open(null_cfg, "w") as f:
+            json.dump({"image_delegate": None}, f)
+        result = run_hook(read_stdin("/img/photo.png"), null_cfg)
+        self.assertIsNone(result)
+
 
 # ---------------------------------------------------------------------------
 # Entry point
