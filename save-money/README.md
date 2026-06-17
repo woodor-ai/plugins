@@ -23,7 +23,7 @@ When context tokens approach the model's window limit, the Stop hook writes a tr
 
 ### text truncate stops oversized output from stacking up
 
-After a `Bash` or `Read` call returns more than the configured threshold, the PostToolUse hook replaces the response with a head snippet, a pointer line with the `/tmp` path to the full content, and a tail snippet. The full output is still accessible; it just doesn't sit in the main context getting re-read every turn.
+After a `Bash` or `Read` call returns more than the configured threshold, the PostToolUse hook replaces the response with a head snippet, a pointer line with the path to the full content (saved in your system temp directory), and a tail snippet. The full output is still accessible; it just doesn't sit in the main context getting re-read every turn.
 
 ### image delegate routes image reads to a cheaper subagent
 
@@ -59,7 +59,7 @@ Full example:
 |---|---|---|---|
 | `auto_handoff` | OFF | `"enabled": true` | opus/sonnet window = 1,000,000 tokens; haiku = 200,000; absolute floor = 100,000 tokens (prevents restart loops); per-session dedup via `~/.cache/cost-auto-handoff/fired/<session_id>`; default thresholds 60% / 70% / 80% |
 | `text_truncate` | OFF | `"enabled": true` | threshold = 25,000 tokens (~100k chars); head = 5,000 tokens; tail = 3,000 tokens; image output always passes through unchanged |
-| `image_delegate` | OFF | `"enabled": true` | intercepts `.png .jpg .jpeg .gif .webp .bmp .svg`; `/tmp/amb-shot` prefix is hardcoded allowlist (AMBridge self-check screenshots); subagents always pass through |
+| `image_delegate` | OFF | `"enabled": true` | intercepts `.png .jpg .jpeg .gif .webp .bmp .svg`; `amb-shot` screenshots in the temp directory are allowlisted (AMBridge self-checks); subagents always pass through |
 
 **Why explicit-true-only matters:** these hooks intercept real tool calls. A misconfigured or partially written JSON file should never accidentally activate them. If any key is absent or malformed, the hook exits silently — the conservative default is always off.
 
