@@ -59,7 +59,19 @@ CONFIG_PATH = CODEX_HOME / "config.toml"
 MATCHER = "shell|python|computer"
 EVENT_NAME = "post_tool_use"
 
-HOOK_COMMAND = f"python3 {HANDLER_SCRIPT}"
+# Codex runs the `command` string through a shell on each fire, so we use a
+# `python3 || py -3 || python` fallback chain to find a working interpreter:
+# Windows often has no `python3` (only `py`/`python`), mirroring the same
+# fallback Claude Code's hooks.json already uses. Paths use forward slashes
+# (Path.as_posix()) because backslashes are invalid escape sequences inside a
+# TOML string, and Python accepts `/` paths on Windows. The script path is
+# double-quoted to tolerate spaces.
+# NOTE (Windows, pending fire-test): assumes Codex shell-executes this command
+# (cmd.exe `||` / `py -3` both work). Validated on macOS only — the Windows
+# Codex CLI was not yet installed on the test machine. See
+# docs/codex-adaptation-investigation.md §7.
+_HANDLER = HANDLER_SCRIPT.as_posix()
+HOOK_COMMAND = f'python3 "{_HANDLER}" || py -3 "{_HANDLER}" || python "{_HANDLER}"'
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +102,32 @@ def write_config(content: str) -> None:
     CONFIG_PATH.write_text(content, encoding="utf-8")
 
 
+def _toml_escape(s: str) -> str:
+    """Escape a string for a TOML basic (double-quoted) value.
+
+    HOOK_COMMAND now contains literal double quotes (around the script path),
+    which would otherwise terminate the TOML string. Escaping is a
+    serialization concern only: Codex parses the value back to the unescaped
+    HOOK_COMMAND, so the trusted_hash (computed over HOOK_COMMAND) still matches.
+    """
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _section_header(key: str) -> str:
-    return f'[hooks.state."{key}"]'
+    # The key embeds CONFIG_PATH, which on Windows contains backslashes that are
+    # invalid escapes inside a TOML quoted key — escape them so the file parses.
+    # NOTE (Windows, pending fire-test): the escaped value round-trips to the
+    # native path (e.g. C:\Users\...config.toml:post_tool_use:0:0). Codex must
+    # generate the SAME key internally to find this trusted_hash; whether
+    # Windows Codex keys on backslash or forward-slash paths is UNVERIFIED (no
+    # Codex CLI on the test machine). If the hook installs but never fires,
+    # try the forward-slash form here. See docs §7.
+    return f'[hooks.state."{_toml_escape(key)}"]'
+
+
+def _project_header(path: str) -> str:
+    # Same backslash-in-TOML-key hazard as _section_header for the project path.
+    return f'[projects."{_toml_escape(path)}"]'
 
 
 def _hook_block() -> str:
@@ -101,13 +137,13 @@ def _hook_block() -> str:
         f'\n'
         f'[[hooks.PostToolUse.hooks]]\n'
         f'type = "command"\n'
-        f'command = "{HOOK_COMMAND}"\n'
+        f'command = "{_toml_escape(HOOK_COMMAND)}"\n'
     )
 
 
 def _state_block(key: str, trusted_hash: str) -> str:
     return (
-        f'[hooks.state."{key}"]\n'
+        f'{_section_header(key)}\n'
         f'enabled = true\n'
         f'trusted_hash = "{trusted_hash}"\n'
     )
@@ -115,7 +151,7 @@ def _state_block(key: str, trusted_hash: str) -> str:
 
 def _project_block(path: str) -> str:
     return (
-        f'[projects."{path}"]\n'
+        f'{_project_header(path)}\n'
         f'trust_level = "trusted"\n'
     )
 
@@ -173,7 +209,10 @@ def upsert_state_entry(content: str, key: str, trusted_hash: str) -> str:
     new_block = _state_block(key, trusted_hash) + "\n"
 
     if pattern.search(content):
-        content = pattern.sub(new_block, content)
+        # Replace with a function, not a string: re.sub interprets backslash
+        # escapes in a string replacement (\\ -> \, \1 -> group ref), which would
+        # corrupt the escaped Windows paths in new_block on idempotent re-runs.
+        content = pattern.sub(lambda _m: new_block, content)
     else:
         content = content.rstrip("\n") + "\n\n" + new_block
     return content
@@ -181,7 +220,7 @@ def upsert_state_entry(content: str, key: str, trusted_hash: str) -> str:
 
 def ensure_project_trust(content: str, project_path: str) -> str:
     """Add [projects."<path>"] trust_level = "trusted" if not present."""
-    header = f'[projects."{project_path}"]'
+    header = _project_header(project_path)
     if header in content:
         return content
 
