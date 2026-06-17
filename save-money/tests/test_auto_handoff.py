@@ -33,7 +33,7 @@ _spec.loader.exec_module(_hook)
 # ---------------------------------------------------------------------------
 
 def make_transcript(tmp_dir, model, input_tokens, cache_creation, cache_read):
-    """Write a minimal JSONL transcript with one assistant message."""
+    """Write a minimal JSONL transcript with one assistant message (Claude format)."""
     path = os.path.join(tmp_dir, "transcript.jsonl")
     record = {
         "type": "assistant",
@@ -54,6 +54,52 @@ def make_transcript(tmp_dir, model, input_tokens, cache_creation, cache_read):
     with open(path, "w") as f:
         f.write(json.dumps(record) + "\n")
     return path
+
+
+def make_codex_transcript(tmp_dir, total_input_tokens, model_context_window,
+                           filename="codex_transcript.jsonl"):
+    """Write a minimal Codex JSONL transcript with a token_count event."""
+    path = os.path.join(tmp_dir, filename)
+    record = {
+        "timestamp": "2026-06-17T14:00:00.000Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {
+                "total_token_usage": {
+                    "input_tokens": total_input_tokens,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 100,
+                    "total_tokens": total_input_tokens + 100,
+                },
+                "last_token_usage": {
+                    "input_tokens": total_input_tokens,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 100,
+                    "total_tokens": total_input_tokens + 100,
+                },
+                "model_context_window": model_context_window,
+            },
+            "rate_limits": None,
+        },
+    }
+    with open(path, "w") as f:
+        f.write(json.dumps(record) + "\n")
+    return path
+
+
+def make_codex_stdin_json(tmp_dir, transcript_path, model="gpt-5.5",
+                          cwd="/fake/cwd", session_id="codex-session"):
+    d = {
+        "transcript_path": transcript_path,
+        "cwd": cwd,
+        "model": model,
+        "hook_event_name": "PostToolUse",
+        "tool_name": "shell",
+    }
+    if session_id is not None:
+        d["session_id"] = session_id
+    return d
 
 
 def make_config(tmp_dir, enabled=True, thresholds=None):
@@ -81,8 +127,8 @@ def run_hook(tmp_dir, stdin_dict, config_path, triggers_dir, fired_dir,
              agent_name="test-agent"):
     """
     Invoke hook.main() with patched CONFIG_PATH, TRIGGERS_DIR, FIRED_DIR, and
-    resolve_agent_name. Returns the trigger file content dict if written,
-    or None.
+    resolve_agent_name (Claude Code path). Returns the trigger file content dict
+    if written, or None.
     """
     import io
     fake_stdin = io.StringIO(json.dumps(stdin_dict))
@@ -101,6 +147,37 @@ def run_hook(tmp_dir, stdin_dict, config_path, triggers_dir, fired_dir,
         with open(trigger_file) as f:
             return json.load(f)
     return None
+
+
+def run_codex_hook(stdin_dict, config_path, fired_dir):
+    """
+    Invoke hook.main() for the Codex PostToolUse path.
+    Returns (stdout_output, fired_flag_exists) where stdout_output is the
+    parsed JSON dict if the hook printed anything, else None.
+    """
+    import io
+    fake_stdin = io.StringIO(json.dumps(stdin_dict))
+    captured_stdout = io.StringIO()
+    with patch.object(_hook, "CONFIG_PATH", config_path), \
+         patch.object(_hook, "FIRED_DIR", fired_dir), \
+         patch("sys.stdin", fake_stdin), \
+         patch("sys.stdout", captured_stdout):
+        try:
+            _hook.main()
+        except SystemExit:
+            pass
+
+    output = captured_stdout.getvalue().strip()
+    parsed = None
+    if output:
+        try:
+            parsed = json.loads(output)
+        except Exception:
+            parsed = {"raw": output}
+
+    session_id = stdin_dict.get("session_id")
+    fired = session_id and os.path.exists(os.path.join(fired_dir, session_id))
+    return parsed, fired
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +408,122 @@ class TestCostAutoHandoff(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Codex path tests (PostToolUse, token_count from transcript JSONL)
+# ---------------------------------------------------------------------------
+
+class TestCodexAutoHandoff(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.fired = os.path.join(self.tmp, "fired")
+
+    def _make_cfg(self, thresholds=None, enabled=True):
+        if thresholds is None:
+            thresholds = {"sonnet": 70}
+        return make_config(self.tmp, enabled=enabled, thresholds=thresholds)
+
+    # C1: below threshold → no output, no fired flag
+    def test_codex_below_threshold_no_output(self):
+        # 258400 * 70% = 180880; use 100000 (below)
+        transcript = make_codex_transcript(self.tmp, 100000, 258400)
+        cfg = self._make_cfg({"sonnet": 70})
+        stdin = make_codex_stdin_json(self.tmp, transcript, model="gpt-5.5")
+        output, fired = run_codex_hook(stdin, cfg, self.fired)
+        self.assertIsNone(output)
+        self.assertFalse(fired)
+
+    # C2: above threshold → additionalContext in stdout + fired flag written
+    def test_codex_above_threshold_fires(self):
+        # 258400 * 70% = 180880; use 200000 (above)
+        transcript = make_codex_transcript(self.tmp, 200000, 258400)
+        cfg = self._make_cfg({"sonnet": 70})
+        stdin = make_codex_stdin_json(self.tmp, transcript, model="gpt-5.5",
+                                      session_id="codex-fire-test")
+        output, fired = run_codex_hook(stdin, cfg, self.fired)
+        self.assertIsNotNone(output)
+        self.assertIn("additionalContext", output)
+        self.assertIn("handoff", output["additionalContext"].lower())
+        self.assertTrue(fired)
+
+    # C3: disabled → no output
+    def test_codex_disabled_no_output(self):
+        transcript = make_codex_transcript(self.tmp, 250000, 258400)
+        cfg = self._make_cfg(enabled=False)
+        stdin = make_codex_stdin_json(self.tmp, transcript)
+        output, fired = run_codex_hook(stdin, cfg, self.fired)
+        self.assertIsNone(output)
+        self.assertFalse(fired)
+
+    # C4: dedup — same session_id fires only once
+    def test_codex_dedup_fires_once(self):
+        transcript = make_codex_transcript(self.tmp, 200000, 258400)
+        cfg = self._make_cfg({"sonnet": 70})
+        stdin = make_codex_stdin_json(self.tmp, transcript, session_id="codex-dedup")
+
+        output1, fired1 = run_codex_hook(stdin, cfg, self.fired)
+        self.assertIsNotNone(output1)
+        self.assertTrue(fired1)
+
+        output2, fired2 = run_codex_hook(stdin, cfg, self.fired)
+        self.assertIsNone(output2)
+        self.assertTrue(fired2)  # flag still exists
+
+    # C5: no threshold for the detected family → no output
+    def test_codex_no_threshold_for_family_no_output(self):
+        # model maps to "opus" but config only has "sonnet"
+        transcript = make_codex_transcript(self.tmp, 200000, 258400)
+        cfg = self._make_cfg({"sonnet": 70})
+        stdin = make_codex_stdin_json(self.tmp, transcript, model="gpt-5.5-opus")
+        output, fired = run_codex_hook(stdin, cfg, self.fired)
+        self.assertIsNone(output)
+        self.assertFalse(fired)
+
+    # C6: transcript has no token_count event → no output
+    def test_codex_no_token_count_event_no_output(self):
+        # Write a transcript with no token_count event (e.g. empty)
+        transcript = os.path.join(self.tmp, "empty_codex.jsonl")
+        with open(transcript, "w") as f:
+            f.write(json.dumps({"type": "session_meta", "payload": {"id": "x"}}) + "\n")
+        cfg = self._make_cfg({"sonnet": 70})
+        stdin = make_codex_stdin_json(self.tmp, transcript)
+        output, fired = run_codex_hook(stdin, cfg, self.fired)
+        self.assertIsNone(output)
+
+    # C7: MIN_FIRE_TOKENS floor — threshold_pct gives < 100k but context is 50k → no fire
+    def test_codex_min_fire_floor_blocks(self):
+        # 258400 * 10% = 25840 < 100000 floor; context = 50000 < floor → no fire
+        transcript = make_codex_transcript(self.tmp, 50000, 258400)
+        cfg = self._make_cfg({"sonnet": 10})
+        stdin = make_codex_stdin_json(self.tmp, transcript, model="gpt-5.5")
+        output, fired = run_codex_hook(stdin, cfg, self.fired)
+        self.assertIsNone(output)
+        self.assertFalse(fired)
+
+    # C8: MIN_FIRE_TOKENS floor — context above floor fires even when pct-derived threshold is lower
+    def test_codex_min_fire_floor_fires_when_above(self):
+        # 258400 * 10% = 25840 < floor=100k; context = 150000 > floor → fires
+        transcript = make_codex_transcript(self.tmp, 150000, 258400)
+        cfg = self._make_cfg({"sonnet": 10})
+        stdin = make_codex_stdin_json(self.tmp, transcript, model="gpt-5.5",
+                                      session_id="codex-floor-test")
+        output, fired = run_codex_hook(stdin, cfg, self.fired)
+        self.assertIsNotNone(output)
+        self.assertTrue(fired)
+
+    # C9: Claude Stop path unaffected — PostToolUse event does NOT go through Claude path
+    def test_claude_stop_path_unaffected_by_codex_changes(self):
+        """Regression: Stop hook still writes trigger file, not stdout."""
+        cfg = make_config(self.tmp, enabled=True, thresholds={"opus": 60})
+        transcript = make_transcript(self.tmp, "claude-opus-4-8", 650000, 0, 0)
+        stdin = make_stdin_json(self.tmp, transcript)
+        triggers = os.path.join(self.tmp, "triggers")
+        result = run_hook(self.tmp, stdin, cfg, triggers, self.fired)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["agent"], "test-agent")
+        self.assertEqual(result["context_tokens"], 650000)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -339,7 +532,10 @@ if __name__ == "__main__":
     log_path = "/tmp/cost-auto-handoff-tests.log"
     with open(log_path, "w") as log_file:
         runner = unittest.TextTestRunner(stream=log_file, verbosity=2)
-        result = runner.run(unittest.TestLoader().loadTestsFromTestCase(TestCostAutoHandoff))
+        suite = unittest.TestSuite()
+        suite.addTests(unittest.TestLoader().loadTestsFromTestCase(TestCostAutoHandoff))
+        suite.addTests(unittest.TestLoader().loadTestsFromTestCase(TestCodexAutoHandoff))
+        result = runner.run(suite)
 
     if result.wasSuccessful():
         print(f"PASS: all {result.testsRun} tests")

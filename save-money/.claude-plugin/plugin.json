@@ -1,6 +1,6 @@
 {
   "name": "save-money",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Cost-control hooks for Claude Code sessions: auto-handoff when context nears window limit, truncate oversized tool text output, and delegate main-agent image reads to an explore subagent. All gated by ~/.claude/cost-opt.json (written by the AMBridge PWA Save Money page).",
   "author": { "name": "Woodor", "url": "https://github.com/woodor-ai" },
   "homepage": "https://github.com/woodor-ai/plugins"
