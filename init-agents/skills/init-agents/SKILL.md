@@ -1,6 +1,6 @@
 ---
 name: init-agents
-description: Initialize Tommy's standard project-level subagent profiles. Creates <cwd>/.claude/agents/ with three files — explore (haiku 4.5, read-only info gathering), rd (sonnet 4.6, coding & implementation), planner (opus 4.7, strategy & critical analysis). Use when starting work in a new project that does not yet have .claude/agents/, or when the user explicitly asks to (re)initialize agents.
+description: Initialize Tommy's standard project-level subagent profiles. Creates <cwd>/.claude/agents/ with three files — explore (haiku 4.5, read-only info gathering), rd (sonnet 4.6, coding & implementation), planner (opus 4.8, strategy & critical analysis). Use when starting work in a new project that does not yet have .claude/agents/, or when the user explicitly asks to (re)initialize agents.
 user-invocable: true
 allowed-tools:
   - Read
@@ -14,7 +14,7 @@ allowed-tools:
 
 在当前 project 的根目录生成三个固定 subagent profile，作为 Claude Code 内置 `Explore` / `Plan` / `general-purpose` 之外的**新增**选项。
 
-主 agent（通常是 Opus 4.7）之后调用 subagent 时一律使用这三个名字之一：
+主 agent（通常是 Opus 4.8）之后调用 subagent 时一律使用这三个名字之一：
 - `explore` — 信息搜集（最便宜，速度最快）
 - `rd` — 代码 / 实现 / 逻辑推理（中等）
 - `planner` — 战略 / 规划 / 批判性分析（最贵，最深）
@@ -138,7 +138,7 @@ End every plan with:
 
 写完三个文件后，告诉用户：
 
-> 三个 agent 已经写到 `.claude/agents/`。以后调 subagent 时主 agent 应该用 `subagent_type: "explore" | "rd" | "planner"`，对应 Haiku 4.5 / Sonnet 4.6 / Opus 4.7。内置的 `Explore` / `Plan` / `general-purpose` 仍然存在但不再使用。
+> 三个 agent 已经写到 `.claude/agents/`。以后调 subagent 时主 agent 应该用 `subagent_type: "explore" | "rd" | "planner"`，对应 Haiku 4.5 / Sonnet 4.6 / Opus 4.8。内置的 `Explore` / `Plan` / `general-purpose` 仍然存在但不再使用。
 
 ## 注意
 
