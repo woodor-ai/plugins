@@ -38,6 +38,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# meeting CLI only talks to localhost or direct Tailscale/LAN control hosts —
+# no legitimate path through a user's web proxy. Build a proxy-free opener once
+# so _http_once never inherits HTTP_PROXY / HTTPS_PROXY from the environment.
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 # Data root is agent-neutral so the same plugin works under Claude Code, Codex,
 # or any other host. Override with MEETING_HOME env var when testing.
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
@@ -244,7 +249,7 @@ def _http_once(method: str, host_url: str, path: str,
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"
     req = urllib.request.Request(url, method=method, data=data, headers=headers)
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with _NO_PROXY_OPENER.open(req, timeout=10) as resp:
         ct = resp.headers.get("Content-Type", "")
         raw = resp.read()
         if "application/json" in ct:
