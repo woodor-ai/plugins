@@ -132,7 +132,17 @@ def _section_header(key: str) -> str:
 
 
 def _project_header(path: str) -> str:
-    # Same backslash-in-TOML-key hazard as _section_header for the project path.
+    if os.name == "nt":
+        # Match Codex's own serialization of Windows project-trust keys: a TOML
+        # *literal* string (single quotes — backslashes are not escapes there) with
+        # the path lowercased, exactly as observed in real ~/.codex/config.toml
+        # (e.g. [projects.'d:\aiagent\plugins']). Windows paths are case-insensitive
+        # so lowercasing is safe and matches what Codex writes/compares.
+        # NOTE: aligned to Codex's stored format, not yet fire-tested (project trust
+        # was bypassed in the hook fire-tests). A mismatch only costs a one-time
+        # "trust this folder" prompt — it never blocks the hook itself. See docs §7.
+        return f"[projects.'{path.lower()}']"
+    # POSIX (validated on macOS): case-sensitive paths, basic string, original case.
     return f'[projects."{_toml_escape(path)}"]'
 
 
