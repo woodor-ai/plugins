@@ -47,7 +47,7 @@ Also understands natural language forms like "tell Alice to check the logs" or "
 
 ## Configuration
 
-### `~/.agent-meeting/config.json` (mode 0600)
+### `~/.agent-meeting/config.json`
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -56,6 +56,8 @@ Also understands natural language forms like "tell Alice to check the logs" or "
 | `auth_token` | string | — | Optional bearer token for daemon authentication |
 | `host` | string | — | Preferred daemon URL; overrides mDNS discovery when set |
 | `machine_id` | string | auto | Anonymous identifier, generated on first run |
+
+On POSIX the file is created with mode `0600`; on Windows that step is a no-op and the file inherits its NTFS ACLs.
 
 ### Environment variables
 
