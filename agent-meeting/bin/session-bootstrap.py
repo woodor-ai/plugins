@@ -827,10 +827,10 @@ def emit_context(cfg: dict):
 This session has NO meeting name yet — and that's fine. Peer-to-peer agent messaging is OPTIONAL. NEVER gate, block, or delay the user's work to make them register a name.
 
 - Proceed with whatever the user asks, normally — registration is NOT a prerequisite for anything.
-- If the user's first message begins with the literal token `/meeting` (anything after it), run the meeting skill instead — they are explicitly opting in.
-- Reminder line: on your FIRST reply of this session ONLY, append this single line at the very end (skip it entirely if the user's first message was itself a `/meeting` command):
+- If the user's message contains a `/meeting` command — whether it is the whole message (`/meeting <name>`) OR embedded inside a natural-language directive (e.g. "你是 X，先运行 /meeting X --director 启动监听") — run the meeting skill: they are explicitly opting in to register.
+- Reminder line: on your FIRST reply of this session ONLY, you MAY append this single line at the very end — but SKIP it entirely whenever this session registers via `/meeting` (i.e. you run the meeting skill this turn), no matter where the command appeared in the user's message. Only show the reminder when the session does NOT register at all:
   > 💡 本会话未注册 meeting；如需与其他 agent 互通可 `/meeting <名字>` 注册（不影响当前任务）。
-  Show it at most once per session, never repeat it, and never let it replace or postpone the actual task.
+  Decide by your own action (did you register?), NOT by whether the message literally starts with `/meeting`. Show it at most once per session, never repeat it, and never let it replace or postpone the actual task.
 
 These paths are ALREADY RESOLVED for this machine — use them verbatim, do NOT probe the filesystem to find the CLI or venv:
 - CLI invocation: `{cli} <args>`
