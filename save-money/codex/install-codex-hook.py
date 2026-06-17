@@ -19,8 +19,9 @@ Hook event choice — PostToolUse:
   Codex has no Stop equivalent. PostToolUse fires after every tool call,
   giving us transcript_path and session_id to check token_count. Dedup via
   ~/.cache/cost-auto-handoff/fired/<session_id> prevents repeat fires.
-  The matcher is "shell|python|computer" to cover common Codex tool names;
-  an empty string would fire on every tool including MCPs which is noisier.
+  The matcher is "" (all PostToolUse-eligible tools): fire-testing on Windows
+  codex-cli 0.140.0 showed named matchers ("shell|python|computer", "shell_command")
+  do NOT match, while "" reliably fires. Dedup + fast exit keep "" cheap.
 
 Trusted-hash algorithm (from codex-rs/hooks/src/engine/discovery.rs):
   identity = {
@@ -53,10 +54,15 @@ if not HANDLER_SCRIPT.exists():
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CONFIG_PATH = CODEX_HOME / "config.toml"
 
-# PostToolUse: fire on shell/python/computer tool calls (the main agent tools).
-# A blank matcher fires on every tool including MCPs — too noisy. Listing the
-# common names keeps overhead low while still catching every real agent turn.
-MATCHER = "shell|python|computer"
+# PostToolUse matcher. Empty string = fire on every PostToolUse-eligible tool.
+# Fire-test finding (Windows codex-cli 0.140.0): Codex's PostToolUse matcher does
+# NOT match the function-call name — neither "shell|python|computer" nor the exact
+# tool name "shell_command" fired, while "" reliably did. Codex only fires
+# PostToolUse for a limited tool set (shell/apply_patch/MCP, per issue #20204) and
+# auto-handoff.py dedups per session + exits fast, so "" is cheap and correct here.
+# (The precise non-empty matcher token could not be pinned down — Codex matches an
+# internal identifier we couldn't extract. See docs/codex-adaptation-investigation.md §7.)
+MATCHER = ""
 EVENT_NAME = "post_tool_use"
 
 # Codex runs the `command` string through a shell on each fire, so we use a

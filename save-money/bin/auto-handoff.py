@@ -272,7 +272,16 @@ def main():
             sys.exit(0)
 
         mark_fired(session_id)
-        print(json.dumps({"additionalContext": CODEX_HANDOFF_PROMPT}))
+        # Codex 0.140 requires the Claude-Code-isomorphic hookSpecificOutput
+        # wrapper; a bare {"additionalContext": ...} is rejected ("hook Failed")
+        # and the injected text is silently discarded. Verified by fire-test on
+        # Windows codex-cli 0.140.0. See docs/codex-adaptation-investigation.md §7.
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": CODEX_HANDOFF_PROMPT,
+            }
+        }))
 
     else:
         # Claude Code path (hook_event_name == "Stop" or unset)

@@ -441,8 +441,12 @@ class TestCodexAutoHandoff(unittest.TestCase):
                                       session_id="codex-fire-test")
         output, fired = run_codex_hook(stdin, cfg, self.fired)
         self.assertIsNotNone(output)
-        self.assertIn("additionalContext", output)
-        self.assertIn("handoff", output["additionalContext"].lower())
+        # Codex 0.140 requires the hookSpecificOutput wrapper (a bare
+        # additionalContext is rejected as a failed hook). Verified by fire-test.
+        self.assertIn("hookSpecificOutput", output)
+        hso = output["hookSpecificOutput"]
+        self.assertEqual(hso["hookEventName"], "PostToolUse")
+        self.assertIn("handoff", hso["additionalContext"].lower())
         self.assertTrue(fired)
 
     # C3: disabled → no output
