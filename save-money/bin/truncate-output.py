@@ -101,7 +101,7 @@ def extract_text_and_builder(tool_name, tool_response):
 
 def save_to_tmp(tool_name, full_text):
     """Writes full_text to a unique /tmp file, returns the path."""
-    fd, path = tempfile.mkstemp(prefix=f"cost-truncate-{tool_name}-", suffix=".txt", dir="/tmp")
+    fd, path = tempfile.mkstemp(prefix=f"cost-truncate-{tool_name}-", suffix=".txt", dir=tempfile.gettempdir())
     try:
         with os.fdopen(fd, "w") as f:
             f.write(full_text)

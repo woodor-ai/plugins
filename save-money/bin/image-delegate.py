@@ -13,6 +13,7 @@ Protocol: see tools/cost-image-delegate/README.md
 import json
 import os
 import sys
+import tempfile
 
 CONFIG_PATH = os.path.expanduser("~/.claude/cost-opt.json")
 
@@ -23,7 +24,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 # screenshots under /tmp/amb-shot* and needs to read them itself (pixel-level
 # verification an explore subagent can't do). Hardcoded here, NOT in cost-opt.json
 # — amp overwrites that file and would clobber an allowlist living there.
-ALLOWLIST_PREFIXES = ("/tmp/amb-shot",)
+ALLOWLIST_PREFIXES = ("/tmp/amb-shot", os.path.join(tempfile.gettempdir(), "amb-shot"))
 
 DENY_REASON = (
     "默认不在主上下文直接读图片（图会赖在主会话每轮复读、涨成本）。"
