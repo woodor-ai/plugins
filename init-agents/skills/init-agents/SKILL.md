@@ -270,6 +270,22 @@ Current Codex versions cannot dispatch custom agents by name via spawn_agent (is
 
 > 三个 agent 已经写到 `.codex/agents/`，对应 gpt-5.4-mini (low) / gpt-5.4 (high) / gpt-5.5 (high)。注意：当前 Codex 按名调度自定义 subagent 受限（issue #14039 open），profile 已定义并可被加载，主 agent 暂需用通用 agent_type + 系统提示覆盖的方式派活，按名调度等 #14039 合并后生效。
 
+## Windows 用户：rd 档写文件的前提
+
+Codex 的 `sandbox_mode` 是"限定 agent 只能写到工作区"的护栏，不是总开关。**Windows 上**，护栏本身需要操作系统层配合，而 codex-cli 0.140.x 在 Windows 上默认不启用任何沙箱。
+
+结论（plugins-win 实测，codex-cli 0.140.0）：
+
+- **explore / planner 档**（`sandbox_mode = "read-only"`）：实测正常挡写，隔离有效。不受 Windows 全局配置影响。
+- **rd 档**（`sandbox_mode = "workspace-write"`）：**必须**在用户全局 `~/.codex/config.toml` 里加以下配置，否则 workspace-write 退化成只读，rd 档写不了任何文件：
+  ```toml
+  [windows]
+  sandbox = "unelevated"
+  ```
+- **推荐用 `unelevated`**（免管理员、不弹 UAC、实测 work）；`elevated` 需管理员 UAC 且撞 codex 0.140 已知 bug（helper `codex-windows-sandbox-setup.exe` 找不到，ShellExecuteExW error 1223，GitHub openai/codex#28457），不推荐。
+
+Mac / Linux 用户不受影响，无需额外配置。
+
 ## 注意
 
 - 这个 skill 不修改全局目录（`~/.claude/agents/` 或 `~/.codex/agents/`）——只动当前 project 的 `.claude/agents/` 或 `.codex/agents/`。

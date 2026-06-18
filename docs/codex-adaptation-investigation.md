@@ -92,3 +92,27 @@
 平台中立、无 Windows 风险的部分：`.codex/agents/*.toml` 内容、save-money 读 transcript JSONL 算占用%（纯文本/数据逻辑）。
 
 **归属**：Windows 全部工作交 plugins-win（D:\AIAgent\plugins）。基准在 main。
+
+### 7.1 sandbox_mode 三档 Windows 实测结论（plugins-win，codex-cli 0.140.0）
+
+本节为 plugins-win 实测后补入，标记 ✅/❌ 均为实测结果，非推断。
+
+| 档位 | sandbox_mode | Windows 上实测结果 |
+|---|---|---|
+| explore / planner | `read-only` | ✅ 实测挡写，隔离有效；不依赖全局 config |
+| rd | `workspace-write` | 依赖全局配置（见下）；不配则退化只读 |
+
+**rd 档写文件的必要条件**：用户全局 `~/.codex/config.toml` 必须配：
+
+```toml
+[windows]
+sandbox = "unelevated"
+```
+
+不配则 workspace-write 在 Windows 上退化成只读，rd 写不了任何文件——profile TOML 里的 `sandbox_mode = "workspace-write"` 本身不够。
+
+**两个可选值的取舍**：
+- `unelevated`：免管理员、不弹 UAC、实测能写。✅ 推荐。
+- `elevated`：需管理员 UAC，且撞 codex 0.140 已知 bug（helper `codex-windows-sandbox-setup.exe` 找不到，ShellExecuteExW error 1223，openai/codex#28457）。❌ 不推荐。
+
+**概念澄清**：`sandbox_mode` 是"限定 agent 只能写工作区"的护栏，不是写权限总开关。护栏在 Windows 需系统层配合（`[windows]sandbox`），Mac/Linux 无此问题，三档直接生效。
