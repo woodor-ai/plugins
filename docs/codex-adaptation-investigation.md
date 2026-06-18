@@ -1,6 +1,6 @@
 # Codex 适配调研 — 测试、分析与结论
 
-文档日期：2026-06-17 03:56 PDT（初版）；05:35 PDT（重测更正）；08:xx PDT（落地完成）
+文档日期：2026-06-17 03:56 PDT（初版）；05:35 PDT（重测更正）；08:xx PDT（落地完成）；20:48 PDT（tool_output_token_limit 实测值更正 12000→≈2500 + text-truncate 最终决定）
 分支：`codex-adapt`（含 handoff 0.1.7 配方 + save-money 0.1.3 A-1 + 本文档）
 状态：**落地完成。handoff Codex 配方 + save-money auto-handoff 已建并测；text-truncate/image-delegate 已文档/源码级证伪；init-agents 无目标物。唯一待决=是否并 main。**
 
@@ -51,7 +51,7 @@
 | 插件 | 能否走 hooks.json 配方 | 依据 |
 |---|---|---|
 | **handoff** | ✅ **能做** | SessionStart 实测 fire + `additionalContext` 注入实测生效 + payload 带 `cwd`/`transcript_path` → 读 handoff-pending 再注入会话上下文，核心齐了。脚本写 `~/.codex/hooks.json`（含 trust）即可。 |
-| **save-money** | ⚖️ 三机制分裂：auto-handoff ✅ 已做；truncate/image ❌ 不可行 | **auto-handoff ✅**：payload 无 token 字段，但 transcript JSONL 有 `event_msg.token_count.info`（`total_token_usage.input_tokens`+`model_context_window`），挂 PostToolUse 读它算占用%，离线验证 18.41%/5.65% 算对，已落地（0.1.3）。**text-truncate ❌**：官方文档明示 `updatedMCPToolOutput` unsupported、源码无 `updatedToolOutput`，hook 改不了输出；且 Codex 原生 `tool_output_token_limit`（默认 12000）已干这事，做也多余。**image-delegate ❌**：源码级 hook 只对 Bash/unified_exec/apply_patch/MCP fire（issue #20204），图片工具全在外，拦不到。 |
+| **save-money** | ⚖️ 三机制分裂：auto-handoff ✅ 已做；truncate/image ❌ 不可行 | **auto-handoff ✅**：payload 无 token 字段，但 transcript JSONL 有 `event_msg.token_count.info`（`total_token_usage.input_tokens`+`model_context_window`），挂 PostToolUse 读它算占用%，离线验证 18.41%/5.65% 算对，已落地（0.1.3）。**text-truncate ❌**：官方文档明示 `updatedMCPToolOutput` unsupported、源码无 `updatedToolOutput`，hook 改不了输出；且 Codex 原生 `tool_output_token_limit`（实测默认 ≈2500 tokens；官方文档名义值 12000，以实测为准；有效上限约 10000）已干这事，做也多余。**image-delegate ❌**：源码级 hook 只对 Bash/unified_exec/apply_patch/MCP fire（issue #20204），图片工具全在外，拦不到。 |
 | **init-agents** | ⚖️ 部分支持（已建 0.1.4） | **更正**：Codex 2026/3 GA 了 subagents，`.codex/agents/*.toml`（含 `developer_instructions`/`model`/`model_reasoning_effort`/`sandbox_mode`）对标 `.claude/agents/*.md`。三档已能生成（explore=gpt-5.4-mini/low、rd=gpt-5.4/high、planner=gpt-5.5/high）。**局限**：`spawn_agent` 暂不能按名调度自定义 subagent（issue #14039 open），profile 可加载但主 agent 只能用通用 agent_type 派、不能按名 dispatch。 |
 | **agent-meeting** | —（不走 hook） | 走 amp 进程外驱动（Monitor 工具弹来电 Codex 无等价物）。amp PR5 已验证外驱起 Codex agent 跑通真实 turn。 |
 
@@ -116,3 +116,42 @@ sandbox = "unelevated"
 - `elevated`：需管理员 UAC，且撞 codex 0.140 已知 bug（helper `codex-windows-sandbox-setup.exe` 找不到，ShellExecuteExW error 1223，openai/codex#28457）。❌ 不推荐。
 
 **概念澄清**：`sandbox_mode` 是"限定 agent 只能写工作区"的护栏，不是写权限总开关。护栏在 Windows 需系统层配合（`[windows]sandbox`），Mac/Linux 无此问题，三档直接生效。
+
+---
+
+## 8. save-money text-truncate 在 Codex 上的最终归宿
+
+本节记录 2026-06-17 的最终决定，不再回炉。
+
+### 8.1 tool_output_token_limit 实测值更正
+
+Codex 原生截断配置 `tool_output_token_limit` 的实测值（Mac codex-cli，transcript 为证）：
+
+| 维度 | 值 |
+|---|---|
+| 实测默认值 | ≈2500 tokens（用户不配任何东西，大输出即被截断到约 2500） |
+| 官方文档名义值 | 12000（**以实测为准，名义值仅供参考**） |
+| 有效上限 | ≈10000（设更高无效） |
+| 精度 | 线性精确（设 500 → 模型收到约 540 tokens） |
+| 截断策略 | 头尾各保留约一半 + 中间插 `…N tokens truncated…` 省略标记；token 数用 chars/4 估算 |
+
+Codex 的默认截断（≈2500）比 Claude 侧的 save-money 阈值（25000）激进得多——Codex 平台已经在做比插件更严的截断。
+
+### 8.2 三条路线终判
+
+| 路线 | 结论 | 理由 |
+|---|---|---|
+| **hook 改写输出**（PostToolUse `updatedMCPToolOutput`） | ❌ 移植不了 | 官方文档明示 unsupported，源码无 `updatedToolOutput`，实测无效。见 §3.5 / §4。 |
+| **config-setter**（往用户 config 写 `tool_output_token_limit`） | ❌ 不做 | Codex 默认已截断到 ≈2500，写值只会让用户体验更差或无变化，不是省 token；需求本身不成立。 |
+| **Codex 终端命令**（让用户查截断配置） | ❌ 做不了 | Codex 不支持用户自定义可执行命令（`custom_prompts` 已弃用且只能注入静态文本，不认插件命令）；CLI 也不暴露 resolved config 值，无从查询。 |
+
+### 8.3 最终方案：收敛到 AMBridge PWA Save Money 页面
+
+Codex 后端模式下，AMBridge PWA Save Money 页面的 text-truncate 项改为**只读展示 + 一行提示**：
+- 读 `~/.codex/config.toml` 的 `tool_output_token_limit`；未配则显示"Codex 默认 ≈2500"。
+- 不提供写入/修改入口（写了只会更差）。
+- 需求已转 amb-wic 并确认承接，排在 AMBridge 桌面 APP 打包之后。
+
+**plugins 侧 save-money 无代码改动**——它只是 `cost-opt.json` 的消费方，Codex 截断是平台原生行为，不需要插件介入。
+
+> 标注：默认 ≈2500 为实测（Mac codex-cli，transcript 为证）；"≈2500 的内部代码来源"（是硬编码常量还是配置回落）未深入验证，可注明待查。
