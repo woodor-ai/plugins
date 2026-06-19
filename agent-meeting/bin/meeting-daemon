@@ -15,6 +15,14 @@ in config.json to enable Bearer-token enforcement on all routes except
 /health. Token is re-read on every request — no daemon restart required
 after `meeting token` writes it.
 
+Identity: sessions are identified by (project, name) composite key.
+project is derived from git rev-parse --show-toplevel basename (or cwd basename
+for non-git dirs) at registration time. Addressing: bare <name> resolves if
+globally unique; ambiguous across projects requires <name>@<project>.
+
+DEPLOY NOTE: this schema is incompatible with the old single-key schema.
+Wipe ~/.agent-meeting/db/rooms.db before deploying.
+
 Usage:
   meeting-daemon [--port 8765] [--bind 0.0.0.0]
 
@@ -57,9 +65,11 @@ ONLINE_THRESHOLD = 12
 # ---------- WebSocket global state ----------
 
 class Subscriber:
-    __slots__ = ("name", "sock", "wfile", "high_water_mark", "state", "send_lock", "last_pong")
+    # key is (project, name) tuple; stored as composite for routing
+    __slots__ = ("project", "name", "sock", "wfile", "high_water_mark", "state", "send_lock", "last_pong")
 
-    def __init__(self, name: str, sock, wfile, cursor: int):
+    def __init__(self, project: str, name: str, sock, wfile, cursor: int):
+        self.project = project
         self.name = name
         self.sock = sock
         self.wfile = wfile
@@ -68,33 +78,37 @@ class Subscriber:
         self.send_lock = threading.Lock()
         self.last_pong = time.time()
 
+    @property
+    def key(self) -> tuple:
+        return (self.project, self.name)
 
-# name → list[Subscriber]  (list because same name can reconnect before old conn dies)
-_subscribers: dict[str, list["Subscriber"]] = {}
+
+# (project, name) -> list[Subscriber]
+_subscribers: dict[tuple, list["Subscriber"]] = {}
 _sub_lock = threading.Lock()
 
 
 def _ws_remove(sub: "Subscriber"):
     """Remove a Subscriber from the global table. Safe to call multiple times."""
     with _sub_lock:
-        lst = _subscribers.get(sub.name)
+        lst = _subscribers.get(sub.key)
         if lst:
             try:
                 lst.remove(sub)
             except ValueError:
                 pass
             if not lst:
-                del _subscribers[sub.name]
+                del _subscribers[sub.key]
     # Flush in-memory high_water_mark to DB so reconnect resumes from here.
     if sub.high_water_mark > 0:
         try:
             with db() as conn:
                 conn.execute(
-                    "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
-                    " ON CONFLICT(member_name) DO UPDATE SET"
+                    "INSERT INTO read_cursors (project, member_name, cursor, updated_at) VALUES (?, ?, ?, ?)"
+                    " ON CONFLICT(project, member_name) DO UPDATE SET"
                     "  cursor=MAX(excluded.cursor, read_cursors.cursor),"
                     "  updated_at=excluded.updated_at",
-                    (sub.name, sub.high_water_mark, int(time.time())),
+                    (sub.project, sub.name, sub.high_water_mark, int(time.time())),
                 )
         except Exception:
             pass
@@ -107,7 +121,6 @@ def _ws_remove(sub: "Subscriber"):
 # ---------- RFC6455 minimal frame helpers ----------
 
 def _ws_send_text(sub: "Subscriber", payload: str) -> bool:
-    """Send a WebSocket text frame. Returns False on write failure → caller should remove sub."""
     data = payload.encode("utf-8")
     length = len(data)
     if length < 126:
@@ -125,7 +138,6 @@ def _ws_send_text(sub: "Subscriber", payload: str) -> bool:
 
 
 def _ws_send_ping(sub: "Subscriber") -> bool:
-    """Send a WebSocket ping frame (opcode 0x9, empty payload)."""
     try:
         sub.wfile.write(b"\x89\x00")
         sub.wfile.flush()
@@ -135,7 +147,6 @@ def _ws_send_ping(sub: "Subscriber") -> bool:
 
 
 def _ws_send_close(sub: "Subscriber"):
-    """Send a WebSocket close frame (best-effort)."""
     try:
         sub.wfile.write(b"\x88\x00")
         sub.wfile.flush()
@@ -144,12 +155,6 @@ def _ws_send_close(sub: "Subscriber"):
 
 
 def _ws_read_frame(rfile) -> tuple[int, bytes]:
-    """Read one complete WebSocket frame from rfile.
-
-    Returns (opcode, payload). Raises IOError / struct.error on EOF or
-    malformed frame. Handles client masking (unmasks payload). Does NOT
-    handle fragmentation — fragmented frames raise IOError.
-    """
     header = rfile.read(2)
     if len(header) < 2:
         raise IOError("EOF reading frame header")
@@ -195,50 +200,39 @@ _AT_TOKEN_RE = _re.compile(r"@([A-Za-z0-9-]+)")
 
 
 def _parse_mentions(body: str, member_set: set) -> set:
-    """Return the intersection of @-tokens in body with member_set.
-
-    Empty set means no valid mentions → broadcast semantics (no mention field).
-    """
     tokens = set(_AT_TOKEN_RE.findall(body))
     return tokens & member_set
 
 
-def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None, body: str = "", sender_project: str | None = None):
-    """Push a message to all live/draining subscribers for recipient (or group members).
-
-    Called after DB COMMIT. Uses per-subscriber send_lock + high_water_mark
-    to ensure each subscriber sees each msg_id exactly once even if a
-    backlog flush is in progress on the same connection's thread.
-
-    For group messages: if the body contains @name tokens that resolve to group
-    members, only those members' frames carry mention=true; others get mention=false.
-    No @-mentions (or all invalid) → broadcast: no mention field added.
-    """
+def _ws_fanout(msg_id: int, recipient_project: str, recipient_name: str,
+               sender_project: str, sender_name: str, ask, body: str = ""):
+    """Push a message to all live/draining subscribers for recipient (or group members)."""
     with db() as conn:
-        is_grp = _is_group(conn, recipient)
+        is_grp = _is_group(conn, recipient_project, recipient_name)
         if is_grp:
             rows = conn.execute(
-                "SELECT member_name FROM group_members WHERE group_name=?", (recipient,)
+                "SELECT member_project, member_name FROM group_members"
+                " WHERE group_project=? AND group_name=?",
+                (recipient_project, recipient_name),
             ).fetchall()
-            target_names = [r["member_name"] for r in rows]
+            target_keys = [(r["member_project"], r["member_name"]) for r in rows]
         else:
-            target_names = [recipient]
+            target_keys = [(recipient_project, recipient_name)]
 
-    group_field = recipient if is_grp else None
+    group_field = recipient_name if is_grp else None
 
-    # Compute mention set only for group messages.
     mention_targets: set = set()
     directed = False
     if is_grp and body:
-        member_set = set(target_names)
-        mention_targets = _parse_mentions(body, member_set)
+        member_name_set = {k[1] for k in target_keys}
+        mention_targets = _parse_mentions(body, member_name_set)
         directed = bool(mention_targets)
 
     base_payload = {
         "type": "msg",
         "msg_id": msg_id,
-        "sender": sender,
-        "sender_project": sender_project or "",
+        "sender": sender_name,
+        "sender_project": sender_project,
         "ask": ask or "",
         "group": group_field,
         "phase": "live",
@@ -246,33 +240,33 @@ def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None, body: 
 
     dead = []
     now = int(time.time())
-    for target in target_names:
+    for (tgt_project, tgt_name) in target_keys:
         if directed:
-            payload = {**base_payload, "mention": target in mention_targets}
+            payload = {**base_payload, "mention": tgt_name in mention_targets}
         else:
             payload = base_payload
         frame = json.dumps(payload, ensure_ascii=False)
 
+        key = (tgt_project, tgt_name)
         with _sub_lock:
-            subs = list(_subscribers.get(target, []))
+            subs = list(_subscribers.get(key, []))
         for sub in subs:
             with sub.send_lock:
                 if sub.state != "live":
-                    continue  # draining — backlog thread owns this sub's stream
+                    continue
                 if msg_id <= sub.high_water_mark:
-                    continue  # already sent via backlog
+                    continue
                 ok = _ws_send_text(sub, frame)
                 if ok:
                     sub.high_water_mark = msg_id
-                    # Persist cursor advance for this target member.
                     try:
                         with db() as conn2:
                             conn2.execute(
-                                "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
-                                " ON CONFLICT(member_name) DO UPDATE SET"
+                                "INSERT INTO read_cursors (project, member_name, cursor, updated_at) VALUES (?, ?, ?, ?)"
+                                " ON CONFLICT(project, member_name) DO UPDATE SET"
                                 "  cursor=MAX(excluded.cursor, read_cursors.cursor),"
                                 "  updated_at=excluded.updated_at",
-                                (target, msg_id, now),
+                                (tgt_project, tgt_name, msg_id, now),
                             )
                     except Exception:
                         pass
@@ -285,13 +279,11 @@ def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None, body: 
 
 # ---------- heartbeat + pong-timeout sweep ----------
 
-_WS_PING_INTERVAL = 4      # seconds between pings
-_WS_PONG_TIMEOUT = 15      # seconds without pong → dead
+_WS_PING_INTERVAL = 4
+_WS_PONG_TIMEOUT = 15
 
 
 def _ws_heartbeat_loop():
-    """Background thread: ping all connected subscribers every 4s,
-    and sweep for pong-timeout dead connections every 5s."""
     last_sweep = time.time()
     while True:
         time.sleep(_WS_PING_INTERVAL)
@@ -305,7 +297,6 @@ def _ws_heartbeat_loop():
             if not _ws_send_ping(sub):
                 dead.append(sub)
 
-        # sweep for pong timeout every ~5s (one ping interval is close enough)
         if now - last_sweep >= 5:
             last_sweep = now
             for sub in all_subs:
@@ -329,26 +320,27 @@ def db():
         conn.close()
 
 
-def _conversation_clause(a: str, b: str) -> tuple[str, list]:
-    """Return WHERE clause + params for messages between a and b (both directions)."""
-    clause = "((sender=? AND recipient=?) OR (sender=? AND recipient=?))"
-    return clause, [a, b, b, a]
+def _conversation_clause(a_project: str, a_name: str, b_project: str, b_name: str) -> tuple[str, list]:
+    clause = (
+        "((sender_project=? AND sender=? AND recipient_project=? AND recipient=?)"
+        " OR (sender_project=? AND sender=? AND recipient_project=? AND recipient=?))"
+    )
+    return clause, [a_project, a_name, b_project, b_name, b_project, b_name, a_project, a_name]
 
 
-def _is_group(conn, name: str) -> bool:
-    return conn.execute("SELECT 1 FROM groups WHERE name=?", (name,)).fetchone() is not None
+def _is_group(conn, project: str, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM groups WHERE project=? AND name=?", (project, name)
+    ).fetchone() is not None
 
 
 # ---------- HTTP handlers ----------
 
 class Handler(BaseHTTPRequestHandler):
-    timeout = 30  # 30s per-connection timeout; prevents half-open connections blocking threads
+    timeout = 30
 
-    # Hide default request log — replace with one-liner.
     def log_message(self, fmt, *args):
         sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
-
-    # --- response helpers ---
 
     def _json(self, status: int, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -370,11 +362,6 @@ class Handler(BaseHTTPRequestHandler):
         self._json(status, {"error": msg})
 
     def _check_auth(self, path: str) -> bool:
-        """Return True if the request is allowed, False (and emit 401) if not.
-
-        Re-reads config.json on every call so a token written by `meeting token`
-        takes effect without a daemon restart. /health is always exempt.
-        """
         if path == "/health":
             return True
         expected = None
@@ -400,18 +387,15 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return json.loads(self.rfile.read(n).decode("utf-8"))
 
-    # --- routes ---
-
     def do_GET(self):
         path = urlparse(self.path).path
         if not self._check_auth(path):
             return
 
-        # WebSocket upgrade — must be checked before the normal HTTP dispatch.
         if (path == "/subscribe" and
                 self.headers.get("Upgrade", "").lower() == "websocket"):
             self._ws_upgrade()
-            return  # _ws_upgrade blocks until connection closes
+            return
 
         if path == "/health":
             return self._json(200, {
@@ -424,17 +408,34 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/list":
                 return self._json(200, self._list())
             if path == "/turn":
-                return self._json(200, {"turn": self._turn(q["self"][0], q["peer"][0])})
+                return self._json(200, {"turn": self._turn(
+                    q["self_project"][0], q["self"][0],
+                    q["peer_project"][0], q["peer"][0],
+                )})
             if path == "/show":
-                return self._text(200, self._show(q["self"][0], q["peer"][0], int(q.get("limit", ["20"])[0])))
+                return self._text(200, self._show(
+                    q["self_project"][0], q["self"][0],
+                    q["peer_project"][0], q["peer"][0],
+                    int(q.get("limit", ["20"])[0]),
+                ))
             if path == "/read":
-                return self._json(200, self._read(q["self"][0], q["peer"][0],
-                                                  int(q.get("limit", ["30"])[0]),
-                                                  int(q.get("since", ["0"])[0])))
+                return self._json(200, self._read(
+                    q["self_project"][0], q["self"][0],
+                    q["peer_project"][0], q["peer"][0],
+                    int(q.get("limit", ["30"])[0]),
+                    int(q.get("since", ["0"])[0]),
+                ))
             if path == "/group/list":
-                return self._json(200, self._group_list(q.get("member", [None])[0]))
+                return self._json(200, self._group_list(
+                    q.get("member_project", [None])[0],
+                    q.get("member", [None])[0],
+                ))
             if path == "/group/members":
-                return self._json(200, self._group_members(q["group"][0]))
+                return self._json(200, self._group_members(
+                    q["group_project"][0], q["group"][0],
+                ))
+            if path == "/resolve":
+                return self._json(200, self._resolve_candidates(q["name"][0]))
             return self._err(404, f"no such GET route: {path}")
         except KeyError as e:
             return self._err(400, f"missing param: {e}")
@@ -445,17 +446,13 @@ class Handler(BaseHTTPRequestHandler):
     def _ws_upgrade(self):
         """Handle WebSocket upgrade on /subscribe.
 
-        Performs the RFC6455 handshake, then blocks in the WS read loop
-        until the connection closes. The Handler.timeout=30 is cleared after
-        the handshake so the framework doesn't kill a long-lived connection.
+        Required headers: X-Meeting-Name, X-Meeting-Project, X-Meeting-Proto.
         """
-        # --- validate protocol version ---
         proto = self.headers.get("X-Meeting-Proto", "")
         if proto != "1":
             self._text(426, "Upgrade Required: X-Meeting-Proto must be 1")
             return
 
-        # --- auth (mirrors _check_auth but without sending JSON 401) ---
         expected_token = None
         try:
             with open(_CONFIG_PATH) as _f:
@@ -475,12 +472,16 @@ class Handler(BaseHTTPRequestHandler):
             self._err(400, "X-Meeting-Name required")
             return
 
+        project = self.headers.get("X-Meeting-Project", "").strip()
+        if not project:
+            self._err(400, "X-Meeting-Project required")
+            return
+
         ws_key = self.headers.get("Sec-WebSocket-Key", "")
         if not ws_key:
             self._err(400, "Sec-WebSocket-Key required")
             return
 
-        # --- RFC6455 accept key ---
         accept = base64.b64encode(
             hashlib.sha1((ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
         ).decode()
@@ -491,15 +492,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Sec-WebSocket-Accept", accept)
         self.end_headers()
 
-        # Clear the 30s socket timeout so the framework doesn't kill long-lived WS connections.
         self.connection.settimeout(None)
 
-        # Cursor is DB-authoritative. Ignore any client-supplied header.
-        # First connect (no row): seed to MAX(id) so zero backlog is replayed.
         now = int(time.time())
         with db() as conn:
             row = conn.execute(
-                "SELECT cursor FROM read_cursors WHERE member_name=?", (name,)
+                "SELECT cursor FROM read_cursors WHERE project=? AND member_name=?",
+                (project, name),
             ).fetchone()
             if row is None:
                 max_row = conn.execute(
@@ -507,41 +506,38 @@ class Handler(BaseHTTPRequestHandler):
                 ).fetchone()
                 cursor = max_row["m"]
                 conn.execute(
-                    "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)",
-                    (name, cursor, now),
+                    "INSERT INTO read_cursors (project, member_name, cursor, updated_at) VALUES (?, ?, ?, ?)",
+                    (project, name, cursor, now),
                 )
             else:
                 cursor = row["cursor"]
 
-        sub = Subscriber(name, self.connection, self.wfile, cursor)
+        sub = Subscriber(project, name, self.connection, self.wfile, cursor)
 
-        # Register as draining, send backlog, switch to live.
         with _sub_lock:
-            _subscribers.setdefault(name, []).append(sub)
+            _subscribers.setdefault(sub.key, []).append(sub)
 
         try:
             self._ws_send_backlog(sub, cursor)
-            sys.stderr.write(f"[ws] {name} connected, cursor={cursor}\n")
+            sys.stderr.write(f"[ws] {project}/{name} connected, cursor={cursor}\n")
 
-            # Read loop — blocks until connection closes
             while True:
                 try:
                     opcode, payload = _ws_read_frame(self.rfile)
                 except Exception:
-                    break  # EOF or malformed frame → close
+                    break
 
                 if opcode == 0xA:  # pong
                     sub.last_pong = time.time()
-                    # Refresh liveness in DB (WS pong 时刷 last_seen)
                     try:
                         with db() as conn:
                             conn.execute(
-                                "UPDATE sessions SET last_seen=? WHERE name=?",
-                                (time.time(), name),
+                                "UPDATE sessions SET last_seen=? WHERE project=? AND name=?",
+                                (time.time(), project, name),
                             )
                     except Exception:
                         pass
-                elif opcode == 0x9:  # ping from client — send pong
+                elif opcode == 0x9:  # ping from client
                     try:
                         self.wfile.write(b"\x8A" + bytes([len(payload)]) + payload)
                         self.wfile.flush()
@@ -551,59 +547,62 @@ class Handler(BaseHTTPRequestHandler):
                     _ws_send_close(sub)
                     break
                 else:
-                    # unexpected opcode — close per RFC6455
                     _ws_send_close(sub)
                     break
         finally:
             _ws_remove(sub)
-            sys.stderr.write(f"[ws] {name} disconnected\n")
+            sys.stderr.write(f"[ws] {project}/{name} disconnected\n")
 
     def _ws_send_backlog(self, sub: "Subscriber", cursor: int):
-        """Drain all messages with id > cursor to sub, then atomically flip state to live.
-
-        Invariant: while state=="draining", only this thread sends to sub (fanout skips it).
-        We loop until the DB has no more rows past our high_water_mark, checking under
-        send_lock before flipping to "live" so there is no window where a concurrent
-        fanout could slip a message past us.
-
-        The backlog query is a union: recipient=self OR recipient IN groups that sub belongs to.
-        This covers both 1:1 messages and group messages in one cursor-ordered stream.
-        """
+        """Drain all messages with id > cursor to sub, then atomically flip state to live."""
         while True:
             with sub.send_lock:
                 hwm = sub.high_water_mark
 
             with db() as conn:
                 rows = conn.execute(
-                    "SELECT id, sender, recipient, ask, sender_project FROM messages"
-                    " WHERE (recipient=? OR recipient IN"
-                    "   (SELECT group_name FROM group_members WHERE member_name=?))"
-                    " AND id>? ORDER BY id ASC LIMIT 500",
-                    (sub.name, sub.name, hwm),
+                    "SELECT id, sender_project, sender, recipient_project, recipient, ask FROM messages"
+                    " WHERE id>?"
+                    "  AND ("
+                    "   (recipient_project=? AND recipient=?)"
+                    "   OR (recipient_project=? AND recipient IN ("
+                    "     SELECT group_name FROM group_members"
+                    "     WHERE member_project=? AND member_name=?"
+                    "     AND group_project=?"
+                    "   ))"
+                    "  )"
+                    " ORDER BY id ASC LIMIT 500",
+                    (hwm, sub.project, sub.name, sub.project, sub.project, sub.name, sub.project),
                 ).fetchall()
-                # Fetch group names in same conn for group field resolution
                 group_names: set[str] = set()
                 if rows:
                     recipients = set(r["recipient"] for r in rows)
                     for rcp in recipients:
-                        if conn.execute("SELECT 1 FROM groups WHERE name=?", (rcp,)).fetchone():
+                        if conn.execute(
+                            "SELECT 1 FROM groups WHERE project=? AND name=?",
+                            (sub.project, rcp),
+                        ).fetchone():
                             group_names.add(rcp)
 
             if not rows:
-                # No rows past hwm — check once more under send_lock before flipping live
                 with sub.send_lock:
                     with db() as conn:
                         more = conn.execute(
                             "SELECT 1 FROM messages"
-                            " WHERE (recipient=? OR recipient IN"
-                            "   (SELECT group_name FROM group_members WHERE member_name=?))"
-                            " AND id>? LIMIT 1",
-                            (sub.name, sub.name, sub.high_water_mark),
+                            " WHERE id>?"
+                            "  AND ("
+                            "   (recipient_project=? AND recipient=?)"
+                            "   OR (recipient_project=? AND recipient IN ("
+                            "     SELECT group_name FROM group_members"
+                            "     WHERE member_project=? AND member_name=?"
+                            "     AND group_project=?"
+                            "   ))"
+                            "  )"
+                            " LIMIT 1",
+                            (sub.high_water_mark, sub.project, sub.name,
+                             sub.project, sub.project, sub.name, sub.project),
                         ).fetchone()
                     if not more:
-                        # Atomically flip to live inside send_lock — fanout's state check
-                        # uses the same lock, so there is no gap between "no more rows"
-                        # and "fanout starts delivering".
                         sub.state = "live"
                         hwm = sub.high_water_mark
                         caught_up_frame = json.dumps(
@@ -611,20 +610,18 @@ class Handler(BaseHTTPRequestHandler):
                             ensure_ascii=False,
                         )
                         _ws_send_text(sub, caught_up_frame)
-                        # Persist the drained cursor to DB.
                         try:
                             with db() as conn:
                                 conn.execute(
-                                    "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
-                                    " ON CONFLICT(member_name) DO UPDATE SET"
+                                    "INSERT INTO read_cursors (project, member_name, cursor, updated_at) VALUES (?, ?, ?, ?)"
+                                    " ON CONFLICT(project, member_name) DO UPDATE SET"
                                     "  cursor=MAX(excluded.cursor, read_cursors.cursor),"
                                     "  updated_at=excluded.updated_at",
-                                    (sub.name, hwm, int(time.time())),
+                                    (sub.project, sub.name, hwm, int(time.time())),
                                 )
                         except Exception:
                             pass
                         return
-                    # New rows appeared between our DB read and the lock — loop again
                 continue
 
             for row in rows:
@@ -633,14 +630,14 @@ class Handler(BaseHTTPRequestHandler):
                     "type": "msg",
                     "msg_id": row["id"],
                     "sender": row["sender"],
-                    "sender_project": row["sender_project"] or "",
+                    "sender_project": row["sender_project"],
                     "ask": row["ask"] or "",
                     "group": group_field,
                     "phase": "backlog",
                 }, ensure_ascii=False)
                 with sub.send_lock:
                     if row["id"] <= sub.high_water_mark:
-                        continue  # fanout cannot have sent this (state is draining), but be safe
+                        continue
                     ok = _ws_send_text(sub, frame)
                     if ok:
                         sub.high_water_mark = row["id"]
@@ -656,32 +653,48 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             if path == "/send":
                 result = self._send(
-                    body["self"], body["peer"], body["body"],
+                    body["self_project"], body["self"],
+                    body["peer_project"], body["peer"],
+                    body["body"],
                     body.get("kind", "回应"),
                     body.get("ask"),
                 )
                 return self._json(200, result)
             if path == "/register":
                 return self._json(200, self._register(
-                    body["name"], body.get("cwd"), body.get("force", False), body.get("role"),
-                    body.get("host"), body.get("os"), body.get("project")
+                    body["project"], body["name"],
+                    body.get("cwd"), body.get("force", False), body.get("role"),
+                    body.get("host"), body.get("os")
                 ))
             if path == "/unregister":
-                return self._json(200, self._unregister(body["name"]))
+                return self._json(200, self._unregister(body["project"], body["name"]))
             if path == "/rename":
-                result = self._rename(body["old"], body["new"])
+                result = self._rename(body["project"], body["old"], body["new"])
                 status = 400 if result.get("error") else 200
                 return self._json(status, result)
             if path == "/group/create":
-                result = self._group_create(body["name"], body.get("members", []), body.get("creator"))
+                result = self._group_create(
+                    body["project"], body["name"],
+                    body.get("members", []), body.get("creator"),
+                )
                 status = 400 if result.get("error") else 200
                 return self._json(status, result)
             if path == "/group/add":
-                result = self._group_add(body["group"], body["member"])
+                result = self._group_add(
+                    body["group_project"], body["group"],
+                    body["member_project"], body["member"],
+                )
                 status = 400 if result.get("error") else 200
                 return self._json(status, result)
             if path == "/group/remove":
-                result = self._group_remove(body["group"], body["member"])
+                result = self._group_remove(
+                    body["group_project"], body["group"],
+                    body["member_project"], body["member"],
+                )
+                status = 400 if result.get("error") else 200
+                return self._json(status, result)
+            if path == "/group/rename":
+                result = self._group_rename(body["project"], body["old"], body["new"])
                 status = 400 if result.get("error") else 200
                 return self._json(status, result)
             return self._err(404, f"no such POST route: {path}")
@@ -698,9 +711,14 @@ class Handler(BaseHTTPRequestHandler):
         q = self._query()
         try:
             if path == "/conversation":
-                return self._json(200, self._delete(q["self"][0], q["peer"][0]))
+                return self._json(200, self._delete(
+                    q["self_project"][0], q["self"][0],
+                    q["peer_project"][0], q["peer"][0],
+                ))
             if path == "/group":
-                return self._json(200, self._group_purge(q["name"][0]))
+                return self._json(200, self._group_purge(
+                    q["project"][0], q["name"][0],
+                ))
             return self._err(404, f"no such DELETE route: {path}")
         except KeyError as e:
             return self._err(400, f"missing param: {e}")
@@ -708,147 +726,163 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write(traceback.format_exc())
             return self._err(500, f"internal error: {e}")
 
-    # --- business logic (mirror meeting CLI cmd_*) ---
+    # --- business logic ---
+
+    def _resolve_candidates(self, raw_name: str):
+        with db() as conn:
+            session_rows = conn.execute(
+                "SELECT project FROM sessions WHERE name=?", (raw_name,)
+            ).fetchall()
+            group_rows = conn.execute(
+                "SELECT project FROM groups WHERE name=?", (raw_name,)
+            ).fetchall()
+        candidates = [{"project": r["project"], "name": raw_name, "kind": "session"}
+                      for r in session_rows]
+        candidates += [{"project": r["project"], "name": raw_name, "kind": "group"}
+                       for r in group_rows]
+        return candidates
 
     def _list(self):
         now = time.time()
         with db() as conn:
-            msg_counts = {
-                r["sender"]: r["cnt"]
-                for r in conn.execute("SELECT sender, COUNT(*) AS cnt FROM messages GROUP BY sender")
-            }
-            sessions = conn.execute("SELECT name, last_seen, cwd, role, host, os, project FROM sessions").fetchall()
+            msg_counts = {}
+            for r in conn.execute(
+                "SELECT sender_project, sender, COUNT(*) AS cnt FROM messages GROUP BY sender_project, sender"
+            ):
+                msg_counts[(r["sender_project"], r["sender"])] = r["cnt"]
 
-        online_names = set()
-        empty_names = set()
-        cwd_by_name = {}
-        role_by_name = {}
-        host_by_name = {}
-        os_by_name = {}
-        project_by_name = {}
+            sessions = conn.execute(
+                "SELECT project, name, last_seen, cwd, role, host, os FROM sessions"
+            ).fetchall()
+
+        online_keys = set()
+        empty_keys = set()
+        meta = {}
         for s in sessions:
-            cwd_by_name[s["name"]] = s["cwd"]
-            role_by_name[s["name"]] = s["role"]
-            host_by_name[s["name"]] = s["host"]
-            os_by_name[s["name"]] = s["os"]
-            project_by_name[s["name"]] = s["project"]
+            key = (s["project"], s["name"])
+            meta[key] = {
+                "cwd": s["cwd"], "role": s["role"],
+                "host": s["host"], "os": s["os"],
+            }
             last_seen = s["last_seen"] or 0
             if now - last_seen <= ONLINE_THRESHOLD:
-                online_names.add(s["name"])
+                online_keys.add(key)
             else:
-                empty_names.add(s["name"])
+                empty_keys.add(key)
 
-        historical_names = set(msg_counts.keys()) - online_names - empty_names
+        historical_keys = set(msg_counts.keys()) - online_keys - empty_keys
 
         rows = []
-        for n in sorted(online_names, key=lambda n: -msg_counts.get(n, 0)):
-            rows.append({"status": "online", "name": n, "msgs": msg_counts.get(n, 0),
-                         "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n),
-                         "host": host_by_name.get(n), "os": os_by_name.get(n),
-                         "project": project_by_name.get(n)})
-        for n in sorted(empty_names, key=lambda n: -msg_counts.get(n, 0)):
-            rows.append({"status": "empty", "name": n, "msgs": msg_counts.get(n, 0),
-                         "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n),
-                         "host": host_by_name.get(n), "os": os_by_name.get(n),
-                         "project": project_by_name.get(n)})
-        for n in sorted(historical_names, key=lambda n: -msg_counts.get(n, 0)):
-            rows.append({"status": "historical", "name": n, "msgs": msg_counts.get(n, 0),
-                         "role": "worker", "cwd": None, "host": None, "os": None, "project": None})
+        for k in sorted(online_keys, key=lambda k: -msg_counts.get(k, 0)):
+            m = meta[k]
+            rows.append({"status": "online", "project": k[0], "name": k[1],
+                         "msgs": msg_counts.get(k, 0),
+                         "role": m["role"] or "worker", "cwd": m["cwd"],
+                         "host": m["host"], "os": m["os"]})
+        for k in sorted(empty_keys, key=lambda k: -msg_counts.get(k, 0)):
+            m = meta[k]
+            rows.append({"status": "empty", "project": k[0], "name": k[1],
+                         "msgs": msg_counts.get(k, 0),
+                         "role": m["role"] or "worker", "cwd": m["cwd"],
+                         "host": m["host"], "os": m["os"]})
+        for k in sorted(historical_keys, key=lambda k: -msg_counts.get(k, 0)):
+            rows.append({"status": "historical", "project": k[0], "name": k[1],
+                         "msgs": msg_counts.get(k, 0),
+                         "role": "worker", "cwd": None, "host": None, "os": None})
         return rows
 
-    # _register and _unregister are unchanged
-
-    def _register(self, name: str, cwd: str | None, force: bool, role: str | None = None,
-                  host: str | None = None, os_label: str | None = None, project: str | None = None):
+    def _register(self, project: str, name: str, cwd, force: bool,
+                  role=None, host=None, os_label=None):
         now = time.time()
         with db() as conn:
-            existing = conn.execute("SELECT last_seen FROM sessions WHERE name=?", (name,)).fetchone()
+            existing = conn.execute(
+                "SELECT last_seen FROM sessions WHERE project=? AND name=?",
+                (project, name),
+            ).fetchone()
             if existing and not force:
                 last_seen = existing["last_seen"] or 0
                 if now - last_seen <= ONLINE_THRESHOLD:
                     return {
                         "error": (
-                            f"'{name}' is already registered and its monitor is still running. "
+                            f"'{name}@{project}' is already registered and its monitor is still running. "
                             "Use --force to override."
                         )
                     }
             conn.execute(
-                "INSERT INTO sessions (name, cwd, host, os, registered_at, last_seen, role, project) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'worker'), ?) "
-                "ON CONFLICT(name) DO UPDATE SET cwd=excluded.cwd, host=excluded.host, os=excluded.os, "
-                "registered_at=excluded.registered_at, last_seen=excluded.last_seen, "
-                "role=COALESCE(?, role), project=excluded.project",
-                (name, cwd, host, os_label, str(int(now)), now, role, project, role),
+                "INSERT INTO sessions (project, name, cwd, host, os, registered_at, last_seen, role)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'worker'))"
+                " ON CONFLICT(project, name) DO UPDATE SET"
+                "  cwd=excluded.cwd, host=excluded.host, os=excluded.os,"
+                "  registered_at=excluded.registered_at, last_seen=excluded.last_seen,"
+                "  role=COALESCE(?, role)",
+                (project, name, cwd, host, os_label, str(int(now)), now, role, role),
             )
-        return {"ok": True, "name": name}
+        return {"ok": True, "project": project, "name": name}
 
-    def _unregister(self, name: str):
+    def _unregister(self, project: str, name: str):
         with db() as conn:
-            conn.execute("DELETE FROM sessions WHERE name=?", (name,))
-        return {"ok": True, "name": name}
+            conn.execute("DELETE FROM sessions WHERE project=? AND name=?", (project, name))
+        return {"ok": True, "project": project, "name": name}
 
-    def _turn(self, self_name, peer):
-        """Derive turn from the last message in the conversation.
-
-        If no messages exist yet, the sender (self_name) holds the turn —
-        mirroring the old ensure_room behavior where the room creator starts.
-        """
-        clause, params = _conversation_clause(self_name, peer)
+    def _turn(self, self_project: str, self_name: str, peer_project: str, peer_name: str):
+        clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
         with db() as conn:
             row = conn.execute(
-                f"SELECT recipient FROM messages WHERE {clause} ORDER BY id DESC LIMIT 1",
+                f"SELECT recipient, recipient_project FROM messages WHERE {clause} ORDER BY id DESC LIMIT 1",
                 params,
             ).fetchone()
-        # No messages yet → self_name holds turn (creator convention)
-        return row["recipient"] if row else self_name
+        if row:
+            return f"{row['recipient']}@{row['recipient_project']}"
+        return f"{self_name}@{self_project}"
 
-    def _show(self, self_name, peer, limit):
+    def _show(self, self_project: str, self_name: str, peer_project: str, peer_name: str, limit: int):
         with db() as conn:
-            is_grp = _is_group(conn, peer)
+            is_grp = _is_group(conn, peer_project, peer_name)
             if is_grp:
                 msgs = conn.execute(
-                    "SELECT * FROM messages WHERE recipient=? ORDER BY id DESC LIMIT ?",
-                    (peer, limit),
+                    "SELECT * FROM messages WHERE recipient_project=? AND recipient=?"
+                    " ORDER BY id DESC LIMIT ?",
+                    (peer_project, peer_name, limit),
                 ).fetchall()
-                lines = [f"# Group: {peer}\n---\n"]
+                lines = [f"# Group: {peer_name} (project={peer_project})\n---\n"]
                 for row in reversed(msgs):
                     ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
-                    proj = row["sender_project"] or ""
-                    sender_label = f"{row['sender']}@{proj}" if proj else row["sender"]
-                    lines.append(f"### [{sender_label} @ {ts}] {row['kind']}")
+                    lines.append(f"### [{row['sender']}@{row['sender_project']} @ {ts}] {row['kind']}")
                     lines.append(row["body"])
                     if row["ask"]:
                         lines.append(f"\n**Ask**: {row['ask']}")
                     lines.append("")
                 return "\n".join(lines)
 
-        clause, params = _conversation_clause(self_name, peer)
-        turn = self._turn(self_name, peer)
+        clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
+        turn = self._turn(self_project, self_name, peer_project, peer_name)
         with db() as conn:
             msgs = conn.execute(
                 f"SELECT * FROM messages WHERE {clause} ORDER BY id DESC LIMIT ?",
                 params + [limit],
             ).fetchall()
-        lines = [f"# Conversation: {self_name} ↔ {peer}",
-                 f"当前发言权: {turn}\n---\n"]
+        lines = [
+            f"# Conversation: {self_name}@{self_project} <-> {peer_name}@{peer_project}",
+            f"当前发言权: {turn}\n---\n",
+        ]
         for row in reversed(msgs):
             ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
-            proj = row["sender_project"] or ""
-            sender_label = f"{row['sender']}@{proj}" if proj else row["sender"]
-            lines.append(f"### [{sender_label} @ {ts}] {row['kind']}")
+            lines.append(f"### [{row['sender']}@{row['sender_project']} @ {ts}] {row['kind']}")
             lines.append(row["body"])
             if row["ask"]:
                 lines.append(f"\n**Ask**: {row['ask']}")
             lines.append("")
         return "\n".join(lines)
 
-    def _read(self, self_name, peer, limit, since):
+    def _read(self, self_project: str, self_name: str, peer_project: str, peer_name: str,
+              limit: int, since: int):
         with db() as conn:
-            is_grp = _is_group(conn, peer)
+            is_grp = _is_group(conn, peer_project, peer_name)
         if is_grp:
-            clause = "recipient=?"
-            params: list = [peer]
+            clause = "recipient_project=? AND recipient=?"
+            params = [peer_project, peer_name]
         else:
-            clause, params = _conversation_clause(self_name, peer)
+            clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
         if since:
             clause += " AND id > ?"
             params.append(since)
@@ -859,177 +893,257 @@ class Handler(BaseHTTPRequestHandler):
             rows = conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
 
-    def _send(self, self_name, peer, body, kind, ask):
+    def _send(self, self_project: str, self_name: str, peer_project: str, peer_name: str,
+              body: str, kind: str, ask):
         if not body:
             raise KeyError("body empty")
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                sender_project_row = conn.execute(
-                    "SELECT project FROM sessions WHERE name=?", (self_name,)
-                ).fetchone()
-                sender_project = sender_project_row["project"] if sender_project_row else None
                 conn.execute(
-                    "INSERT INTO messages (sender, recipient, kind, body, ask, created_at, sender_project) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (self_name, peer, kind, body, ask, int(time.time()), sender_project),
+                    "INSERT INTO messages"
+                    " (sender_project, sender, recipient_project, recipient, kind, body, ask, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (self_project, self_name, peer_project, peer_name, kind, body, ask, int(time.time())),
                 )
                 msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                is_grp = _is_group(conn, peer)
+                is_grp = _is_group(conn, peer_project, peer_name)
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
 
-        # Fanout outside DB transaction — socket IO must not block DB writes.
-        _ws_fanout(msg_id, peer, self_name, ask, body, sender_project)
-        return {"msg_id": msg_id, "turn": None if is_grp else peer}
+        _ws_fanout(msg_id, peer_project, peer_name, self_project, self_name, ask, body)
+        if is_grp:
+            return {"msg_id": msg_id, "turn": None}
+        return {"msg_id": msg_id, "turn": f"{peer_name}@{peer_project}"}
 
-    def _group_create(self, name: str, members: list, creator: str | None):
+    def _group_create(self, project: str, name: str, members: list, creator):
         now = int(time.time())
         with db() as conn:
-            # Reject if active session name
-            if conn.execute("SELECT 1 FROM sessions WHERE name=?", (name,)).fetchone():
-                return {"error": f"name '{name}' is already an active session name"}
-            # Reject if existing group name
-            if conn.execute("SELECT 1 FROM groups WHERE name=?", (name,)).fetchone():
-                return {"error": f"group '{name}' already exists"}
-            # Reject if historical messages use this name (as recipient or sender)
             if conn.execute(
-                "SELECT 1 FROM messages WHERE recipient=? OR sender=? LIMIT 1", (name, name)
+                "SELECT 1 FROM sessions WHERE project=? AND name=?", (project, name)
             ).fetchone():
-                return {"error": f"name '{name}' has existing message history (cannot reuse as group name)"}
+                return {"error": f"name '{name}' is already an active session name in project '{project}'"}
+            if conn.execute(
+                "SELECT 1 FROM groups WHERE project=? AND name=?", (project, name)
+            ).fetchone():
+                return {"error": f"group '{name}' already exists in project '{project}'"}
+
+            resolved = []
+            seen = set()
+            for m in members:
+                if "@" in m:
+                    mname, _, mproj = m.partition("@")
+                else:
+                    mname, mproj = m, project
+                key = (mproj, mname)
+                if key in seen:
+                    continue
+                seen.add(key)
+                resolved.append(key)
 
             conn.execute("BEGIN IMMEDIATE")
             try:
                 conn.execute(
-                    "INSERT INTO groups (name, created_at, creator) VALUES (?, ?, ?)",
-                    (name, now, creator),
+                    "INSERT INTO groups (project, name, created_at, creator) VALUES (?, ?, ?, ?)",
+                    (project, name, now, creator),
                 )
-                seen = set()
-                for member in members:
-                    if member in seen:
-                        continue
-                    seen.add(member)
+                for (mproj, mname) in resolved:
                     conn.execute(
-                        "INSERT OR IGNORE INTO group_members (group_name, member_name, added_at) VALUES (?, ?, ?)",
-                        (name, member, now),
+                        "INSERT OR IGNORE INTO group_members"
+                        " (group_project, group_name, member_project, member_name, added_at)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        (project, name, mproj, mname, now),
                     )
-                # Seed read_cursors for each member that doesn't have a row yet
                 max_row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM messages").fetchone()
                 max_id = max_row["m"]
-                for member in seen:
+                for (mproj, mname) in resolved:
                     existing = conn.execute(
-                        "SELECT 1 FROM read_cursors WHERE member_name=?", (member,)
+                        "SELECT 1 FROM read_cursors WHERE project=? AND member_name=?",
+                        (mproj, mname),
                     ).fetchone()
                     if not existing:
                         conn.execute(
-                            "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)",
-                            (member, max_id, now),
+                            "INSERT INTO read_cursors (project, member_name, cursor, updated_at) VALUES (?, ?, ?, ?)",
+                            (mproj, mname, max_id, now),
                         )
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
-        return {"ok": True, "name": name, "members": list(seen)}
+        return {"ok": True, "project": project, "name": name,
+                "members": [f"{n}@{p}" for (p, n) in resolved]}
 
-    def _group_add(self, group: str, member: str):
+    def _group_add(self, group_project: str, group: str, member_project: str, member: str):
         now = int(time.time())
         with db() as conn:
-            if not conn.execute("SELECT 1 FROM groups WHERE name=?", (group,)).fetchone():
-                return {"error": f"group '{group}' does not exist"}
-            conn.execute(
-                "INSERT OR IGNORE INTO group_members (group_name, member_name, added_at) VALUES (?, ?, ?)",
-                (group, member, now),
-            )
-            # Seed read_cursors for this member if no row exists
             if not conn.execute(
-                "SELECT 1 FROM read_cursors WHERE member_name=?", (member,)
+                "SELECT 1 FROM groups WHERE project=? AND name=?", (group_project, group)
+            ).fetchone():
+                return {"error": f"group '{group}' does not exist in project '{group_project}'"}
+            conn.execute(
+                "INSERT OR IGNORE INTO group_members"
+                " (group_project, group_name, member_project, member_name, added_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (group_project, group, member_project, member, now),
+            )
+            if not conn.execute(
+                "SELECT 1 FROM read_cursors WHERE project=? AND member_name=?",
+                (member_project, member),
             ).fetchone():
                 max_row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM messages").fetchone()
                 conn.execute(
-                    "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)",
-                    (member, max_row["m"], now),
+                    "INSERT INTO read_cursors (project, member_name, cursor, updated_at) VALUES (?, ?, ?, ?)",
+                    (member_project, member, max_row["m"], now),
                 )
-        return {"ok": True, "group": group, "member": member}
+        return {"ok": True, "group_project": group_project, "group": group,
+                "member_project": member_project, "member": member}
 
-    def _group_remove(self, group: str, member: str):
+    def _group_remove(self, group_project: str, group: str, member_project: str, member: str):
         with db() as conn:
-            if not conn.execute("SELECT 1 FROM groups WHERE name=?", (group,)).fetchone():
-                return {"error": f"group '{group}' does not exist"}
+            if not conn.execute(
+                "SELECT 1 FROM groups WHERE project=? AND name=?", (group_project, group)
+            ).fetchone():
+                return {"error": f"group '{group}' does not exist in project '{group_project}'"}
             conn.execute(
-                "DELETE FROM group_members WHERE group_name=? AND member_name=?", (group, member)
+                "DELETE FROM group_members"
+                " WHERE group_project=? AND group_name=? AND member_project=? AND member_name=?",
+                (group_project, group, member_project, member),
             )
-        return {"ok": True, "group": group, "member": member}
+        return {"ok": True, "group_project": group_project, "group": group,
+                "member_project": member_project, "member": member}
 
-    def _group_list(self, member: str | None):
+    def _group_rename(self, project: str, old: str, new: str):
+        with db() as conn:
+            # Defer foreign key checks to COMMIT so we can rename parent and child in any order.
+            conn.execute("PRAGMA defer_foreign_keys = ON")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if not conn.execute(
+                    "SELECT 1 FROM groups WHERE project=? AND name=?", (project, old)
+                ).fetchone():
+                    conn.execute("ROLLBACK")
+                    return {"error": f"group '{old}' does not exist in project '{project}'"}
+                if conn.execute(
+                    "SELECT 1 FROM groups WHERE project=? AND name=?", (project, new)
+                ).fetchone():
+                    conn.execute("ROLLBACK")
+                    return {"error": f"group name '{new}' already taken in project '{project}'"}
+
+                conn.execute(
+                    "UPDATE groups SET name=? WHERE project=? AND name=?",
+                    (new, project, old),
+                )
+                conn.execute(
+                    "UPDATE group_members SET group_name=? WHERE group_project=? AND group_name=?",
+                    (new, project, old),
+                )
+                r = conn.execute(
+                    "UPDATE messages SET recipient=? WHERE recipient_project=? AND recipient=?",
+                    (new, project, old),
+                )
+                messages_migrated = r.rowcount
+                conn.execute("COMMIT")
+                return {"ok": True, "project": project, "old": old, "new": new,
+                        "messages_migrated": messages_migrated}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def _group_list(self, member_project, member):
         with db() as conn:
             if member:
+                mp = member_project or ""
                 rows = conn.execute(
-                    "SELECT g.name, COUNT(gm2.member_name) AS member_count"
+                    "SELECT g.project, g.name, COUNT(gm2.member_name) AS member_count"
                     " FROM groups g"
-                    " JOIN group_members gm ON g.name=gm.group_name AND gm.member_name=?"
-                    " LEFT JOIN group_members gm2 ON g.name=gm2.group_name"
-                    " GROUP BY g.name",
-                    (member,),
+                    " JOIN group_members gm ON g.project=gm.group_project AND g.name=gm.group_name"
+                    "   AND gm.member_project=? AND gm.member_name=?"
+                    " LEFT JOIN group_members gm2 ON g.project=gm2.group_project AND g.name=gm2.group_name"
+                    " GROUP BY g.project, g.name",
+                    (mp, member),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT g.name, COUNT(gm.member_name) AS member_count"
-                    " FROM groups g LEFT JOIN group_members gm ON g.name=gm.group_name"
-                    " GROUP BY g.name",
+                    "SELECT g.project, g.name, COUNT(gm.member_name) AS member_count"
+                    " FROM groups g LEFT JOIN group_members gm"
+                    "   ON g.project=gm.group_project AND g.name=gm.group_name"
+                    " GROUP BY g.project, g.name",
                 ).fetchall()
-        return [{"name": r["name"], "member_count": r["member_count"]} for r in rows]
+        return [{"project": r["project"], "name": r["name"],
+                 "member_count": r["member_count"]} for r in rows]
 
-    def _group_members(self, group: str):
+    def _group_members(self, group_project: str, group: str):
         with db() as conn:
-            if not conn.execute("SELECT 1 FROM groups WHERE name=?", (group,)).fetchone():
-                return {"error": f"group '{group}' does not exist"}
+            if not conn.execute(
+                "SELECT 1 FROM groups WHERE project=? AND name=?", (group_project, group)
+            ).fetchone():
+                return {"error": f"group '{group}' does not exist in project '{group_project}'"}
             rows = conn.execute(
-                "SELECT member_name FROM group_members WHERE group_name=? ORDER BY member_name",
-                (group,),
+                "SELECT member_project, member_name FROM group_members"
+                " WHERE group_project=? AND group_name=? ORDER BY member_project, member_name",
+                (group_project, group),
             ).fetchall()
-        return [r["member_name"] for r in rows]
+        return [f"{r['member_name']}@{r['member_project']}" for r in rows]
 
-    def _group_purge(self, name: str):
+    def _group_purge(self, project: str, name: str):
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 cnt = conn.execute(
-                    "SELECT COUNT(*) c FROM messages WHERE recipient=?", (name,)
+                    "SELECT COUNT(*) c FROM messages WHERE recipient_project=? AND recipient=?",
+                    (project, name),
                 ).fetchone()["c"]
-                conn.execute("DELETE FROM messages WHERE recipient=?", (name,))
-                conn.execute("DELETE FROM groups WHERE name=?", (name,))
+                conn.execute(
+                    "DELETE FROM messages WHERE recipient_project=? AND recipient=?",
+                    (project, name),
+                )
+                conn.execute("DELETE FROM groups WHERE project=? AND name=?", (project, name))
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
         return {"ok": True, "purged": cnt}
 
-    def _rename(self, old: str, new: str):
+    def _rename(self, project: str, old: str, new: str):
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                if not conn.execute("SELECT 1 FROM sessions WHERE name=?", (old,)).fetchone():
+                if not conn.execute(
+                    "SELECT 1 FROM sessions WHERE project=? AND name=?", (project, old)
+                ).fetchone():
                     conn.execute("ROLLBACK")
-                    return {"error": f"no such session: {old}"}
-                if conn.execute("SELECT 1 FROM sessions WHERE name=?", (new,)).fetchone():
+                    return {"error": f"no such session: {old}@{project}"}
+                if conn.execute(
+                    "SELECT 1 FROM sessions WHERE project=? AND name=?", (project, new)
+                ).fetchone():
                     conn.execute("ROLLBACK")
-                    return {"error": f"name already taken: {new}"}
+                    return {"error": f"name already taken: {new}@{project}"}
 
-                conn.execute("UPDATE sessions SET name=? WHERE name=?", (new, old))
-                r1 = conn.execute("UPDATE messages SET sender=? WHERE sender=?", (new, old))
-                r2 = conn.execute("UPDATE messages SET recipient=? WHERE recipient=?", (new, old))
+                conn.execute(
+                    "UPDATE sessions SET name=? WHERE project=? AND name=?",
+                    (new, project, old),
+                )
+                r1 = conn.execute(
+                    "UPDATE messages SET sender=? WHERE sender_project=? AND sender=?",
+                    (new, project, old),
+                )
+                r2 = conn.execute(
+                    "UPDATE messages SET recipient=? WHERE recipient_project=? AND recipient=?",
+                    (new, project, old),
+                )
                 messages_migrated = r1.rowcount + r2.rowcount
 
                 conn.execute("COMMIT")
-                return {"ok": True, "old": old, "new": new, "messages_migrated": messages_migrated}
+                return {"ok": True, "project": project, "old": old, "new": new,
+                        "messages_migrated": messages_migrated}
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
 
-    def _delete(self, self_name, peer):
-        clause, params = _conversation_clause(self_name, peer)
+    def _delete(self, self_project: str, self_name: str, peer_project: str, peer_name: str):
+        clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -1046,35 +1160,21 @@ class Handler(BaseHTTPRequestHandler):
 
 # ---------- mDNS ----------
 
-# Explicit LAN ranges. We do NOT use ipaddress.is_private to exclude tailscale:
-# Python 3.13 classifies 100.64.0.0/10 as is_private=True, so that check would
-# happily pick the tailscale CGNAT address. Match the RFC1918 ranges explicitly
-# and exclude the CGNAT block by hand.
 _RFC1918 = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
 ]
-_CGNAT = ipaddress.ip_network("100.64.0.0/10")  # tailscale et al.
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
 def _candidate_ips() -> set[str]:
-    """Enumerate every local IPv4 address.
-
-    Uses ifaddr (a zeroconf dependency, so always present here) to list ALL
-    interface addresses directly. Route-based probes — connect("8.8.8.8") or
-    getaddrinfo(hostname) — are useless on a tailscale host: the default route
-    points at the tailscale interface, so they only ever surface the 100.x CGNAT
-    address and never see the LAN NIC. We fall back to a probe only if ifaddr
-    somehow can't be imported.
-    """
     candidates: set[str] = set()
     try:
         import ifaddr
-
         for adapter in ifaddr.get_adapters():
             for ip in adapter.ips:
-                if isinstance(ip.ip, str):  # str → IPv4; IPv6 comes as a tuple
+                if isinstance(ip.ip, str):
                     candidates.add(ip.ip)
     except Exception:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1089,11 +1189,6 @@ def _candidate_ips() -> set[str]:
 
 
 def pick_advertise_ip() -> str:
-    """Pick the IP to broadcast over mDNS, preferring the LAN address.
-
-    Meeting only ever talks over the LAN, so we enumerate every interface
-    address and prefer RFC1918, explicitly avoiding the tailscale CGNAT block.
-    """
     override = os.environ.get("MEETING_ADVERTISE_IP")
     if override:
         return override
@@ -1109,10 +1204,10 @@ def pick_advertise_ip() -> str:
             return -1
         if any(addr in net for net in _RFC1918):
             return 2
-        return 1  # public / other — last resort for LAN-less hosts
+        return 1
 
     best, best_score = "127.0.0.1", 0
-    for ip in sorted(candidates):  # sorted → deterministic tie-break
+    for ip in sorted(candidates):
         sc = score(ip)
         if sc > best_score:
             best, best_score = ip, sc
@@ -1120,8 +1215,6 @@ def pick_advertise_ip() -> str:
 
 
 def publish_mdns(port: int):
-    """Register this daemon as _agent-meeting._tcp.local. Returns ServiceInfo
-    so caller can unregister on shutdown."""
     from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
     zc = Zeroconf(ip_version=IPVersion.V4Only)
@@ -1141,8 +1234,71 @@ def publish_mdns(port: int):
         server=f"{hostname}.local.",
     )
     zc.register_service(info)
-    print(f"[mDNS] published {instance} → {ip}:{port}", flush=True)
+    print(f"[mDNS] published {instance} -> {ip}:{port}", flush=True)
     return zc, info
+
+
+# ---------- schema ----------
+
+_SCHEMA = """
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS sessions (
+  project       TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  cwd           TEXT,
+  host          TEXT,
+  os            TEXT,
+  registered_at TEXT,
+  last_seen     REAL,
+  role          TEXT NOT NULL DEFAULT 'worker',
+  PRIMARY KEY (project, name)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  sender_project   TEXT NOT NULL,
+  sender           TEXT NOT NULL,
+  recipient_project TEXT NOT NULL,
+  recipient        TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  body             TEXT NOT NULL,
+  ask              TEXT,
+  created_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_project, recipient, id);
+CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender_project, sender, recipient_project, recipient, id);
+
+CREATE TABLE IF NOT EXISTS read_cursors (
+  project     TEXT NOT NULL,
+  member_name TEXT NOT NULL,
+  cursor      INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (project, member_name)
+);
+
+CREATE TABLE IF NOT EXISTS groups (
+  project    TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  creator    TEXT,
+  PRIMARY KEY (project, name)
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+  group_project  TEXT NOT NULL,
+  group_name     TEXT NOT NULL,
+  member_project TEXT NOT NULL,
+  member_name    TEXT NOT NULL,
+  added_at       INTEGER NOT NULL,
+  PRIMARY KEY (group_project, group_name, member_project, member_name),
+  FOREIGN KEY (group_project, group_name) REFERENCES groups(project, name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_project, member_name);
+"""
 
 
 # ---------- main ----------
@@ -1158,51 +1314,11 @@ def main():
         print(f"DB not found at {DB_PATH}. Run `meeting init` first.", file=sys.stderr)
         sys.exit(1)
 
-    # WAL hygiene: compact the WAL file at startup so it doesn't grow unbounded.
     with db() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
-    # Idempotent column additions and table creations.
     with db() as conn:
-        try:
-            conn.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            conn.execute("ALTER TABLE sessions ADD COLUMN os TEXT")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            conn.execute("ALTER TABLE sessions ADD COLUMN project TEXT")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            conn.execute("ALTER TABLE messages ADD COLUMN sender_project TEXT")
-        except sqlite3.OperationalError:
-            pass
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS read_cursors ("
-            "  member_name TEXT PRIMARY KEY,"
-            "  cursor      INTEGER NOT NULL,"
-            "  updated_at  INTEGER NOT NULL)"
-        )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS groups ("
-            "  name TEXT PRIMARY KEY,"
-            "  created_at INTEGER NOT NULL,"
-            "  creator TEXT)"
-        )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS group_members ("
-            "  group_name TEXT NOT NULL,"
-            "  member_name TEXT NOT NULL,"
-            "  added_at INTEGER NOT NULL,"
-            "  PRIMARY KEY (group_name, member_name),"
-            "  FOREIGN KEY (group_name) REFERENCES groups(name) ON DELETE CASCADE)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_name)"
-        )
+        conn.executescript(_SCHEMA)
 
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
@@ -1212,10 +1328,6 @@ def main():
         zc, info = publish_mdns(args.port)
 
     def shutdown(sig, _frame):
-        # IMPORTANT: server.shutdown() blocks until serve_forever() returns.
-        # Calling it directly from the signal handler (which runs in the main
-        # thread alongside serve_forever) causes a deadlock. Offload to a
-        # daemon thread so the main thread stays free to process the shutdown.
         print(f"\n[shutdown] received signal {sig}, unpublishing mDNS + stopping HTTP", flush=True)
         def _do():
             try:
@@ -1232,10 +1344,8 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
 
     def _watchdog(port: int):
-        # Self-connect every 10s; three consecutive failures (~30s) → hard exit.
-        # Uses os._exit to bypass atexit hooks that may themselves be stuck.
         failures = 0
-        time.sleep(15)  # give server time to start
+        time.sleep(15)
         while True:
             try:
                 s = socket.create_connection(("127.0.0.1", port), timeout=5)

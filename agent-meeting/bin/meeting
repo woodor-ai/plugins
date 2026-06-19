@@ -2,24 +2,26 @@
 """
 meeting — peer-to-peer agent messaging CLI backed by SQLite.
 
-Messages are addressed sender→recipient; no room containers exist.
+Messages are addressed sender->recipient; no room containers exist.
 SQLite gives us atomic transactions, version-based optimistic concurrency,
 unlimited history with O(log N) reads, and clean query semantics.
 
 Database: ~/.agent-meeting/db/rooms.db (WAL mode for concurrent readers).
 
-Usage:
-  meeting init                                          # ensure db + schema
-  meeting send <self> <peer> <body> [--kind=X] [--ask=Y]
-  meeting read <self> <peer> [--limit=30] [--since=ID]
-  meeting show <self> <peer> [--limit=30]               # human-readable markdown render
-  meeting turn <self> <peer>                            # whose turn is it
-  meeting list                                          # all sessions
-  meeting online <name> --cwd <cwd>                     # bring this session online (register in the directory)
-  meeting offline <name>                               # take this session offline (remove from the directory)
+Identity: sessions are (project, name) composite. project is derived from
+git rev-parse --show-toplevel basename, or cwd basename for non-git dirs.
+Peer addressing: bare <name> resolves if globally unique across projects;
+ambiguous names require <name>@<project> qualifier.
 
-All write operations are wrapped in BEGIN IMMEDIATE transactions so
-concurrent peer writes serialize cleanly.
+Usage:
+  meeting init
+  meeting send <self>[@project] <peer>[@project] <body> [--kind=X] [--ask=Y]
+  meeting read <self>[@project] <peer>[@project] [--limit=30] [--since=ID]
+  meeting show <self>[@project] <peer>[@project] [--limit=30]
+  meeting turn <self>[@project] <peer>[@project]
+  meeting list
+  meeting online <name> --cwd <cwd>
+  meeting offline <name>
 """
 
 import argparse
@@ -30,6 +32,7 @@ import secrets
 import signal
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -38,13 +41,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# meeting CLI only talks to localhost or direct Tailscale/LAN control hosts —
-# no legitimate path through a user's web proxy. Build a proxy-free opener once
-# so _http_once never inherits HTTP_PROXY / HTTPS_PROXY from the environment.
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-# Data root is agent-neutral so the same plugin works under Claude Code, Codex,
-# or any other host. Override with MEETING_HOME env var when testing.
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
 DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
 
@@ -60,8 +58,6 @@ else:
 
 
 def beacon(event: str):
-    """Fire-and-forget telemetry. Skipped when MEETING_NO_TELEMETRY is set or
-    config.json has telemetry=false (absent/null counts as enabled)."""
     if os.environ.get("MEETING_NO_TELEMETRY"):
         return
 
@@ -91,14 +87,12 @@ def beacon(event: str):
     t = threading.Thread(target=_send, daemon=True)
     t.start()
 
-# Discovery cache: avoid 1-2s mDNS browse on every CLI call.
+
 HOST_CACHE = os.path.join(tempfile.gettempdir(), "meeting-host.cache")
-HOST_CACHE_TTL = 60  # seconds
-MDNS_BROWSE_TIMEOUT = 1.5  # seconds
+HOST_CACHE_TTL = 60
+MDNS_BROWSE_TIMEOUT = 1.5
 SERVICE_TYPE = "_agent-meeting._tcp.local."
 
-# A session is considered online if last_seen is within this many seconds.
-# Monitor sends a WS ping every ~5s; daemon updates last_seen on pong.
 ONLINE_THRESHOLD = 12
 
 _NO_CONTROL_MSG = (
@@ -107,18 +101,75 @@ _NO_CONTROL_MSG = (
 )
 
 
+# ---------- project derivation ----------
+
+def _derive_project(cwd: str) -> str:
+    """Derive project name from git repo root basename, or cwd basename."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            top = result.stdout.strip()
+            if top:
+                return os.path.basename(top)
+    except Exception:
+        pass
+    return os.path.basename(os.path.normpath(cwd))
+
+
+# ---------- name resolution ----------
+
+def _parse_name_arg(raw: str, cwd: str | None = None) -> tuple[str, str]:
+    """Parse a bare name or name@project into (project, name).
+
+    For a bare name with cwd, derive project from cwd.
+    For a bare name without cwd, return ("", name) — caller resolves via daemon.
+    """
+    if "@" in raw:
+        name, _, project = raw.partition("@")
+        return (project, name)
+    if cwd:
+        return (_derive_project(cwd), raw)
+    return ("", raw)
+
+
+def _resolve_peer(host_url: str, raw: str, self_project: str) -> tuple[str, str]:
+    """Resolve a peer name arg to (project, name).
+
+    1. If raw has @project, use it directly.
+    2. Otherwise query /resolve on the daemon.
+       - 0 results: return (self_project, raw) as best-effort (may be historical-only).
+       - 1 result: use it.
+       - 2+ results: require @project qualifier and raise SystemExit.
+    """
+    if "@" in raw:
+        name, _, project = raw.partition("@")
+        return (project, name)
+
+    try:
+        candidates = http("GET", host_url, "/resolve", params={"name": raw})
+    except Exception:
+        return (self_project, raw)
+
+    if not candidates:
+        # Not found in any live session — fall back to same project as self
+        return (self_project, raw)
+    if len(candidates) == 1:
+        return (candidates[0]["project"], raw)
+    # Ambiguous
+    options = ", ".join(f"{raw}@{c['project']}" for c in candidates)
+    raise SystemExit(
+        f"ambiguous name '{raw}' found in multiple projects. Use one of: {options}"
+    )
+
+
 # ---------- LAN discovery (mDNS + HTTP client) ----------
 
 def discover_controls() -> list[dict]:
-    """Enumerate ALL _agent-meeting._tcp instances on the LAN.
-
-    Returns a list of dicts: {url, host, ip, port, version}.
-    host/version are taken from mDNS TXT properties — no extra HTTP call.
-    Empty list when zeroconf is unavailable or nothing found.
-    """
     if os.environ.get("MEETING_HOST"):
         url = os.environ["MEETING_HOST"].rstrip("/")
-        # Parse host/ip/port from the override URL for a consistent return shape.
         parsed = urllib.parse.urlparse(url)
         ip = parsed.hostname or ""
         port = parsed.port or 8765
@@ -161,14 +212,6 @@ def discover_controls() -> list[dict]:
 
 
 def discover_host() -> str | None:
-    """Find a remote daemon to talk to. Returns base URL or None.
-
-    Resolution order:
-      1. MEETING_HOST env var (e.g. http://10.0.0.114:8765) — manual override.
-      2. /tmp/meeting-host.cache — recently discovered URL, valid for HOST_CACHE_TTL.
-      3. mDNS browse via discover_controls() (1.5s).
-      4. None → no control found; caller must error out.
-    """
     if os.environ.get("MEETING_HOST"):
         return os.environ["MEETING_HOST"].rstrip("/")
 
@@ -185,8 +228,6 @@ def discover_host() -> str | None:
     if not controls:
         return None
 
-    # Prefer the cached "last used" URL if it's still in the discovered set;
-    # otherwise fall back to the first discovered control.
     url = controls[0]["url"]
     try:
         with open(HOST_CACHE, "w") as f:
@@ -204,12 +245,6 @@ def _invalidate_host_cache():
 
 
 def _resolve_host(explicit: str | None = None) -> str:
-    """Return the control URL to use for this command, or raise SystemExit.
-
-    If explicit is given (from --host flag), use it directly.
-    Otherwise call discover_host(). Raises SystemExit with a clear Chinese
-    error message when no control is found.
-    """
     if explicit:
         return explicit.rstrip("/")
     url = discover_host()
@@ -219,11 +254,6 @@ def _resolve_host(explicit: str | None = None) -> str:
 
 
 def _get_auth_token() -> str | None:
-    """Return the auth token to send with requests.
-
-    Priority: MEETING_TOKEN env var > config.json auth_token.
-    Returns None when neither is set (open-mode daemon).
-    """
     env_tok = os.environ.get("MEETING_TOKEN")
     if env_tok:
         return env_tok
@@ -236,7 +266,6 @@ def _get_auth_token() -> str | None:
 
 def _http_once(method: str, host_url: str, path: str,
                params: dict | None, body: dict | None):
-    """Single HTTP attempt. Returns parsed JSON or raw text. Raises on non-2xx."""
     url = host_url + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -259,15 +288,6 @@ def _http_once(method: str, host_url: str, path: str,
 
 def http(method: str, host_url: str, path: str,
          params: dict | None = None, body: dict | None = None):
-    """Call the daemon. Returns parsed JSON or raw text. Raises on non-2xx.
-
-    Catches broken-connection errors (RemoteDisconnected, IncompleteRead,
-    socket.timeout, ConnectionError) in addition to HTTPError/URLError.
-    On a broken-connection error: invalidate host cache, retry once with a
-    freshly discovered host. If that also fails, raise SystemExit — there is
-    no local-SQLite fallback (a missing control is a hard error, see
-    _resolve_host).
-    """
     _BROKEN = (
         _http_client.RemoteDisconnected,
         _http_client.IncompleteRead,
@@ -284,9 +304,6 @@ def http(method: str, host_url: str, path: str,
         _invalidate_host_cache()
         raise SystemExit(f"daemon unreachable at {host_url}: {e.reason}")
     except _BROKEN as e:
-        # Daemon responded but connection died mid-flight (e.g. FD exhaustion
-        # on the server side). Invalidate cache and retry once with a freshly
-        # discovered host.
         _invalidate_host_cache()
         new_host = discover_host()
         if new_host is None:
@@ -300,51 +317,60 @@ SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  sender TEXT NOT NULL,
-  recipient TEXT NOT NULL,
-  kind TEXT NOT NULL,                  -- 开启|回应|总结
-  body TEXT NOT NULL,
-  ask TEXT,                            -- nullable; the **Ask** line of this msg
-  created_at INTEGER NOT NULL,         -- unix seconds
-  sender_project TEXT                  -- project of the sender at send time; nullable for legacy rows
-);
-
-CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
-CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
-
 CREATE TABLE IF NOT EXISTS sessions (
-  name TEXT PRIMARY KEY,
-  cwd TEXT,
-  host TEXT,
+  project       TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  cwd           TEXT,
+  host          TEXT,
+  os            TEXT,
   registered_at TEXT,
-  last_seen REAL,                       -- epoch seconds (float); heartbeat via WS pong
-  role TEXT NOT NULL DEFAULT 'worker',
-  project TEXT                          -- optional project identifier; distinguishes same-name peers across projects
+  last_seen     REAL,
+  role          TEXT NOT NULL DEFAULT 'worker',
+  PRIMARY KEY (project, name)
 );
+
+CREATE TABLE IF NOT EXISTS messages (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  sender_project   TEXT NOT NULL,
+  sender           TEXT NOT NULL,
+  recipient_project TEXT NOT NULL,
+  recipient        TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  body             TEXT NOT NULL,
+  ask              TEXT,
+  created_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_project, recipient, id);
+CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender_project, sender, recipient_project, recipient, id);
 
 CREATE TABLE IF NOT EXISTS read_cursors (
-  member_name TEXT PRIMARY KEY,
+  project     TEXT NOT NULL,
+  member_name TEXT NOT NULL,
   cursor      INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (project, member_name)
 );
 
 CREATE TABLE IF NOT EXISTS groups (
-  name       TEXT PRIMARY KEY,
+  project    TEXT NOT NULL,
+  name       TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  creator    TEXT
+  creator    TEXT,
+  PRIMARY KEY (project, name)
 );
 
 CREATE TABLE IF NOT EXISTS group_members (
-  group_name  TEXT NOT NULL,
-  member_name TEXT NOT NULL,
-  added_at    INTEGER NOT NULL,
-  PRIMARY KEY (group_name, member_name),
-  FOREIGN KEY (group_name) REFERENCES groups(name) ON DELETE CASCADE
+  group_project  TEXT NOT NULL,
+  group_name     TEXT NOT NULL,
+  member_project TEXT NOT NULL,
+  member_name    TEXT NOT NULL,
+  added_at       INTEGER NOT NULL,
+  PRIMARY KEY (group_project, group_name, member_project, member_name),
+  FOREIGN KEY (group_project, group_name) REFERENCES groups(project, name) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_name);
+CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_project, member_name);
 """
 
 
@@ -357,55 +383,10 @@ def connect():
     return db
 
 
-def _conversation_clause(a: str, b: str) -> tuple[str, list]:
-    """Return WHERE clause + params for messages between a and b (both directions)."""
-    clause = "((sender=? AND recipient=?) OR (sender=? AND recipient=?))"
-    return clause, [a, b, b, a]
-
-
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = connect()
     db.executescript(SCHEMA)
-    try:
-        db.execute("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        db.execute("ALTER TABLE sessions ADD COLUMN os TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        db.execute("ALTER TABLE sessions ADD COLUMN project TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        db.execute("ALTER TABLE messages ADD COLUMN sender_project TEXT")
-    except sqlite3.OperationalError:
-        pass
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS read_cursors ("
-        "  member_name TEXT PRIMARY KEY,"
-        "  cursor      INTEGER NOT NULL,"
-        "  updated_at  INTEGER NOT NULL)"
-    )
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS groups ("
-        "  name TEXT PRIMARY KEY,"
-        "  created_at INTEGER NOT NULL,"
-        "  creator TEXT)"
-    )
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS group_members ("
-        "  group_name TEXT NOT NULL,"
-        "  member_name TEXT NOT NULL,"
-        "  added_at INTEGER NOT NULL,"
-        "  PRIMARY KEY (group_name, member_name),"
-        "  FOREIGN KEY (group_name) REFERENCES groups(name) ON DELETE CASCADE)"
-    )
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_name)"
-    )
     db.close()
 
 
@@ -417,15 +398,6 @@ def cmd_init(args):
 
 
 def cmd_send(args):
-    """Insert a message; turn is derived from recipient.
-
-    Body can be passed:
-      - inline: meeting send self peer "hello"
-      - from stdin: echo "hello" | meeting send self peer -
-      - from file: meeting send self peer --body-file=/tmp/reply.md
-    Stdin/file is the safe way when body contains backticks, $(...), or other
-    shell-special chars that would otherwise get interpreted before argv reaches us.
-    """
     if args.body_file:
         with open(args.body_file) as f:
             body = f.read().rstrip("\n")
@@ -437,68 +409,88 @@ def cmd_send(args):
         raise SystemExit("error: body is empty")
 
     host = _resolve_host(getattr(args, "host", None))
-    payload = {"self": args.self, "peer": args.peer, "body": body, "kind": args.kind}
+    cwd = os.getcwd()
+
+    self_project, self_name = _parse_name_arg(args.self_arg, cwd)
+    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+
+    payload = {
+        "self_project": self_project, "self": self_name,
+        "peer_project": peer_project, "peer": peer_name,
+        "body": body, "kind": args.kind,
+    }
     if args.ask:
         payload["ask"] = args.ask
     r = http("POST", host, "/send", body=payload)
     if r.get("turn") is None:
-        print(f"sent: msg_id={r['msg_id']} broadcast→{args.peer}")
+        print(f"sent: msg_id={r['msg_id']} broadcast->{peer_name}@{peer_project}")
     else:
-        print(f"sent: msg_id={r['msg_id']} turn→{r['turn']}")
+        print(f"sent: msg_id={r['msg_id']} turn->{r['turn']}")
     beacon("send")
 
 
 def cmd_read(args):
-    """Print messages as raw rows: id|created_at|sender|sender_project|kind|ask|body."""
     host = _resolve_host(getattr(args, "host", None))
+    cwd = os.getcwd()
+    self_project, self_name = _parse_name_arg(args.self_arg, cwd)
+    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+
     rows = http("GET", host, "/read",
-                params={"self": args.self, "peer": args.peer, "limit": args.limit, "since": args.since})
+                params={"self_project": self_project, "self": self_name,
+                        "peer_project": peer_project, "peer": peer_name,
+                        "limit": args.limit, "since": args.since})
     for r in rows:
         ask = (r.get("ask") or "").replace("\n", " ")
         body = r["body"].replace("\n", "\\n")
-        sender_project = r.get("sender_project") or ""
-        print(f"{r['id']}\t{r['created_at']}\t{r['sender']}\t{sender_project}\t{r['kind']}\t{ask}\t{body}")
+        print(f"{r['id']}\t{r['created_at']}\t{r['sender']}@{r['sender_project']}\t{r['kind']}\t{ask}\t{body}")
 
 
 def cmd_show(args):
-    """Pretty markdown render of recent messages (for human viewing)."""
     host = _resolve_host(getattr(args, "host", None))
+    cwd = os.getcwd()
+    self_project, self_name = _parse_name_arg(args.self_arg, cwd)
+    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+
     text = http("GET", host, "/show",
-                params={"self": args.self, "peer": args.peer, "limit": args.limit})
+                params={"self_project": self_project, "self": self_name,
+                        "peer_project": peer_project, "peer": peer_name,
+                        "limit": args.limit})
     sys.stdout.write(text)
 
 
 def cmd_turn(args):
     host = _resolve_host(getattr(args, "host", None))
-    r = http("GET", host, "/turn", params={"self": args.self, "peer": args.peer})
+    cwd = os.getcwd()
+    self_project, self_name = _parse_name_arg(args.self_arg, cwd)
+    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+
+    r = http("GET", host, "/turn",
+             params={"self_project": self_project, "self": self_name,
+                     "peer_project": peer_project, "peer": peer_name})
     print(r["turn"])
 
 
 def cmd_delete(args):
-    """Clear all messages exchanged with a peer (hard delete, atomic).
-
-    No soft-delete / archive. The caller (SKILL.md) is responsible
-    for confirming with the user before invoking this.
-    """
     host = _resolve_host(getattr(args, "host", None))
-    r = http("DELETE", host, "/conversation", params={"self": args.self, "peer": args.peer})
-    print(f"deleted: {args.self}↔{args.peer} ({r['msg_count']} msgs purged)")
+    cwd = os.getcwd()
+    self_project, self_name = _parse_name_arg(args.self_arg, cwd)
+    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+
+    r = http("DELETE", host, "/conversation",
+             params={"self_project": self_project, "self": self_name,
+                     "peer_project": peer_project, "peer": peer_name})
+    print(f"deleted: {self_name}@{self_project}<->{peer_name}@{peer_project} ({r['msg_count']} msgs purged)")
 
 
 def cmd_online(args):
-    """Bring this session online (register in the central sessions table via daemon HTTP POST /register).
-
-    Conflict: if name already exists and last_seen is within ONLINE_THRESHOLD
-    seconds, refuse unless --force.
-    """
     name = args.name
     cwd = args.cwd
+    project = _derive_project(cwd)
     host_name = socket.gethostname()
 
     explicit_host = getattr(args, "host", None)
     host = _resolve_host(explicit_host)
 
-    # When --host is given explicitly, persist it as the preferred control.
     if explicit_host:
         try:
             with open(HOST_CACHE, "w") as f:
@@ -506,42 +498,48 @@ def cmd_online(args):
         except Exception:
             pass
 
-    project = getattr(args, "project", None)
-    payload = {"name": name, "cwd": cwd, "force": args.force, "role": "director" if args.director else None,
-               "host": host_name, "os": _OS_LABEL, "project": project}
+    payload = {
+        "project": project, "name": name, "cwd": cwd,
+        "force": args.force,
+        "role": "director" if args.director else None,
+        "host": host_name, "os": _OS_LABEL,
+    }
     r = http("POST", host, "/register", body=payload)
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
-    print(f"online: {name} (cwd={cwd}, host={host_name}, project={project or ''})")
+    print(f"online: {name}@{project} (cwd={cwd}, host={host_name})")
     beacon("register")
 
 
 def cmd_rename(args):
-    """Rename a registered session, migrating all its messages."""
     import re
     if not re.fullmatch(r"[A-Za-z0-9-]{2,20}", args.new) or "--" in args.new:
         print(f"invalid name '{args.new}': must be 2-20 chars, only [A-Za-z0-9-], no '--'",
               file=sys.stderr)
         sys.exit(1)
     host = _resolve_host(getattr(args, "host", None))
-    r = http("POST", host, "/rename", body={"old": args.old, "new": args.new})
+    cwd = os.getcwd()
+    project = _derive_project(cwd)
+    r = http("POST", host, "/rename", body={"project": project, "old": args.old, "new": args.new})
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
-    print(f"renamed: {r['old']} → {r['new']} (messages: {r['messages_migrated']})")
+    print(f"renamed: {r['old']}@{r['project']} -> {r['new']}@{r['project']} (messages: {r['messages_migrated']})")
 
 
 def cmd_offline(args):
-    """Take a session offline (remove from the central sessions table). Silent if not present."""
     name = args.name
 
     host = _resolve_host(getattr(args, "host", None))
-    r = http("POST", host, "/unregister", body={"name": name})
+    cwd = os.getcwd()
+    project = _derive_project(cwd)
+
+    r = http("POST", host, "/unregister", body={"project": project, "name": name})
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
-    print(f"offline: {name}")
+    print(f"offline: {name}@{project}")
 
 
 LAUNCHD_LABEL = "com.tommy.agent-meeting"
@@ -575,7 +573,6 @@ def _read_pid(path: str) -> int:
 
 
 def _probe_health() -> dict | None:
-    """GET /health from the local daemon. Returns parsed JSON or None."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{DAEMON_PORT}/health", timeout=5) as r:
             return json.loads(r.read().decode("utf-8"))
@@ -584,12 +581,6 @@ def _probe_health() -> dict | None:
 
 
 def _cmd_daemon_windows(args):
-    """Windows daemon management. The daemon is kept alive by supervisor.py
-    (launched via a user-level logon scheduled task — see session-bootstrap
-    ensure_schtasks). Stop/restart are mediated by the stop sentinel
-    (~/.agent-meeting/daemon.stopped): the supervisor relaunches the daemon on
-    any exit UNLESS the sentinel is present.
-    """
     import subprocess as sp
 
     if args.action == "status":
@@ -613,8 +604,6 @@ def _cmd_daemon_windows(args):
         return
 
     if args.action == "stop":
-        # Authoritative "stay down" signal — write BEFORE killing so the
-        # supervisor sees it and exits instead of relaunching.
         try:
             with open(STOP_SENTINEL, "w") as f:
                 f.write(str(int(time.time())))
@@ -630,15 +619,12 @@ def _cmd_daemon_windows(args):
         return
 
     if args.action == "restart":
-        # Clear the sentinel first so the supervisor is allowed to relaunch.
         try:
             os.remove(STOP_SENTINEL)
         except FileNotFoundError:
             pass
-        # Make sure a supervisor is alive (it owns relaunch); kick the task if not.
         if not _win_pid_alive(_read_pid(_SUPERVISOR_PID_FILE)):
             sp.run(["schtasks", "/Run", "/TN", SCHTASKS_TN], capture_output=True)
-        # Kill the current daemon; the supervisor revives a fresh one within a tick.
         dpid = _read_pid(_DAEMON_PID_FILE)
         if dpid > 0:
             sp.run(["taskkill", "/F", "/PID", str(dpid)], capture_output=True)
@@ -647,12 +633,6 @@ def _cmd_daemon_windows(args):
 
 
 def _cmd_daemon_start(sp, system: str):
-    """Bare `meeting daemon` — promote this machine to control node.
-
-    Writes is_host=true into config.json, then installs+starts the daemon via
-    the same path the SessionStart hook uses (launchd on Mac, schtasks+supervisor
-    on Windows, direct launch on Linux).  Idempotent.
-    """
     try:
         with open(_CONFIG_PATH) as f:
             cfg = json.load(f)
@@ -665,7 +645,6 @@ def _cmd_daemon_start(sp, system: str):
 
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("PLUGIN_ROOT") or ""
     if not plugin_root:
-        # Infer from this script's location: plugin/bin/meeting → plugin/
         plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     bootstrap = os.path.join(MEETING_HOME, "bin", "session-bootstrap.py")
@@ -677,7 +656,6 @@ def _cmd_daemon_start(sp, system: str):
             sys.stderr.write(result.stderr)
         print("daemon started: this machine is now the control node (agent-meeting-control)")
     else:
-        # Fallback: launch daemon directly
         daemon_script = os.path.join(plugin_root, "bin", "meeting-daemon")
         if not os.path.exists(daemon_script):
             raise SystemExit(f"daemon script not found: {daemon_script}")
@@ -696,22 +674,6 @@ def _cmd_daemon_start(sp, system: str):
 
 
 def cmd_daemon(args):
-    """Manage the local meeting-daemon.
-
-    Bare `meeting daemon` (no action) → promote this machine to control node.
-
-    Mac: drives the launchd LaunchAgent (com.tommy.agent-meeting). All ops are
-    idempotent. SessionStart hook will reinstall/restart the daemon on next
-    Claude session if is_host=true, so `stop` is effectively "pause until next
-    Claude restart" unless you also set is_host=false in config.json.
-
-    Windows: drives the user-level logon scheduled task (agent-meeting-daemon)
-    + supervisor.py via a stop sentinel. See _cmd_daemon_windows.
-
-    Linux: not implemented — the daemon there is session-bound and dies with the
-    SessionStart hook's parent shell. We print an error instead of pretending to
-    manage it.
-    """
     import platform
     import subprocess as sp
     system = platform.system()
@@ -736,13 +698,11 @@ def cmd_daemon(args):
             print(f"daemon: not registered with launchd ({LAUNCHD_LABEL})")
             print(f"plist on disk: {'yes' if os.path.exists(plist) else 'no'}")
             return
-        # Pull a few interesting fields out of the print output
         keys = ("state =", "pid =", "program =", "path =")
         for line in r.stdout.splitlines():
             line = line.strip()
             if any(k in line for k in keys):
                 print(line)
-        # 额外检查：本机应为 control，但 daemon 是否真在监听 :8765
         try:
             cfg = json.load(open(_CONFIG_PATH))
         except Exception:
@@ -751,7 +711,7 @@ def cmd_daemon(args):
             healthy = _probe_health() is not None
             if not healthy:
                 print(
-                    f"\n⚠ 本机应为 control，但 daemon 未在监听 :{DAEMON_PORT}。"
+                    f"\n本机应为 control，但 daemon 未在监听 :{DAEMON_PORT}。"
                     " 修复：launchctl 自愈未生效时跑 'meeting daemon restart'，"
                     " 或重开 Claude 会话触发自动拉起。"
                     " 详见 ~/.agent-meeting/logs/bootstrap.log"
@@ -760,8 +720,7 @@ def cmd_daemon(args):
     elif args.action == "stop":
         r = sp.run(["launchctl", "bootout", target], capture_output=True, text=True)
         if r.returncode == 0 or "Could not find" in (r.stderr or "") or "No such process" in (r.stderr or ""):
-            # Poll until the service is really gone (daemon's SIGTERM handler unpublishes mDNS first).
-            for _ in range(20):  # max ~4s
+            for _ in range(20):
                 time.sleep(0.2)
                 p = sp.run(["launchctl", "print", target], capture_output=True)
                 if p.returncode != 0:
@@ -773,8 +732,6 @@ def cmd_daemon(args):
             sys.exit(1)
 
     elif args.action == "restart":
-        # `kickstart -k` is launchd's atomic kill+respawn for an already-loaded service.
-        # If the service isn't loaded yet, fall back to bootstrap.
         loaded = sp.run(["launchctl", "print", target], capture_output=True).returncode == 0
         if loaded:
             r = sp.run(["launchctl", "kickstart", "-k", target], capture_output=True, text=True)
@@ -783,7 +740,6 @@ def cmd_daemon(args):
                 return
             print(f"kickstart failed: {r.stderr.strip()}", file=sys.stderr)
             sys.exit(1)
-        # Not loaded — bootstrap fresh
         if not os.path.exists(plist):
             print(f"plist missing: {plist}", file=sys.stderr)
             print("Run a Claude SessionStart with is_host=true to install it first.", file=sys.stderr)
@@ -797,7 +753,6 @@ def cmd_daemon(args):
 
 
 def cmd_telemetry(args):
-    """Read/write the telemetry flag in config.json."""
     try:
         with open(_CONFIG_PATH) as f:
             cfg = json.load(f)
@@ -813,7 +768,7 @@ def cmd_telemetry(args):
         env_override = bool(os.environ.get("MEETING_NO_TELEMETRY"))
         print(f"telemetry: {config_state} (config.json)")
         if env_override:
-            print("MEETING_NO_TELEMETRY is set — environment variable overrides config and forces telemetry off")
+            print("MEETING_NO_TELEMETRY is set -- environment variable overrides config and forces telemetry off")
     elif args.action == "off":
         cfg["telemetry"] = False
         with open(_CONFIG_PATH, "w") as f:
@@ -827,7 +782,6 @@ def cmd_telemetry(args):
 
 
 def cmd_token(args):
-    """Generate, set, or clear the shared auth token in config.json."""
     try:
         with open(_CONFIG_PATH) as f:
             cfg = json.load(f)
@@ -840,7 +794,7 @@ def cmd_token(args):
         cfg.pop("auth_token", None)
         with open(_CONFIG_PATH, "w") as f:
             json.dump(cfg, f, indent=2)
-        print("auth_token cleared — daemon is now open (no auth required)")
+        print("auth_token cleared -- daemon is now open (no auth required)")
         return
 
     if value:
@@ -850,11 +804,10 @@ def cmd_token(args):
         print(f"auth_token set: {value}")
         return
 
-    # No value: show existing or generate a new one.
     existing = cfg.get("auth_token")
     if existing:
         print(existing)
-        print("(existing token — distribute this to every client machine)")
+        print("(existing token -- distribute this to every client machine)")
         return
 
     new_token = secrets.token_urlsafe(32)
@@ -869,12 +822,7 @@ def cmd_token(args):
     )
 
 
-_GROUP_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,18}[A-Za-z0-9]$|^[A-Za-z0-9]{2}$")
-_GROUP_NO_CONSECUTIVE_HYPHENS = __import__("re").compile(r"--")
-
-
 def _validate_group_name(name: str) -> str | None:
-    """Return error string if group name is invalid, else None."""
     import re
     if not re.fullmatch(r"[A-Za-z0-9-]{2,20}", name) or "--" in name:
         return f"invalid group name '{name}': must be 2-20 chars, only [A-Za-z0-9-], no '--'"
@@ -883,6 +831,8 @@ def _validate_group_name(name: str) -> str | None:
 
 def cmd_group(args):
     host = _resolve_host(getattr(args, "host", None))
+    cwd = os.getcwd()
+    project = _derive_project(cwd)
 
     if args.group_cmd == "create":
         err = _validate_group_name(args.group_name)
@@ -891,43 +841,68 @@ def cmd_group(args):
             sys.exit(1)
         members = [m.strip() for m in args.members.split(",") if m.strip()]
         r = http("POST", host, "/group/create",
-                 body={"name": args.group_name, "members": members,
-                       "creator": getattr(args, "creator", None)})
+                 body={"project": project, "name": args.group_name,
+                       "members": members, "creator": getattr(args, "creator", None)})
         if r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
-        print(f"group created: {args.group_name} members={members}")
+        print(f"group created: {args.group_name}@{project} members={r.get('members', members)}")
 
     elif args.group_cmd == "add":
         err = _validate_group_name(args.member)
         if err:
             print(err, file=sys.stderr)
             sys.exit(1)
+        # member may carry @project
+        if "@" in args.member:
+            mname, _, mproj = args.member.partition("@")
+        else:
+            mname, mproj = args.member, project
         r = http("POST", host, "/group/add",
-                 body={"group": args.group_name, "member": args.member})
+                 body={"group_project": project, "group": args.group_name,
+                       "member_project": mproj, "member": mname})
         if r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
-        print(f"added {args.member} to {args.group_name}")
+        print(f"added {mname}@{mproj} to {args.group_name}@{project}")
 
     elif args.group_cmd == "remove":
+        if "@" in args.member:
+            mname, _, mproj = args.member.partition("@")
+        else:
+            mname, mproj = args.member, project
         r = http("POST", host, "/group/remove",
-                 body={"group": args.group_name, "member": args.member})
+                 body={"group_project": project, "group": args.group_name,
+                       "member_project": mproj, "member": mname})
         if r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
-        print(f"removed {args.member} from {args.group_name}")
+        print(f"removed {mname}@{mproj} from {args.group_name}@{project}")
+
+    elif args.group_cmd == "rename":
+        r = http("POST", host, "/group/rename",
+                 body={"project": project, "old": args.old_name, "new": args.new_name})
+        if r.get("error"):
+            print(r["error"], file=sys.stderr)
+            sys.exit(1)
+        print(f"group renamed: {args.old_name} -> {args.new_name} in project {project} ({r.get('messages_migrated', 0)} messages migrated)")
 
     elif args.group_cmd == "list":
         params = {}
         if getattr(args, "member", None):
-            params["member"] = args.member
+            if "@" in args.member:
+                mname, _, mproj = args.member.partition("@")
+            else:
+                mname, mproj = args.member, project
+            params["member_project"] = mproj
+            params["member"] = mname
         r = http("GET", host, "/group/list", params=params or None)
         for g in r:
-            print(f"{g['name']}\t{g.get('member_count', '')}")
+            print(f"{g['name']}@{g['project']}\t{g.get('member_count', '')}")
 
     elif args.group_cmd == "members":
-        r = http("GET", host, "/group/members", params={"group": args.group_name})
+        r = http("GET", host, "/group/members",
+                 params={"group_project": project, "group": args.group_name})
         if isinstance(r, dict) and r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
@@ -935,23 +910,17 @@ def cmd_group(args):
             print(m)
 
     elif args.group_cmd == "delete":
-        r = http("DELETE", host, "/group", params={"name": args.group_name})
+        r = http("DELETE", host, "/group",
+                 params={"project": project, "name": args.group_name})
         if r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
-        print(f"group deleted: {args.group_name} ({r.get('purged', 0)} messages purged)")
+        print(f"group deleted: {args.group_name}@{project} ({r.get('purged', 0)} messages purged)")
 
 
 def cmd_controls(args):
-    """List all discovered control nodes.
-
-    Default: human-readable text blocks.
-    --json: JSON array; each element has host/ip/port/url/version/is_current.
-    "未发现 control 节点" (or []) when nothing is found.
-    """
     controls = discover_controls()
 
-    # Determine the "current" (last used) URL from the cache.
     current_url = None
     if os.path.exists(HOST_CACHE):
         try:
@@ -982,7 +951,7 @@ def cmd_controls(args):
 
     for i, c in enumerate(controls):
         is_current = c["url"] == current_url
-        current_tag = "  ★ 当前" if is_current else ""
+        current_tag = "  当前" if is_current else ""
         print(f"control {i + 1}{current_tag}")
         print(f"  host:    {c['host'] or '(unknown)'}")
         print(f"  ip:port: {c['ip']}:{c['port']}")
@@ -990,11 +959,6 @@ def cmd_controls(args):
         print(f"  version: {c['version'] or '(unknown)'}")
 
 def cmd_stop(args):
-    """Stop the local monitor process for a session by sending SIGTERM.
-
-    Purely local — reads the pidfile written by monitor.py at startup.
-    The monitor's own cleanup handler unregisters and clears the statusline cache.
-    """
     run_dir = os.path.join(MEETING_HOME, "run")
     pid_file = os.path.join(run_dir, f"{args.name}.pid")
 
@@ -1009,7 +973,6 @@ def cmd_stop(args):
         print(f"could not read pidfile: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Probe liveness before sending signal.
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1022,7 +985,6 @@ def cmd_stop(args):
 
     os.kill(pid, signal.SIGTERM)
 
-    # Wait up to ~3s for the process to exit.
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
         time.sleep(0.1)
@@ -1036,15 +998,10 @@ def cmd_stop(args):
 
 
 def cmd_list(args):
-    """List all session names with liveness status and message count.
-
-    Columns: <status>\t<name>\t<msgs>\t<role>\t<cwd>\t<host>\t<os>\t<project>
-      status: online | empty | historical
-    """
     host = _resolve_host(getattr(args, "host", None))
     rows = http("GET", host, "/list")
     for r in rows:
-        print(f"{r['status']}\t{r['name']}\t{r['msgs']}\t{r.get('role') or 'worker'}\t{r.get('cwd') or ''}\t{r.get('host') or ''}\t{r.get('os') or ''}\t{r.get('project') or ''}")
+        print(f"{r['status']}\t{r['name']}\t{r['project']}\t{r['msgs']}\t{r.get('role') or 'worker'}\t{r.get('cwd') or ''}\t{r.get('host') or ''}\t{r.get('os') or ''}")
 
 
 # ---------- main ----------
@@ -1056,54 +1013,45 @@ def main():
     sub.add_parser("init").set_defaults(func=cmd_init)
 
     s = sub.add_parser("send", help="insert a message and flip turn")
-    s.add_argument("self", help="sender name (your registered meeting name)")
-    s.add_argument("peer", help="peer name")
+    s.add_argument("self_arg", metavar="self", help="sender name[@project]")
+    s.add_argument("peer", help="peer name[@project]")
     s.add_argument("body", nargs="?", default=None,
                    help="message body inline; or `-` to read stdin; ignored when --body-file given")
-    s.add_argument("--body-file", default=None,
-                   help="path to a file containing the body — use this for any body with backticks, $(...), or other shell-special chars")
-    s.add_argument("--kind", default="回应",
-                   help="message kind/header, typically 开启|回应|总结 but any string allowed")
-    s.add_argument("--ask", default=None, help="optional one-line ask")
-    s.add_argument("--host", default=None,
-                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
+    s.add_argument("--body-file", default=None)
+    s.add_argument("--kind", default="回应")
+    s.add_argument("--ask", default=None)
+    s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("read", help="dump messages as TSV rows")
-    s.add_argument("self")
+    s.add_argument("self_arg", metavar="self")
     s.add_argument("peer")
     s.add_argument("--limit", type=int, default=30)
-    s.add_argument("--since", type=int, default=0, help="only msgs with id > since")
-    s.add_argument("--host", default=None,
-                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
+    s.add_argument("--since", type=int, default=0)
+    s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_read)
 
     s = sub.add_parser("show", help="pretty markdown render")
-    s.add_argument("self")
+    s.add_argument("self_arg", metavar="self")
     s.add_argument("peer")
     s.add_argument("--limit", type=int, default=30)
-    s.add_argument("--host", default=None,
-                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
+    s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_show)
 
     s = sub.add_parser("turn", help="print current turn-holder")
-    s.add_argument("self")
+    s.add_argument("self_arg", metavar="self")
     s.add_argument("peer")
-    s.add_argument("--host", default=None,
-                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
+    s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_turn)
 
-    s = sub.add_parser("list",
-                       help="list all session names with status (online/empty/historical) + msg count")
-    s.add_argument("--host", default=None,
-                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
+    s = sub.add_parser("list", help="list all session names with status + msg count")
+    s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_list)
 
     s = sub.add_parser("delete", help="clear all messages with a peer (hard delete, atomic)")
-    s.add_argument("self")
+    s.add_argument("self_arg", metavar="self")
     s.add_argument("peer")
-    s.add_argument("--host", default=None,
-                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
+    s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_delete)
 
     s = sub.add_parser("daemon",
@@ -1112,74 +1060,68 @@ def main():
     s.set_defaults(func=cmd_daemon)
 
     s = sub.add_parser("controls",
-                       help="list all discovered control nodes (human-readable, or --json for structured output)")
-    s.add_argument("--json", action="store_true", default=False,
-                   help="output JSON array instead of human-readable text")
+                       help="list all discovered control nodes")
+    s.add_argument("--json", action="store_true", default=False)
     s.set_defaults(func=cmd_controls)
 
-    s = sub.add_parser("telemetry",
-                       help="view or change the telemetry opt-in/out setting in config.json")
+    s = sub.add_parser("telemetry")
     s.add_argument("action", choices=["on", "off", "status"])
     s.set_defaults(func=cmd_telemetry)
 
-    s = sub.add_parser("token",
-                       help="manage the shared auth token (host: generate; client: paste host token; clear: disable auth)")
-    s.add_argument("value", nargs="?", default=None,
-                   help="token value to write, or 'clear' to remove it; omit to show/generate")
+    s = sub.add_parser("token")
+    s.add_argument("value", nargs="?", default=None)
     s.set_defaults(func=cmd_token)
 
     s = sub.add_parser("online",
                        help="bring this session online (register in the directory)")
     s.add_argument("name", help="session name to bring online")
-    s.add_argument("--cwd", required=True, help="working directory of this session")
-    s.add_argument("--force", action="store_true",
-                   help="override even if monitor is still running")
-    s.add_argument("--director", action="store_true",
-                   help="register this session as a director (default: worker)")
-    s.add_argument("--project", default=None,
-                   help="project identifier for this session; used to distinguish same-name peers across projects")
-    s.add_argument("--host", default=None,
-                   help="explicitly specify control URL (e.g. http://10.0.0.5:8765); saved as preferred control")
+    s.add_argument("--cwd", required=True)
+    s.add_argument("--force", action="store_true")
+    s.add_argument("--director", action="store_true")
+    s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_online)
 
     s = sub.add_parser("offline",
-                       help="take this session offline (remove from the directory via the control daemon)")
-    s.add_argument("name", help="session name to take offline")
+                       help="take this session offline")
+    s.add_argument("name")
+    s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_offline)
 
     sp = sub.add_parser("stop",
-                       help="stop the local monitor process for a session (sends SIGTERM; monitor self-unregisters)")
+                       help="stop the local monitor process for a session")
     sp.add_argument("name")
     sp.set_defaults(func=cmd_stop)
 
     rp = sub.add_parser("rename",
-                        help="rename a session and migrate all its messages")
+                        help="rename a session and migrate all its messages (same project only)")
     rp.add_argument("old", help="current session name")
     rp.add_argument("new", help="new session name (2-20 chars, [A-Za-z0-9-], no '--')")
-    rp.add_argument("--host", default=None,
-                    help="explicitly specify control URL (e.g. http://10.0.0.5:8765); applies to this command only, not persisted")
+    rp.add_argument("--host", default=None)
     rp.set_defaults(func=cmd_rename)
 
     gp = sub.add_parser("group", help="manage groups")
-    gp.add_argument("--host", default=None,
-                    help="explicitly specify control URL; applies to this command only, not persisted")
+    gp.add_argument("--host", default=None)
     gsub = gp.add_subparsers(dest="group_cmd", required=True)
 
     gc = gsub.add_parser("create", help="create a group")
     gc.add_argument("group_name")
-    gc.add_argument("--members", required=True, help="comma-separated member names")
+    gc.add_argument("--members", required=True, help="comma-separated member names (bare or name@project)")
     gc.add_argument("--creator", default=None)
 
     ga = gsub.add_parser("add", help="add a member to a group")
     ga.add_argument("group_name")
-    ga.add_argument("member")
+    ga.add_argument("member", help="member name (bare or name@project)")
 
     gr = gsub.add_parser("remove", help="remove a member from a group")
     gr.add_argument("group_name")
-    gr.add_argument("member")
+    gr.add_argument("member", help="member name (bare or name@project)")
+
+    gnr = gsub.add_parser("rename", help="rename a group (cascades group_members + messages)")
+    gnr.add_argument("old_name")
+    gnr.add_argument("new_name")
 
     gl = gsub.add_parser("list", help="list groups (optionally filter by member)")
-    gl.add_argument("--member", default=None)
+    gl.add_argument("--member", default=None, help="filter by member (bare or name@project)")
 
     gm = gsub.add_parser("members", help="list members of a group")
     gm.add_argument("group_name")
