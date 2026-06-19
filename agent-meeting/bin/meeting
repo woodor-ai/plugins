@@ -307,7 +307,8 @@ CREATE TABLE IF NOT EXISTS messages (
   kind TEXT NOT NULL,                  -- 开启|回应|总结
   body TEXT NOT NULL,
   ask TEXT,                            -- nullable; the **Ask** line of this msg
-  created_at INTEGER NOT NULL          -- unix seconds
+  created_at INTEGER NOT NULL,         -- unix seconds
+  sender_project TEXT                  -- project of the sender at send time; nullable for legacy rows
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
@@ -319,7 +320,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   host TEXT,
   registered_at TEXT,
   last_seen REAL,                       -- epoch seconds (float); heartbeat via WS pong
-  role TEXT NOT NULL DEFAULT 'worker'
+  role TEXT NOT NULL DEFAULT 'worker',
+  project TEXT                          -- optional project identifier; distinguishes same-name peers across projects
 );
 
 CREATE TABLE IF NOT EXISTS read_cursors (
@@ -371,6 +373,14 @@ def init_db():
         pass
     try:
         db.execute("ALTER TABLE sessions ADD COLUMN os TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        db.execute("ALTER TABLE sessions ADD COLUMN project TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        db.execute("ALTER TABLE messages ADD COLUMN sender_project TEXT")
     except sqlite3.OperationalError:
         pass
     db.execute(
@@ -439,14 +449,15 @@ def cmd_send(args):
 
 
 def cmd_read(args):
-    """Print messages as raw rows: id|created_at|sender|kind|ask|body."""
+    """Print messages as raw rows: id|created_at|sender|sender_project|kind|ask|body."""
     host = _resolve_host(getattr(args, "host", None))
     rows = http("GET", host, "/read",
                 params={"self": args.self, "peer": args.peer, "limit": args.limit, "since": args.since})
     for r in rows:
         ask = (r.get("ask") or "").replace("\n", " ")
         body = r["body"].replace("\n", "\\n")
-        print(f"{r['id']}\t{r['created_at']}\t{r['sender']}\t{r['kind']}\t{ask}\t{body}")
+        sender_project = r.get("sender_project") or ""
+        print(f"{r['id']}\t{r['created_at']}\t{r['sender']}\t{sender_project}\t{r['kind']}\t{ask}\t{body}")
 
 
 def cmd_show(args):
@@ -495,13 +506,14 @@ def cmd_online(args):
         except Exception:
             pass
 
+    project = getattr(args, "project", None)
     payload = {"name": name, "cwd": cwd, "force": args.force, "role": "director" if args.director else None,
-               "host": host_name, "os": _OS_LABEL}
+               "host": host_name, "os": _OS_LABEL, "project": project}
     r = http("POST", host, "/register", body=payload)
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
-    print(f"online: {name} (cwd={cwd}, host={host_name})")
+    print(f"online: {name} (cwd={cwd}, host={host_name}, project={project or ''})")
     beacon("register")
 
 
@@ -1026,13 +1038,13 @@ def cmd_stop(args):
 def cmd_list(args):
     """List all session names with liveness status and message count.
 
-    Columns: <status>\t<name>\t<msgs>
+    Columns: <status>\t<name>\t<msgs>\t<role>\t<cwd>\t<host>\t<os>\t<project>
       status: online | empty | historical
     """
     host = _resolve_host(getattr(args, "host", None))
     rows = http("GET", host, "/list")
     for r in rows:
-        print(f"{r['status']}\t{r['name']}\t{r['msgs']}\t{r.get('role') or 'worker'}\t{r.get('cwd') or ''}\t{r.get('host') or ''}\t{r.get('os') or ''}")
+        print(f"{r['status']}\t{r['name']}\t{r['msgs']}\t{r.get('role') or 'worker'}\t{r.get('cwd') or ''}\t{r.get('host') or ''}\t{r.get('os') or ''}\t{r.get('project') or ''}")
 
 
 # ---------- main ----------
@@ -1124,6 +1136,8 @@ def main():
                    help="override even if monitor is still running")
     s.add_argument("--director", action="store_true",
                    help="register this session as a director (default: worker)")
+    s.add_argument("--project", default=None,
+                   help="project identifier for this session; used to distinguish same-name peers across projects")
     s.add_argument("--host", default=None,
                    help="explicitly specify control URL (e.g. http://10.0.0.5:8765); saved as preferred control")
     s.set_defaults(func=cmd_online)

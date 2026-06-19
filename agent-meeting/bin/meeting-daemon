@@ -203,7 +203,7 @@ def _parse_mentions(body: str, member_set: set) -> set:
     return tokens & member_set
 
 
-def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None, body: str = ""):
+def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None, body: str = "", sender_project: str | None = None):
     """Push a message to all live/draining subscribers for recipient (or group members).
 
     Called after DB COMMIT. Uses per-subscriber send_lock + high_water_mark
@@ -238,6 +238,7 @@ def _ws_fanout(msg_id: int, recipient: str, sender: str, ask: str | None, body: 
         "type": "msg",
         "msg_id": msg_id,
         "sender": sender,
+        "sender_project": sender_project or "",
         "ask": ask or "",
         "group": group_field,
         "phase": "live",
@@ -574,7 +575,7 @@ class Handler(BaseHTTPRequestHandler):
 
             with db() as conn:
                 rows = conn.execute(
-                    "SELECT id, sender, recipient, ask FROM messages"
+                    "SELECT id, sender, recipient, ask, sender_project FROM messages"
                     " WHERE (recipient=? OR recipient IN"
                     "   (SELECT group_name FROM group_members WHERE member_name=?))"
                     " AND id>? ORDER BY id ASC LIMIT 500",
@@ -632,6 +633,7 @@ class Handler(BaseHTTPRequestHandler):
                     "type": "msg",
                     "msg_id": row["id"],
                     "sender": row["sender"],
+                    "sender_project": row["sender_project"] or "",
                     "ask": row["ask"] or "",
                     "group": group_field,
                     "phase": "backlog",
@@ -662,7 +664,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/register":
                 return self._json(200, self._register(
                     body["name"], body.get("cwd"), body.get("force", False), body.get("role"),
-                    body.get("host"), body.get("os")
+                    body.get("host"), body.get("os"), body.get("project")
                 ))
             if path == "/unregister":
                 return self._json(200, self._unregister(body["name"]))
@@ -715,7 +717,7 @@ class Handler(BaseHTTPRequestHandler):
                 r["sender"]: r["cnt"]
                 for r in conn.execute("SELECT sender, COUNT(*) AS cnt FROM messages GROUP BY sender")
             }
-            sessions = conn.execute("SELECT name, last_seen, cwd, role, host, os FROM sessions").fetchall()
+            sessions = conn.execute("SELECT name, last_seen, cwd, role, host, os, project FROM sessions").fetchall()
 
         online_names = set()
         empty_names = set()
@@ -723,11 +725,13 @@ class Handler(BaseHTTPRequestHandler):
         role_by_name = {}
         host_by_name = {}
         os_by_name = {}
+        project_by_name = {}
         for s in sessions:
             cwd_by_name[s["name"]] = s["cwd"]
             role_by_name[s["name"]] = s["role"]
             host_by_name[s["name"]] = s["host"]
             os_by_name[s["name"]] = s["os"]
+            project_by_name[s["name"]] = s["project"]
             last_seen = s["last_seen"] or 0
             if now - last_seen <= ONLINE_THRESHOLD:
                 online_names.add(s["name"])
@@ -740,20 +744,22 @@ class Handler(BaseHTTPRequestHandler):
         for n in sorted(online_names, key=lambda n: -msg_counts.get(n, 0)):
             rows.append({"status": "online", "name": n, "msgs": msg_counts.get(n, 0),
                          "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n),
-                         "host": host_by_name.get(n), "os": os_by_name.get(n)})
+                         "host": host_by_name.get(n), "os": os_by_name.get(n),
+                         "project": project_by_name.get(n)})
         for n in sorted(empty_names, key=lambda n: -msg_counts.get(n, 0)):
             rows.append({"status": "empty", "name": n, "msgs": msg_counts.get(n, 0),
                          "role": role_by_name.get(n) or "worker", "cwd": cwd_by_name.get(n),
-                         "host": host_by_name.get(n), "os": os_by_name.get(n)})
+                         "host": host_by_name.get(n), "os": os_by_name.get(n),
+                         "project": project_by_name.get(n)})
         for n in sorted(historical_names, key=lambda n: -msg_counts.get(n, 0)):
             rows.append({"status": "historical", "name": n, "msgs": msg_counts.get(n, 0),
-                         "role": "worker", "cwd": None, "host": None, "os": None})
+                         "role": "worker", "cwd": None, "host": None, "os": None, "project": None})
         return rows
 
     # _register and _unregister are unchanged
 
     def _register(self, name: str, cwd: str | None, force: bool, role: str | None = None,
-                  host: str | None = None, os_label: str | None = None):
+                  host: str | None = None, os_label: str | None = None, project: str | None = None):
         now = time.time()
         with db() as conn:
             existing = conn.execute("SELECT last_seen FROM sessions WHERE name=?", (name,)).fetchone()
@@ -767,11 +773,11 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     }
             conn.execute(
-                "INSERT INTO sessions (name, cwd, host, os, registered_at, last_seen, role) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'worker')) "
+                "INSERT INTO sessions (name, cwd, host, os, registered_at, last_seen, role, project) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'worker'), ?) "
                 "ON CONFLICT(name) DO UPDATE SET cwd=excluded.cwd, host=excluded.host, os=excluded.os, "
                 "registered_at=excluded.registered_at, last_seen=excluded.last_seen, "
-                "role=COALESCE(?, role)",
-                (name, cwd, host, os_label, str(int(now)), now, role, role),
+                "role=COALESCE(?, role), project=excluded.project",
+                (name, cwd, host, os_label, str(int(now)), now, role, project, role),
             )
         return {"ok": True, "name": name}
 
@@ -806,7 +812,9 @@ class Handler(BaseHTTPRequestHandler):
                 lines = [f"# Group: {peer}\n---\n"]
                 for row in reversed(msgs):
                     ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
-                    lines.append(f"### [{row['sender']} @ {ts}] {row['kind']}")
+                    proj = row["sender_project"] or ""
+                    sender_label = f"{row['sender']}@{proj}" if proj else row["sender"]
+                    lines.append(f"### [{sender_label} @ {ts}] {row['kind']}")
                     lines.append(row["body"])
                     if row["ask"]:
                         lines.append(f"\n**Ask**: {row['ask']}")
@@ -824,7 +832,9 @@ class Handler(BaseHTTPRequestHandler):
                  f"当前发言权: {turn}\n---\n"]
         for row in reversed(msgs):
             ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
-            lines.append(f"### [{row['sender']} @ {ts}] {row['kind']}")
+            proj = row["sender_project"] or ""
+            sender_label = f"{row['sender']}@{proj}" if proj else row["sender"]
+            lines.append(f"### [{sender_label} @ {ts}] {row['kind']}")
             lines.append(row["body"])
             if row["ask"]:
                 lines.append(f"\n**Ask**: {row['ask']}")
@@ -855,10 +865,14 @@ class Handler(BaseHTTPRequestHandler):
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                sender_project_row = conn.execute(
+                    "SELECT project FROM sessions WHERE name=?", (self_name,)
+                ).fetchone()
+                sender_project = sender_project_row["project"] if sender_project_row else None
                 conn.execute(
-                    "INSERT INTO messages (sender, recipient, kind, body, ask, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (self_name, peer, kind, body, ask, int(time.time())),
+                    "INSERT INTO messages (sender, recipient, kind, body, ask, created_at, sender_project) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (self_name, peer, kind, body, ask, int(time.time()), sender_project),
                 )
                 msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 is_grp = _is_group(conn, peer)
@@ -868,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise
 
         # Fanout outside DB transaction — socket IO must not block DB writes.
-        _ws_fanout(msg_id, peer, self_name, ask, body)
+        _ws_fanout(msg_id, peer, self_name, ask, body, sender_project)
         return {"msg_id": msg_id, "turn": None if is_grp else peer}
 
     def _group_create(self, name: str, members: list, creator: str | None):
@@ -1156,6 +1170,14 @@ def main():
             pass
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN os TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN project TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN sender_project TEXT")
         except sqlite3.OperationalError:
             pass
         conn.execute(
