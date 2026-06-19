@@ -849,7 +849,7 @@ def cmd_group(args):
         print(f"group created: {args.group_name}@{project} members={r.get('members', members)}")
 
     elif args.group_cmd == "add":
-        err = _validate_group_name(args.member)
+        err = _validate_group_name(args.group_name)
         if err:
             print(err, file=sys.stderr)
             sys.exit(1)
