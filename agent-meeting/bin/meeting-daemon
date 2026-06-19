@@ -565,22 +565,23 @@ class Handler(BaseHTTPRequestHandler):
                     " WHERE id>?"
                     "  AND ("
                     "   (recipient_project=? AND recipient=?)"
-                    "   OR (recipient_project=? AND recipient IN ("
-                    "     SELECT group_name FROM group_members"
-                    "     WHERE member_project=? AND member_name=?"
-                    "     AND group_project=?"
-                    "   ))"
+                    "   OR EXISTS ("
+                    "     SELECT 1 FROM group_members gm"
+                    "     WHERE gm.member_project=? AND gm.member_name=?"
+                    "       AND gm.group_project=messages.recipient_project"
+                    "       AND gm.group_name=messages.recipient"
+                    "   )"
                     "  )"
                     " ORDER BY id ASC LIMIT 500",
-                    (hwm, sub.project, sub.name, sub.project, sub.project, sub.name, sub.project),
+                    (hwm, sub.project, sub.name, sub.project, sub.name),
                 ).fetchall()
                 group_names: set[str] = set()
                 if rows:
-                    recipients = set(r["recipient"] for r in rows)
-                    for rcp in recipients:
+                    recipients = set((r["recipient_project"], r["recipient"]) for r in rows)
+                    for (rproj, rcp) in recipients:
                         if conn.execute(
                             "SELECT 1 FROM groups WHERE project=? AND name=?",
-                            (sub.project, rcp),
+                            (rproj, rcp),
                         ).fetchone():
                             group_names.add(rcp)
 
@@ -592,15 +593,16 @@ class Handler(BaseHTTPRequestHandler):
                             " WHERE id>?"
                             "  AND ("
                             "   (recipient_project=? AND recipient=?)"
-                            "   OR (recipient_project=? AND recipient IN ("
-                            "     SELECT group_name FROM group_members"
-                            "     WHERE member_project=? AND member_name=?"
-                            "     AND group_project=?"
-                            "   ))"
+                            "   OR EXISTS ("
+                            "     SELECT 1 FROM group_members gm"
+                            "     WHERE gm.member_project=? AND gm.member_name=?"
+                            "       AND gm.group_project=messages.recipient_project"
+                            "       AND gm.group_name=messages.recipient"
+                            "   )"
                             "  )"
                             " LIMIT 1",
                             (sub.high_water_mark, sub.project, sub.name,
-                             sub.project, sub.project, sub.name, sub.project),
+                             sub.project, sub.name),
                         ).fetchone()
                     if not more:
                         sub.state = "live"
@@ -736,10 +738,23 @@ class Handler(BaseHTTPRequestHandler):
             group_rows = conn.execute(
                 "SELECT project FROM groups WHERE name=?", (raw_name,)
             ).fetchall()
-        candidates = [{"project": r["project"], "name": raw_name, "kind": "session"}
-                      for r in session_rows]
-        candidates += [{"project": r["project"], "name": raw_name, "kind": "group"}
-                       for r in group_rows]
+            candidates = [{"project": r["project"], "name": raw_name, "kind": "session"}
+                          for r in session_rows]
+            candidates += [{"project": r["project"], "name": raw_name, "kind": "group"}
+                           for r in group_rows]
+            if not candidates:
+                hist_row = conn.execute(
+                    "SELECT sender_project, sender, recipient_project, recipient"
+                    " FROM messages WHERE sender=? OR recipient=?"
+                    " ORDER BY id DESC LIMIT 1",
+                    (raw_name, raw_name),
+                ).fetchone()
+                if hist_row:
+                    if hist_row["sender"] == raw_name:
+                        hist_project = hist_row["sender_project"]
+                    else:
+                        hist_project = hist_row["recipient_project"]
+                    candidates = [{"project": hist_project, "name": raw_name, "kind": "historical"}]
         return candidates
 
     def _list(self):
@@ -1134,6 +1149,11 @@ class Handler(BaseHTTPRequestHandler):
                     (new, project, old),
                 )
                 messages_migrated = r1.rowcount + r2.rowcount
+
+                conn.execute(
+                    "UPDATE read_cursors SET member_name=? WHERE project=? AND member_name=?",
+                    (new, project, old),
+                )
 
                 conn.execute("COMMIT")
                 return {"ok": True, "project": project, "old": old, "new": new,
