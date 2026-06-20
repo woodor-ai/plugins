@@ -864,6 +864,75 @@ def test_tc13_display_hides_global_suffix():
           f"turn={turn_r!r}")
 
 
+# ---------- TC14: /group/members hides @* for global members ----------
+
+def test_tc14_group_members_hides_global_suffix():
+    """/group/members must return bare name for global (*) members, name@project for others."""
+    print("\n[TC14] /group/members 全局成员裸名显示")
+
+    _http("/register", "POST", {"project": "tc14p", "name": "RegularMember", "cwd": "/tmp", "force": True})
+    _http("/register", "POST", {"project": "*", "name": "GlobalMember14", "cwd": "/tmp", "force": True})
+
+    _http("/group/create", "POST", {
+        "project": "tc14p", "name": "tc14-group",
+        "members": ["RegularMember"], "creator": "RegularMember",
+    })
+    _http("/group/add", "POST", {
+        "group_project": "tc14p", "group": "tc14-group",
+        "member_project": "*", "member": "GlobalMember14",
+    })
+
+    members = _http("/group/members", params={"group_project": "tc14p", "group": "tc14-group"})
+    check("TC14: global member appears as bare name", "GlobalMember14" in members,
+          f"members={members}")
+    check("TC14: global member does NOT appear as GlobalMember14@*", "GlobalMember14@*" not in members,
+          f"members={members}")
+    check("TC14: regular member appears as name@project", "RegularMember@tc14p" in members,
+          f"members={members}")
+
+
+# ---------- TC15: send to global identity — turn field is bare name ----------
+
+def test_tc15_send_turn_hides_global_suffix():
+    """1-to-1 send where peer is a global identity must return turn as bare name, not name@*."""
+    print("\n[TC15] send 到全局身份 turn 字段裸名")
+
+    _http("/register", "POST", {"project": "tc15p", "name": "Sender15", "cwd": "/tmp", "force": True})
+    _http("/register", "POST", {"project": "*", "name": "GlobalRecipient15", "cwd": "/tmp", "force": True})
+
+    r = _http("/send", "POST", {
+        "self_project": "tc15p", "self": "Sender15",
+        "peer_project": "*", "peer": "GlobalRecipient15",
+        "body": "hello global", "kind": "消息",
+    })
+    turn_val = r.get("turn", "")
+    check("TC15: turn is bare name (no @*)", turn_val == "GlobalRecipient15",
+          f"turn={turn_val!r}")
+
+
+# ---------- TC16: group/create with global member — members list hides @* ----------
+
+def test_tc16_group_create_members_hides_global_suffix():
+    """/group/create response members list must not contain @* for global members."""
+    print("\n[TC16] group/create 返回的 members 含全局成员裸名")
+
+    _http("/register", "POST", {"project": "tc16p", "name": "Creator16", "cwd": "/tmp", "force": True})
+    _http("/register", "POST", {"project": "*", "name": "GlobalMember16", "cwd": "/tmp", "force": True})
+
+    r = _http("/group/create", "POST", {
+        "project": "tc16p", "name": "tc16-group",
+        "members": ["Creator16", "GlobalMember16@*"], "creator": "Creator16",
+    })
+    members = r.get("members", [])
+    check("TC16: create returned ok", r.get("ok") is True, str(r))
+    check("TC16: global member appears as bare name in create response", "GlobalMember16" in members,
+          f"members={members}")
+    check("TC16: global member NOT as GlobalMember16@* in create response", "GlobalMember16@*" not in members,
+          f"members={members}")
+    check("TC16: regular member appears as Creator16@tc16p", "Creator16@tc16p" in members,
+          f"members={members}")
+
+
 # ---------- main ----------
 
 home_dir_g: str = ""  # set in main(), used by TC3/TC7 which don't pass it as param
@@ -895,6 +964,9 @@ def main():
             test_tc11_global_priority_over_scoped()
             test_tc12_derive_project_sanitizes_star()
             test_tc13_display_hides_global_suffix()
+            test_tc14_group_members_hides_global_suffix()
+            test_tc15_send_turn_hides_global_suffix()
+            test_tc16_group_create_members_hides_global_suffix()
         finally:
             proc.terminate()
             try:

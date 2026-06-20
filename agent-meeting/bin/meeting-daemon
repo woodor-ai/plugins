@@ -962,7 +962,7 @@ class Handler(BaseHTTPRequestHandler):
         _ws_fanout(msg_id, peer_project, peer_name, self_project, self_name, ask, body)
         if is_grp:
             return {"msg_id": msg_id, "turn": None}
-        return {"msg_id": msg_id, "turn": f"{peer_name}@{peer_project}"}
+        return {"msg_id": msg_id, "turn": self._fmt_id(peer_name, peer_project)}
 
     def _group_create(self, project: str, name: str, members: list, creator):
         now = int(time.time())
@@ -1019,7 +1019,7 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute("ROLLBACK")
                 raise
         return {"ok": True, "project": project, "name": name,
-                "members": [f"{n}@{p}" for (p, n) in resolved]}
+                "members": [self._fmt_id(n, p) for (p, n) in resolved]}
 
     def _group_add(self, group_project: str, group: str, member_project: str, member: str):
         now = int(time.time())
@@ -1131,7 +1131,7 @@ class Handler(BaseHTTPRequestHandler):
                 " WHERE group_project=? AND group_name=? ORDER BY member_project, member_name",
                 (group_project, group),
             ).fetchall()
-        return [f"{r['member_name']}@{r['member_project']}" for r in rows]
+        return [self._fmt_id(r['member_name'], r['member_project']) for r in rows]
 
     def _group_charter_get(self, project: str, name: str):
         with db() as conn:
