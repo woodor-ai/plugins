@@ -35,10 +35,13 @@ _parser = argparse.ArgumentParser(prog="monitor.py", add_help=True)
 _parser.add_argument("name", help="session name to monitor")
 _parser.add_argument("--director", action="store_true", default=False,
                      help="register this session as director role (default: worker)")
+_parser.add_argument("--global", dest="is_global", action="store_true", default=False,
+                     help="register as global identity (project='*'), skips cwd project derivation")
 _args = _parser.parse_args()
 
 SELF = _args.name
 IS_DIRECTOR = _args.director
+IS_GLOBAL = _args.is_global
 HOME = Path.home()
 _MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
 DATA = Path(_MEETING_HOME_ENV) if _MEETING_HOME_ENV else HOME / ".agent-meeting"
@@ -74,14 +77,16 @@ def _derive_project(cwd: str) -> str:
         if result.returncode == 0:
             top = result.stdout.strip()
             if top:
-                return os.path.basename(top)
+                name = os.path.basename(top)
+                return "_" if name == "*" else name
     except Exception:
         pass
-    return os.path.basename(os.path.normpath(cwd))
+    name = os.path.basename(os.path.normpath(cwd))
+    return "_" if name == "*" else name
 
 
 # Derive project once at startup from cwd — stored for WS handshake
-_PROJECT = _derive_project(_CWD)
+_PROJECT = "*" if IS_GLOBAL else _derive_project(_CWD)
 
 
 def _run_meeting(*extra_args):
@@ -115,6 +120,8 @@ def _discover_control_info() -> dict:
 
 def _register():
     extra = ["--director"] if IS_DIRECTOR else []
+    if IS_GLOBAL:
+        extra.append("--global")
     _run_meeting("online", SELF, "--cwd", _CWD, "--force", *extra)
     try:
         RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -172,7 +179,8 @@ for sig in (signal.SIGINT, signal.SIGTERM):
 
 _register()
 
-print(f"[meeting {SELF}@{_PROJECT}] monitor started (pid={os.getpid()})", flush=True)
+_display_id = SELF if _PROJECT == "*" else f"{SELF}@{_PROJECT}"
+print(f"[meeting {_display_id}] monitor started (pid={os.getpid()})", flush=True)
 
 
 # ---------- WS client helpers ----------
@@ -378,7 +386,7 @@ while True:
 
     backoff = _BACKOFF_BASE
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")
-    sys.stderr.write(f"[meeting {SELF}@{_PROJECT}] {ts} ws connected\n")
+    sys.stderr.write(f"[meeting {_display_id}] {ts} ws connected\n")
     sys.stderr.flush()
     # Re-register on every reconnect so role/cwd are correct after daemon restart/wipe.
     _register()

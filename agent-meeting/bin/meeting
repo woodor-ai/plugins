@@ -113,10 +113,12 @@ def _derive_project(cwd: str) -> str:
         if result.returncode == 0:
             top = result.stdout.strip()
             if top:
-                return os.path.basename(top)
+                name = os.path.basename(top)
+                return "_" if name == "*" else name
     except Exception:
         pass
-    return os.path.basename(os.path.normpath(cwd))
+    name = os.path.basename(os.path.normpath(cwd))
+    return "_" if name == "*" else name
 
 
 # ---------- name resolution ----------
@@ -442,7 +444,9 @@ def cmd_read(args):
     for r in rows:
         ask = (r.get("ask") or "").replace("\n", " ")
         body = r["body"].replace("\n", "\\n")
-        print(f"{r['id']}\t{r['created_at']}\t{r['sender']}@{r['sender_project']}\t{r['kind']}\t{ask}\t{body}")
+        sp = r["sender_project"]
+        sender_id = r["sender"] if sp == "*" else f"{r['sender']}@{sp}"
+        print(f"{r['id']}\t{r['created_at']}\t{sender_id}\t{r['kind']}\t{ask}\t{body}")
 
 
 def cmd_show(args):
@@ -485,7 +489,8 @@ def cmd_delete(args):
 def cmd_online(args):
     name = args.name
     cwd = args.cwd
-    project = _derive_project(cwd)
+    is_global = getattr(args, "is_global", False)
+    project = "*" if is_global else _derive_project(cwd)
     host_name = socket.gethostname()
 
     explicit_host = getattr(args, "host", None)
@@ -508,7 +513,8 @@ def cmd_online(args):
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
-    print(f"online: {name}@{project} (cwd={cwd}, host={host_name})")
+    display = name if project == "*" else f"{name}@{project}"
+    print(f"online: {display} (cwd={cwd}, host={host_name})")
     beacon("register")
 
 
@@ -1114,6 +1120,8 @@ def main():
     s.add_argument("--cwd", required=True)
     s.add_argument("--force", action="store_true")
     s.add_argument("--director", action="store_true")
+    s.add_argument("--global", dest="is_global", action="store_true",
+                   help="register as global identity (project='*'), skips cwd project derivation")
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_online)
 

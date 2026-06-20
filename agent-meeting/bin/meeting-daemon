@@ -750,6 +750,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- business logic ---
 
+    @staticmethod
+    def _fmt_id(name: str, project: str) -> str:
+        """Render identity for human-readable display. Global identity hides the @* suffix."""
+        return name if project == "*" else f"{name}@{project}"
+
     def _resolve_candidates(self, raw_name: str):
         with db() as conn:
             session_rows = conn.execute(
@@ -762,6 +767,10 @@ class Handler(BaseHTTPRequestHandler):
                           for r in session_rows]
             candidates += [{"project": r["project"], "name": raw_name, "kind": "group"}
                            for r in group_rows]
+            # Global identity (*,name) takes priority — collapse to single candidate
+            global_candidates = [c for c in candidates if c["project"] == "*"]
+            if global_candidates:
+                return [global_candidates[0]]
             if not candidates:
                 hist_row = conn.execute(
                     "SELECT sender_project, sender, recipient_project, recipient"
@@ -867,8 +876,8 @@ class Handler(BaseHTTPRequestHandler):
                 params,
             ).fetchone()
         if row:
-            return f"{row['recipient']}@{row['recipient_project']}"
-        return f"{self_name}@{self_project}"
+            return self._fmt_id(row["recipient"], row["recipient_project"])
+        return self._fmt_id(self_name, self_project)
 
     def _show(self, self_project: str, self_name: str, peer_project: str, peer_name: str, limit: int):
         with db() as conn:
@@ -882,7 +891,8 @@ class Handler(BaseHTTPRequestHandler):
                 lines = [f"# Group: {peer_name} (project={peer_project})\n---\n"]
                 for row in reversed(msgs):
                     ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
-                    lines.append(f"### [{row['sender']}@{row['sender_project']} @ {ts}] {row['kind']}")
+                    sender_id = self._fmt_id(row["sender"], row["sender_project"])
+                    lines.append(f"### [{sender_id} @ {ts}] {row['kind']}")
                     lines.append(row["body"])
                     if row["ask"]:
                         lines.append(f"\n**Ask**: {row['ask']}")
@@ -897,12 +907,13 @@ class Handler(BaseHTTPRequestHandler):
                 params + [limit],
             ).fetchall()
         lines = [
-            f"# Conversation: {self_name}@{self_project} <-> {peer_name}@{peer_project}",
+            f"# Conversation: {self._fmt_id(self_name, self_project)} <-> {self._fmt_id(peer_name, peer_project)}",
             f"当前发言权: {turn}\n---\n",
         ]
         for row in reversed(msgs):
             ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))
-            lines.append(f"### [{row['sender']}@{row['sender_project']} @ {ts}] {row['kind']}")
+            sender_id = self._fmt_id(row["sender"], row["sender_project"])
+            lines.append(f"### [{sender_id} @ {ts}] {row['kind']}")
             lines.append(row["body"])
             if row["ask"]:
                 lines.append(f"\n**Ask**: {row['ask']}")
