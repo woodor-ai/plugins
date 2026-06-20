@@ -238,6 +238,10 @@ When monitor emits a line matching `📬 New Message from <sender> in group <群
 
 3. **读群历史**：`~/.agent-meeting/bin/meeting show <self> <群名> --limit=20`（注意第二个参数是群名，不是 sender）。
 
+3a. **读群 charter（群规）**：运行 `~/.agent-meeting/bin/meeting group charter <群名>`。
+   - 若输出非空（不是 "(no charter set...)" 行），则该文本是本群的强制回复约束，**本次回复必须完全遵守**（例如 charter 要求"只给结论、≤3 行"，就按那个格式写，不得展开）。
+   - **仅在触发本次回复的消息来自某群时注入该群 charter**。此步骤只在群消息处理分支执行，1:1 消息处理流程不执行此步，不注入任何 charter。
+
 4. **决定是否回复**——reply-gate 对群更严（群发会唤醒所有成员的 monitor）：
    - ack-only（收到/好的/了解）→ 不发，直接沉默。
    - 有实质内容（新信息、问题、决策、状态变更）→ 才发。

@@ -434,6 +434,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self._group_members(
                     q["group_project"][0], q["group"][0],
                 ))
+            if path == "/group/charter":
+                return self._json(200, self._group_charter_get(
+                    q["project"][0], q["name"][0],
+                ))
             if path == "/resolve":
                 return self._json(200, self._resolve_candidates(q["name"][0]))
             return self._err(404, f"no such GET route: {path}")
@@ -707,6 +711,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(status, result)
             if path == "/group/rename":
                 result = self._group_rename(body["project"], body["old"], body["new"])
+                status = 400 if result.get("error") else 200
+                return self._json(status, result)
+            if path == "/group/charter":
+                result = self._group_charter_set(
+                    body["project"], body["name"], body.get("charter"),
+                )
                 status = 400 if result.get("error") else 200
                 return self._json(status, result)
             return self._err(404, f"no such POST route: {path}")
@@ -1112,6 +1122,29 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchall()
         return [f"{r['member_name']}@{r['member_project']}" for r in rows]
 
+    def _group_charter_get(self, project: str, name: str):
+        with db() as conn:
+            row = conn.execute(
+                "SELECT charter FROM groups WHERE project=? AND name=?", (project, name)
+            ).fetchone()
+        if row is None:
+            return {"error": f"group '{name}' does not exist in project '{project}'"}
+        return {"charter": row["charter"] or ""}
+
+    def _group_charter_set(self, project: str, name: str, charter):
+        with db() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM groups WHERE project=? AND name=?", (project, name)
+            ).fetchone()
+            if row is None:
+                return {"error": f"group '{name}' does not exist in project '{project}'"}
+            value = charter if charter else None
+            conn.execute(
+                "UPDATE groups SET charter=? WHERE project=? AND name=?",
+                (value, project, name),
+            )
+        return {"ok": True, "project": project, "name": name, "charter": value or ""}
+
     def _group_purge(self, project: str, name: str):
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1314,6 +1347,7 @@ CREATE TABLE IF NOT EXISTS groups (
   name       TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   creator    TEXT,
+  charter    TEXT,
   PRIMARY KEY (project, name)
 );
 
@@ -1349,6 +1383,12 @@ def main():
 
     with db() as conn:
         conn.executescript(_SCHEMA)
+
+    # Idempotent migration: add charter column to groups if missing (existing deployments).
+    with db() as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(groups)").fetchall()}
+        if "charter" not in cols:
+            conn.execute("ALTER TABLE groups ADD COLUMN charter TEXT")
 
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((args.bind, args.port), Handler)

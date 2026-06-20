@@ -917,6 +917,42 @@ def cmd_group(args):
             sys.exit(1)
         print(f"group deleted: {args.group_name}@{project} ({r.get('purged', 0)} messages purged)")
 
+    elif args.group_cmd == "charter":
+        # Parse group_name: support bare or name@project
+        raw_gname = args.group_name
+        if "@" in raw_gname:
+            gname, _, gproject = raw_gname.partition("@")
+        else:
+            gname, gproject = raw_gname, project
+
+        if args.clear:
+            r = http("POST", host, "/group/charter",
+                     body={"project": gproject, "name": gname, "charter": None})
+            if r.get("error"):
+                print(r["error"], file=sys.stderr)
+                sys.exit(1)
+            print(f"charter cleared: {gname}@{gproject}")
+        elif args.charter_text:
+            text = " ".join(args.charter_text)
+            r = http("POST", host, "/group/charter",
+                     body={"project": gproject, "name": gname, "charter": text})
+            if r.get("error"):
+                print(r["error"], file=sys.stderr)
+                sys.exit(1)
+            print(f"charter set: {gname}@{gproject}")
+            print(text)
+        else:
+            r = http("GET", host, "/group/charter",
+                     params={"project": gproject, "name": gname})
+            if isinstance(r, dict) and r.get("error"):
+                print(r["error"], file=sys.stderr)
+                sys.exit(1)
+            charter = r.get("charter", "")
+            if charter:
+                print(charter)
+            else:
+                print(f"(no charter set for {gname}@{gproject})")
+
 
 def cmd_controls(args):
     controls = discover_controls()
@@ -1128,6 +1164,11 @@ def main():
 
     gd = gsub.add_parser("delete", help="delete a group and purge its messages")
     gd.add_argument("group_name")
+
+    gch = gsub.add_parser("charter", help="get or set group charter (rule text)")
+    gch.add_argument("group_name", help="group name (bare or name@project)")
+    gch.add_argument("charter_text", nargs="*", help="charter text to set (omit to read)")
+    gch.add_argument("--clear", action="store_true", help="clear the charter")
 
     gp.set_defaults(func=cmd_group)
 
