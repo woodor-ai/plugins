@@ -512,6 +512,16 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 cursor = row["cursor"]
 
+            # Upsert the sessions row so pong updates have a target row even after
+            # a daemon restart or wipe. Preserve existing role/cwd if already set.
+            conn.execute(
+                "INSERT INTO sessions (project, name, cwd, host, os, registered_at, last_seen, role)"
+                " VALUES (?, ?, NULL, NULL, NULL, ?, ?, 'worker')"
+                " ON CONFLICT(project, name) DO UPDATE SET"
+                "  last_seen=excluded.last_seen",
+                (project, name, str(int(now)), float(now)),
+            )
+
         sub = Subscriber(project, name, self.connection, self.wfile, cursor)
 
         with _sub_lock:

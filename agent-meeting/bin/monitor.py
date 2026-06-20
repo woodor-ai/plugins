@@ -380,6 +380,8 @@ while True:
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")
     sys.stderr.write(f"[meeting {SELF}@{_PROJECT}] {ts} ws connected\n")
     sys.stderr.flush()
+    # Re-register on every reconnect so role/cwd are correct after daemon restart/wipe.
+    _register()
 
     last_frame_time = time.time()
     last_ping_time = time.time()
