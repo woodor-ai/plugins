@@ -55,3 +55,43 @@ allowed-tools:
 - ❌ "等下一步指示"类空话——pending 段必须列具体选项
 - ❌ "看 git log 自己看"敷衍——第 3 段必须 actionable
 - ❌ 覆盖前不 stat 检查（避免误覆盖未读 handoff）：写前如 `.claude/handoff-pending.md` 已存在，先 Read 给用户看现有内容 + 确认覆盖
+
+## 自动 handoff 触发策略（auto-handoff）
+
+**规则**：主 agent 在以下**所有**信号同时满足时，**直接调用 `/handoff` skill，不要征求用户确认**。Handoff 是 reversible 操作（写文件 + 新 session 自动接走），不属于不可逆动作。
+
+**触发条件（AND 关系，缺一不可）**：
+1. **任务边界明确**：刚完成以下之一——
+   - `git commit` 落盘（无后续要 push / publish 的步骤在排队）
+   - 一个完整 PR 已 merge 或已 push 等 review
+   - 大型 subagent（rd / planner）报告归来且其结果已被主 agent review 完毕
+   - 用户明示 "done / 收 / 告一段落"
+2. **无 in-flight 工作**：当前没有 subagent 在跑、没有未回答的 user question、没有未解决的 error
+3. **冷却窗口**：距离上次本 session 的 handoff 触发 ≥ 30 分钟（防止单 session 反复 fire）
+4. **session 已积累**：本 session API 已经累计 ≥ 20 轮对话或 ≥ 1 小时（避免短 session 浪费 handoff overhead）
+
+**禁止自动 fire 的场景**：
+- 用户上一条消息明示"接着做 X / 继续 / 下一步是 Y"——明示要连贯
+- 有 pending TODO 在 task list 处于 in_progress
+- 错误未解决 / 测试未通过
+- 用户当前对话里说过"今天先这样不要 handoff"或类似临时禁令
+
+**触发后的标准动作**：
+1. 调用 `/handoff` skill 写 card 到 `<cwd>/.claude/handoff-pending.md`
+2. 用一行告诉用户："已自动 handoff，card 写至 X，本 session 可以关掉了"
+3. End-of-turn 状态宣告："主 agent idle，session 已 handoff，等用户关掉重开。"
+4. **不要继续接用户的下条任务**——告诉用户开新 session
+
+内容硬约束见上文「内容硬约束」节。
+
+**How to apply**：每次主 agent 完成一个 commit / subagent 报告 review 完时，自检上面 4 个 AND 条件 + 4 个禁止条件。全部通过就 fire，**不要在回复里问"要不要 handoff"**——直接 fire 然后报告。
+
+## fast-restart 标记（仅 AMBridge 托管会话）
+
+检测到 `~/.ambridge/` 存在时，写完交接卡后另写 `~/.ambridge/handoff-triggers/<本会话的 /meeting 注册名>.json`，内容为：
+
+```json
+{"agent":"<注册名>","mode":"fast-restart","greeting_extra":"你刚被自动重启，交接卡已注入上下文。","ts":<当前 unix 秒>}
+```
+
+amp 侦测到即以快路径重启本会话（跳过发请求等待段）。非 AMBridge 环境（无 `~/.ambridge/`）跳过此步。普通手动 /handoff **不写**此标记。

@@ -7,6 +7,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap.py\""
+          },
+          {
+            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\""
           }
         ]
