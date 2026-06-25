@@ -512,7 +512,11 @@ def cmd_online(args):
     payload = {
         "project": project, "name": name, "cwd": cwd,
         "force": args.force,
-        "role": "director" if args.director else None,
+        # Always send an explicit role so re-registration is authoritative:
+        # the daemon upserts role via COALESCE(?, role), so sending None on a
+        # worker re-register would preserve a stale 'director' and make demotion
+        # impossible. "director"/"worker" lets the monitor's --director flag win.
+        "role": "director" if args.director else "worker",
         "host": host_name, "os": _OS_LABEL,
     }
     r = http("POST", host, "/register", body=payload)
