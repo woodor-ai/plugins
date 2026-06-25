@@ -488,8 +488,14 @@ def cmd_delete(args):
 
 def cmd_online(args):
     name = args.name
-    cwd = args.cwd
     is_global = getattr(args, "is_global", False)
+    cwd = args.cwd
+    if cwd is None:
+        if is_global:
+            cwd = os.path.expanduser("~")
+        else:
+            print("online: --cwd is required (unless --global)", file=sys.stderr)
+            sys.exit(2)
     project = "*" if is_global else _derive_project(cwd)
     host_name = socket.gethostname()
 
@@ -1117,7 +1123,8 @@ def main():
     s = sub.add_parser("online",
                        help="bring this session online (register in the directory)")
     s.add_argument("name", help="session name to bring online")
-    s.add_argument("--cwd", required=True)
+    s.add_argument("--cwd", default=None,
+                   help="working dir (required unless --global, where it defaults to ~)")
     s.add_argument("--force", action="store_true")
     s.add_argument("--director", action="store_true")
     s.add_argument("--global", dest="is_global", action="store_true",
