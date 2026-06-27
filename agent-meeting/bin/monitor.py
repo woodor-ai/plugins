@@ -122,7 +122,20 @@ def _register():
     extra = ["--director"] if IS_DIRECTOR else []
     if IS_GLOBAL:
         extra.append("--global")
-    _run_meeting("online", SELF, "--cwd", _CWD, "--force", *extra)
+    # Best-effort: this runs on EVERY ws reconnect (see the connect loop), and a
+    # reconnect often coincides with the control having just restarted — TCP is
+    # back up but the daemon is still busy, so `online` can hang the full 15s and
+    # raise TimeoutExpired. That must NOT kill the monitor (it would drop the
+    # session to historical until a human restarts it — exactly the daemon-restart
+    # case this re-register exists to cover). Swallow any failure; the next
+    # reconnect cycle retries.
+    try:
+        _run_meeting("online", SELF, "--cwd", _CWD, "--force", *extra)
+    except Exception as e:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        sys.stderr.write(f"[meeting {_display_id}] {ts} re-register failed ({type(e).__name__}); "
+                         f"will retry on next reconnect\n")
+        sys.stderr.flush()
     try:
         RUN_DIR.mkdir(parents=True, exist_ok=True)
         PID_FILE.write_text(str(os.getpid()))
