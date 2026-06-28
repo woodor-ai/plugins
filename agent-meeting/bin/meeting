@@ -42,6 +42,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+if sys.platform.startswith("win"):
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
@@ -96,12 +103,13 @@ SERVICE_TYPE = "_agent-meeting._tcp.local."
 ONLINE_THRESHOLD = 12
 
 _NO_CONTROL_MSG = (
-    "未发现中央节点 (agent-meeting-control)。"
-    "mDNS 自动发现为空，且无可用的 last-known-good 缓存。"
-    "可能原因：control 未启动 / 不同网段 / 本机组播被拦 (Wi-Fi AP 隔离或防火墙挡 UDP 5353)。"
-    "解决：用 /meeting daemon 把本机设为中央节点；"
-    "或对不可发现的机器钉定 control —— meeting host http://<ip>:<port> (持久) "
-    "或临时 export MEETING_HOST=http://<ip>:<port>。"
+    "No control node found (agent-meeting-control). "
+    "mDNS auto-discovery returned nothing and no last-known-good cache is available. "
+    "Possible causes: control not started / different subnet / multicast blocked "
+    "(Wi-Fi AP isolation or firewall blocking UDP 5353). "
+    "Fix: run /meeting daemon to make this machine the control node; "
+    "or pin a control for unreachable machines — meeting host http://<ip>:<port> (persistent) "
+    "or temporarily export MEETING_HOST=http://<ip>:<port>."
 )
 
 
@@ -1025,10 +1033,10 @@ def cmd_daemon(args):
             healthy = _probe_health() is not None
             if not healthy:
                 print(
-                    f"\n本机应为 control，但 daemon 未在监听 :{DAEMON_PORT}。"
-                    " 修复：launchctl 自愈未生效时跑 'meeting daemon restart'，"
-                    " 或重开 Claude 会话触发自动拉起。"
-                    " 详见 ~/.agent-meeting/logs/bootstrap.log"
+                    f"\nThis machine is configured as control but the daemon is not listening on :{DAEMON_PORT}. "
+                    "Fix: run 'meeting daemon restart' if launchctl self-heal did not fire, "
+                    "or reopen the Claude session to trigger auto-launch. "
+                    "See ~/.agent-meeting/logs/bootstrap.log"
                 )
 
     elif args.action == "stop":
@@ -1331,12 +1339,12 @@ def cmd_controls(args):
         return
 
     if not controls:
-        print("未发现 control 节点")
+        print("no control node found")
         return
 
     for i, c in enumerate(controls):
         is_current = c["url"] == current_url
-        current_tag = "  当前" if is_current else ""
+        current_tag = "  current" if is_current else ""
         print(f"control {i + 1}{current_tag}")
         print(f"  host:    {c['host'] or '(unknown)'}")
         print(f"  ip:port: {c['ip']}:{c['port']}")
