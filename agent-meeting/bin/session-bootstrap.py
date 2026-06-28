@@ -29,6 +29,13 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+if sys.platform.startswith("win"):
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 HOME = Path.home()
 DATA = HOME / ".agent-meeting"
 DB_DIR = DATA / "db"
@@ -203,7 +210,45 @@ def ensure_bin_wrappers():
             and _all_present()):
         return  # Already up to date for this plugin version
 
-    # Remove whatever occupies BIN_LINK. Order matters on Windows:
+    # Build wrappers into a temp dir first — if the copy loop fails/interrupts
+    # partway, the existing BIN_LINK stays intact and concurrent `meeting` calls
+    # still find valid scripts. The only moment BIN_LINK is absent is the tiny
+    # window between "remove old" and os.rename in the swap below.
+    tmp_bin = BIN_LINK.parent / (".bin.tmp." + str(os.getpid()))
+    if tmp_bin.exists():
+        _shutil.rmtree(str(tmp_bin))
+    tmp_bin.mkdir(parents=True)
+
+    try:
+        for src in sorted(plugin_bin.iterdir()):
+            if src.is_dir():
+                continue  # skip __pycache__ and friends
+            dest = tmp_bin / src.name
+            if src.suffix == ".py":
+                # Copy, NOT symlink — callers invoke `python3 .../foo.py` directly, so
+                # these must be real files, and symlink_to() needs admin/Developer-Mode
+                # on Windows (would crash bootstrap). Copy is privilege-free everywhere.
+                _shutil.copyfile(str(src), str(dest))
+            elif IS_WINDOWS:
+                # .cmd wrapper for PATH/shell resolution (monitor, bare `meeting`).
+                dest.with_suffix(".cmd").write_text(
+                    f'@echo off\r\n"{py}" "{src}" %*\r\n'
+                )
+                # ALSO a real extensionless copy so callers can run
+                #   python.exe "<bin>\meeting" <args>
+                # via CreateProcess, bypassing cmd.exe — which mangles `<`/`>` in
+                # args as redirection when the .cmd forwards them through %*. Any
+                # CLI call carrying user content (send --ask/--body) MUST use this.
+                _shutil.copyfile(str(src), str(dest))
+            else:
+                dest.write_text(f'#!/bin/sh\nexec "{py}" "{src}" "$@"\n')
+                dest.chmod(0o755)
+    except Exception:
+        _shutil.rmtree(str(tmp_bin), ignore_errors=True)
+        raise
+
+    # Swap: remove old BIN_LINK then rename tmp_bin into place. Order matters on
+    # Windows:
     #   - a file/dir *symlink* → unlink() (never touches the target)
     #   - a *junction* (reparse-point dir; is_symlink() is False for these!) →
     #     os.rmdir() removes the link itself; rmtree() would recurse INTO the
@@ -218,32 +263,7 @@ def ensure_bin_wrappers():
     elif BIN_LINK.exists():
         BIN_LINK.unlink()
 
-    BIN_LINK.mkdir()
-
-    for src in sorted(plugin_bin.iterdir()):
-        if src.is_dir():
-            continue  # skip __pycache__ and friends
-        dest = BIN_LINK / src.name
-        if src.suffix == ".py":
-            # Copy, NOT symlink — callers invoke `python3 .../foo.py` directly, so
-            # these must be real files, and symlink_to() needs admin/Developer-Mode
-            # on Windows (would crash bootstrap). Copy is privilege-free everywhere.
-            _shutil.copyfile(str(src), str(dest))
-        elif IS_WINDOWS:
-            # .cmd wrapper for PATH/shell resolution (monitor, bare `meeting`).
-            dest.with_suffix(".cmd").write_text(
-                f'@echo off\r\n"{py}" "{src}" %*\r\n'
-            )
-            # ALSO a real extensionless copy so callers can run
-            #   python.exe "<bin>\meeting" <args>
-            # via CreateProcess, bypassing cmd.exe — which mangles `<`/`>` in
-            # args as redirection when the .cmd forwards them through %*. Any
-            # CLI call carrying user content (send --ask/--body) MUST use this.
-            _shutil.copyfile(str(src), str(dest))
-        else:
-            dest.write_text(f'#!/bin/sh\nexec "{py}" "{src}" "$@"\n')
-            dest.chmod(0o755)
-
+    os.rename(str(tmp_bin), str(BIN_LINK))
     sentinel.write_text(current_root)
     log(f"generated venv-python wrappers in bin/ (plugin: {plugin_bin.name})")
 
@@ -477,7 +497,7 @@ def ensure_launchd():
                 if e.errno not in (_errno.EACCES, _errno.EAGAIN):
                     raise
                 if time.monotonic() >= deadline:
-                    msg = "ensure_launchd: 拿锁超时（30s），跳过本次 launchd 操作"
+                    msg = "ensure_launchd: lock timeout (30s), skipping launchd operation"
                     log(msg)
                     blog(msg)
                     return
@@ -519,7 +539,7 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
             log(f"launchd already manages {LAUNCHD_LABEL} (healthy)")
             return
         # listed 但 /health 不通 → daemon 卡死/crashloop，走重装自愈路径
-        blog(f"launchd listed 但 /health 不通，进入自愈路径")
+        blog("launchd listed but /health unreachable, entering self-heal path")
 
     if listed:
         subprocess.run(
@@ -563,20 +583,20 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
 
     # 自愈重试，最多 2 次
     for attempt in range(1, 3):
-        blog(f"bootstrap 后 daemon 未健康，自愈重试 #{attempt}")
+        blog(f"post-bootstrap daemon unhealthy, self-heal retry #{attempt}")
         subprocess.run(["launchctl", "bootout", service_target], capture_output=True)
         time.sleep(1.5)
         _do_bootstrap()
         if _wait_healthy():
-            msg = f"launchd loaded {LAUNCHD_LABEL}（自愈 #{attempt} 成功）"
+            msg = f"launchd loaded {LAUNCHD_LABEL} (self-heal #{attempt} succeeded)"
             log(msg)
             blog(msg)
             return
 
     # 全部失败
     warn = (
-        "⚠ control daemon 自动拉起失败，建议跑 `meeting daemon restart` "
-        "或查看 ~/.agent-meeting/logs/bootstrap.log"
+        "⚠ control daemon failed to start automatically; "
+        "run `meeting daemon restart` or check ~/.agent-meeting/logs/bootstrap.log"
     )
     log(warn)
     blog(f"FAIL: {warn}")
@@ -827,9 +847,9 @@ def emit_context(cfg: dict):
 This session has NO meeting name yet — and that's fine. Peer-to-peer agent messaging is OPTIONAL. NEVER gate, block, or delay the user's work to make them register a name.
 
 - Proceed with whatever the user asks, normally — registration is NOT a prerequisite for anything.
-- If the user's message contains a `/meeting` command — whether it is the whole message (`/meeting <name>`) OR embedded inside a natural-language directive (e.g. "你是 X，先运行 /meeting X --director 启动监听") — run the meeting skill: they are explicitly opting in to register.
+- If the user's message contains a `/meeting` command — whether it is the whole message (`/meeting <name>`) OR embedded inside a natural-language directive (e.g. "You are X, first run /meeting X --director to start listening") — run the meeting skill: they are explicitly opting in to register.
 - Reminder line: on your FIRST reply of this session ONLY, you MAY append this single line at the very end — but SKIP it entirely whenever this session registers via `/meeting` (i.e. you run the meeting skill this turn), no matter where the command appeared in the user's message. Only show the reminder when the session does NOT register at all:
-  > 💡 本会话未注册 meeting；如需与其他 agent 互通可 `/meeting <名字>` 注册（不影响当前任务）。
+  > 💡 This session has no meeting name yet; to communicate with other agents, use `/meeting <name>` to register (does not affect your current task).
   Decide by your own action (did you register?), NOT by whether the message literally starts with `/meeting`. Show it at most once per session, never repeat it, and never let it replace or postpone the actual task.
 
 These paths are ALREADY RESOLVED for this machine — use them verbatim, do NOT probe the filesystem to find the CLI or venv:
