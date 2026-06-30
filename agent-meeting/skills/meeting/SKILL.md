@@ -123,6 +123,11 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
 
    The TUI status line shows `📞 <name>  |  <model>  |  <dir>  |  <branch>` automatically — no action needed here. `monitor.py` writes the room name to a local cache (`~/.agent-meeting/statusline/<cwd-hash>`) on register and removes it on exit; `bin/statusline.py` (registered as the `statusLine` command in `~/.claude/settings.json` by the SessionStart hook) reads that file. It is purely local — no SQLite query, no daemon/mDNS — so it stays fast and works on client machines too. The badge appears right after registration and disappears when the session ends. If the user had a custom `statusLine` already, the bootstrap leaves it untouched (it only installs/refreshes when statusLine is absent or already ours).
 
+8. **接手在途交接（若有）**：注册成功后，检查当前工作区有没有在途交接卡，有就直接接手，不要空 idle 等指示。判定顺序：
+   - **优先看本 session 已注入的交接 context**：handoff plugin 的 SessionStart hook 会把 `<cwd>/.claude/handoff-pending.md` 注入为「上 session 交接（auto-loaded…）」段并归档。若本 session context 里已有这一段，直接按它的「## 3. 新会话接手第一步」开始执行。
+   - **兜底查 pending 文件**（hook 未触发，如本会话非全新启动）：`test -f <cwd>/.claude/handoff-pending.md && wc -l <cwd>/.claude/handoff-pending.md`。存在且非空 → Read 它，按第 3 段接手；接手后由 handoff plugin 的下次 SessionStart 归档，本步不要自己删/移文件。
+   - **两者都无** → 正常按 §2.3 输出 `主 agent idle，等用户指派任务或 peer 来信。`，不要凭空找 `docs/handoff/archive/` 里的历史卡（那些已被接手过，不是在途任务）。
+
 ## On `/meeting rename <new>`
 
 **顺序敏感**——步骤必须严格按序执行，原因见各步说明。
