@@ -78,8 +78,8 @@ End every report with:
 name: rd
 description: Development agent for writing code, editing files, running builds and tests, debugging, and bounded refactoring. Use for "implement X" / "fix bug Y" / "add test for Z" / "refactor this function" tasks where the design is already decided. NOT for high-level architecture decisions (use planner instead) and NOT for pure information lookup (use explore instead).
 tools: Read, Edit, Write, Bash, Glob, Grep
-model: claude-sonnet-4-6
-reasoningEffort: high
+model: claude-sonnet-5
+reasoningEffort: xhigh
 color: blue
 ---
 
@@ -264,7 +264,7 @@ Current Codex versions cannot dispatch custom agents by name via spawn_agent (is
 
 **Claude Code 宿主**：写完三个文件后，告诉用户：
 
-> 三个 agent 已经写到 `.claude/agents/`。以后调 subagent 时主 agent 应该用 `subagent_type: "explore" | "rd" | "planner"`，对应 Haiku 4.5 / Sonnet 4.6 / Opus 4.8。内置的 `Explore` / `Plan` / `general-purpose` 仍然存在但不再使用。
+> 三个 agent 已经写到 `.claude/agents/`。以后调 subagent 时主 agent 应该用 `subagent_type: "explore" | "rd" | "planner"`，对应 Haiku 4.5 / Sonnet 5 / Opus 4.8。内置的 `Explore` / `Plan` / `general-purpose` 仍然存在但不再使用。
 
 **Codex 宿主**：写完三个文件后，告诉用户：
 
