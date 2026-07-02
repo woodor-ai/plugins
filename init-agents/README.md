@@ -29,7 +29,7 @@ The built-in `Explore`, `Plan`, and `general-purpose` agents are unaffected — 
 |---------|-------|-----------|-------|---------|
 | `explore` | `claude-haiku-4-5-20251001` | — | Bash, Read, Glob, Grep, WebFetch, WebSearch | Read-only fact finding: locate code, grep patterns, fetch URLs, list files. Cannot write or edit. |
 | `rd` | `claude-sonnet-5` | xhigh | Read, Edit, Write, Bash, Glob, Grep | Write code, edit files, run builds and tests, fix bounded bugs. Design must already be decided. |
-| `planner` | `claude-opus-4-8` | high | Read, Glob, Grep, WebFetch, WebSearch, Bash, TodoWrite | Architecture decisions, trade-off evaluation, cross-subsystem root cause, PR scope planning. |
+| `planner` | `claude-fable-5` (fallback: `claude-opus-4-8`) | high | Read, Glob, Grep, WebFetch, WebSearch, Bash, TodoWrite | Architecture decisions, trade-off evaluation, cross-subsystem root cause, PR scope planning. |
 
 Dispatch rule: if `explore` can answer the question, don't call `rd`. If the design is already decided, use `rd` — don't call `planner`. Only call `planner` when the question is genuinely "which direction should we go."
 
