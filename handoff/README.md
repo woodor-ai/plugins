@@ -25,11 +25,13 @@ The archive rename is atomic — if two sessions start at the same instant, only
 
 ## The handoff card
 
-Cards are capped at **50 lines**. If the draft exceeds that, the skill tells you to compress before writing. Three sections, always in this order:
+Cards are capped at **70 lines**. If the draft exceeds that, the skill tells you to compress before writing. Five sections, always in this order:
 
 1. **In-flight** — what was being worked on when the session ended.
 2. **Pending decisions** — anything blocked on a user choice or external event.
 3. **First step** — one concrete, actionable thing the next session should do immediately (a command, a file to read, a subagent to dispatch).
+4. **New docs / roadmap / progress** — docs created this session (with paths), the project roadmap (pointer if a roadmap doc exists), and where progress stands plus the next milestone.
+5. **Leftover todos** — unfinished or deferred action items from this session, one per line, phrased so the next agent can act on them directly. Decision items already listed in section 2 are not repeated here. Write "none" if there is nothing left.
 
 Empty sections get a placeholder line rather than being omitted. Cards must not copy project-state documents verbatim — use pointers (`see PLAN.md §2`, `see commit abc1234`) to stay under the line limit and avoid stale duplication.
 
@@ -48,7 +50,18 @@ Decide whether the archive format should be JSON or MessagePack (see PLAN.md §3
 ## First step
 Run `npm test -- --grep serializer` to confirm the split didn't break existing tests,
 then open src/serializer/decode.ts and continue from TODO on line 88.
+
+## New docs / roadmap / progress
+- New docs: docs/serializer-migration.md
+- Roadmap: see PLAN.md §4 (v2 serializer → streaming API → drop v1)
+- Progress: encode/decode split done; next milestone is wiring the streaming API.
+
+## Leftover todos
+- Add unit test for the new decode.ts error path (line 102)
+- Update CHANGELOG.md entry for v2 serializer once tests pass
 ```
+
+When a new session picks up this card, it must add every item in **Leftover todos** to its task list before starting work — not just read and archive the card.
 
 ## Hooks
 

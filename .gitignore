@@ -8,7 +8,7 @@ __pycache__/
 agent-meeting-PUBLISH-需求清单.md
 
 # 项目级 subagent profiles,本地配置不进 git
-.claude/agents/
+.claude/
 
 # 内部 session 交接归档,不公开
 docs/handoff/

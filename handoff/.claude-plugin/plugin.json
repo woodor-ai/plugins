@@ -1,7 +1,7 @@
 {
   "name": "handoff",
-  "version": "0.4.0",
-  "description": "Session-end handoff cards with auto-pickup. Write a 50-line cue card at session end; next session's SessionStart hook auto-loads it and archives to docs/handoff/archive/. Zero re-typing needed to resume work.",
+  "version": "0.5.0",
+  "description": "Session-end handoff cards with auto-pickup. Write a 70-line 5-section cue card at session end; next session's SessionStart hook auto-loads it, archives to docs/handoff/archive/, and prompts the agent to action the leftover todos. Zero re-typing needed to resume work.",
   "author": {
     "name": "Woodor",
     "url": "https://github.com/woodor-ai"
