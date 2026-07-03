@@ -29,7 +29,7 @@ Cards are capped at **70 lines**. If the draft exceeds that, the skill tells you
 
 1. **In-flight** — what was being worked on when the session ended.
 2. **Pending decisions** — anything blocked on a user choice or external event.
-3. **First step** — one concrete, actionable thing the next session should do immediately (a command, a file to read, a subagent to dispatch).
+3. **First step** — a required-reading list (key docs changed this session + recent architecture / design docs the next agent must understand first, each with a one-line reason; "none" if there are none), then one concrete action to take immediately.
 4. **New docs / roadmap / progress** — docs created this session (with paths), the project roadmap (pointer if a roadmap doc exists), and where progress stands plus the next milestone.
 5. **Leftover todos** — unfinished or deferred action items from this session, one per line, phrased so the next agent can act on them directly. Decision items already listed in section 2 are not repeated here. Write "none" if there is nothing left.
 
@@ -48,6 +48,10 @@ Last commit: abc1234 — split encode/decode into separate modules.
 Decide whether the archive format should be JSON or MessagePack (see PLAN.md §3.1).
 
 ## First step
+Required reading:
+- docs/serializer-migration.md — new this session; defines the encode/decode contract the next steps depend on
+- PLAN.md §3 — archive format decision, needed before extending the serializer further
+
 Run `npm test -- --grep serializer` to confirm the split didn't break existing tests,
 then open src/serializer/decode.ts and continue from TODO on line 88.
 
