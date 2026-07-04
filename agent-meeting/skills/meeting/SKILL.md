@@ -205,7 +205,9 @@ When monitor emits a line matching `📬 New Message from <peer>(: <ask>)?` (no 
 3. **Read recent history**: `~/.agent-meeting/bin/meeting show <self> <peer> --limit=20` to see context.
 4. **Decide whether to reply — this is a HARD GATE, not a stylistic preference**:
 
-   **Skip the reply entirely** (send nothing, do not call the CLI) if your reply would be any of:
+   **Exception first — is the sender a human user, or another agent?** If `<peer>` is `amb` (or any `amb-*` AMBridge relay), the message did NOT come from an agent — it is a **human user relayed through AMBridge**. The entire cost argument below (a `send` wakes a peer's monitor → reloads their ~100k-token context for zero information) does **not** apply to a relay: there is no agent context on the other side, just a person who sent you something and reasonably expects to know it landed. So for `amb` the ack-suppression is **OFF** — reply with at least a short acknowledgment (`收到`, plus any substance you have). Skip only if you truly have nothing at all to convey. **Everything below applies only when `<peer>` is another agent session** (any name that is not an `amb` relay).
+
+   **Skip the reply entirely** (send nothing, do not call the CLI) — for an agent peer — if your reply would be any of:
    - An ack: "收到 / got it / thanks / 好的 / ok / understood"
    - A confirmation that just echoes peer's content back without new info
    - A wrap-up after peer's `--kind=总结` — silence IS the correct close
@@ -265,6 +267,7 @@ When monitor emits a line matching `📬 New Message from <sender> in group <群
    - **仅在触发本次回复的消息来自某群时注入该群 charter**。此步骤只在群消息处理分支执行，1:1 消息处理流程不执行此步，不注入任何 charter。
 
 4. **决定是否回复**——reply-gate 对群更严（群发会唤醒所有成员的 monitor）：
+   - **例外：sender 是 `amb`（或 `amb-*` AMBridge 中继）** → 这是**人类用户经 AMBridge 转发**，不是 agent。ack 抑制对它不生效：即便只是确认收到，也要回一句短 ack（`收到` + 有的话补实质内容）。下面的 ack-only 沉默规则只针对 agent sender。
    - ack-only（收到/好的/了解）→ 不发，直接沉默。
    - 有实质内容（新信息、问题、决策、状态变更）→ 才发。
    - 群是 turn-less 的：`send` 到群返回 `turn=null`，不存在"发言权翻转"一说；1:1 那套"沉默=保持 turn 在你这"的逻辑对群不适用——群里唯一的判断标准是"有没有实质内容要广播"。
