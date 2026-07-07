@@ -274,6 +274,17 @@ def ensure_zeroconf():
     subprocess.run([str(py), "-m", "pip", "install", "--quiet", "zeroconf"], check=True)
 
 
+def ensure_websockets():
+    # Required by the codex bridge daemon (agent-meeting/codex/codex-bridge.py),
+    # which speaks JSON-RPC over WebSockets to a codex app-server.
+    py = venv_python()
+    r = subprocess.run([str(py), "-c", "import websockets"], capture_output=True)
+    if r.returncode == 0:
+        return
+    log("installing websockets into venv (one-time, ~10s)")
+    subprocess.run([str(py), "-m", "pip", "install", "--quiet", "websockets"], check=True)
+
+
 # ---------- 3. config ----------
 
 def _read_plugin_version() -> str:
@@ -920,6 +931,7 @@ def main():
         ensure_layout()       # base dirs first
         ensure_venv()         # venv must exist before wrappers reference its python
         ensure_zeroconf()
+        ensure_websockets()   # codex bridge daemon speaks WS to the codex app-server
 
         # Monotonic-upgrade guard: skip runtime rewrite if this session's plugin
         # version is older than what's already installed.
