@@ -247,16 +247,18 @@ def ensure_bin_wrappers():
             dest.write_text(f'#!/bin/sh\nexec "{py}" "{src}" "$@"\n')
             dest.chmod(0o755)
 
-    # Convenience entry for the codex bridge launcher. It lives in codex/ (not
-    # bin/), so wrap it explicitly onto PATH as `codex-meeting`.
-    cm = (PLUGIN_ROOT / "codex" / "codex-meeting.py")
-    if cm.exists():
+    # Convenience entries for codex bridge scripts that live in codex/ (not bin/):
+    # the launcher `codex-meeting` and the outbound helper `meeting-say`.
+    for _stem in ("codex-meeting", "meeting-say"):
+        _src = (PLUGIN_ROOT / "codex" / f"{_stem}.py")
+        if not _src.exists():
+            continue
         if IS_WINDOWS:
-            (BIN_LINK / "codex-meeting.cmd").write_text(f'@echo off\r\n"{py}" "{cm}" %*\r\n')
+            (BIN_LINK / f"{_stem}.cmd").write_text(f'@echo off\r\n"{py}" "{_src}" %*\r\n')
         else:
-            w = BIN_LINK / "codex-meeting"
-            w.write_text(f'#!/bin/sh\nexec "{py}" "{cm}" "$@"\n')
-            w.chmod(0o755)
+            _w = BIN_LINK / _stem
+            _w.write_text(f'#!/bin/sh\nexec "{py}" "{_src}" "$@"\n')
+            _w.chmod(0o755)
 
     sentinel.write_text(current_root)
     log(f"generated venv-python wrappers in bin/ (plugin: {plugin_bin.name})")

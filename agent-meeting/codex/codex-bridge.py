@@ -12,12 +12,14 @@ Architecture (design review, 2026-07-07):
     control keeps `last_seen` fresh (this is the session's online heartbeat).
     A subscribe frame carries only the sender, not the body, so on each frame
     we `meeting read <name> <peer> --since <cursor>` to fetch the body.
-  * CODEX SIDE — strictly poll, per the 4 concurrency constraints:
+  * CODEX SIDE — wake-only, strictly poll:
       1. global serial FIFO (one worker thread; one message at a time)
       2. per-message ws connect to the codex app-server, closed after use
       3. idle double-read before injecting (only inject when the thread is idle)
-      4. turn/start stores result.turn.id, then the reply is read back by that
-         EXACT turn.id (never turns[-1]) so a shared thread never mis-attributes.
+      4. turn/start injects the message as a turn — and that's it. The bridge does
+         NOT read the turn back or relay a reply: the live codex session sees the
+         message and replies on its own via the `meeting-say` CLI. Outbound is
+         entirely codex's job.
 
 Single control endpoint (cross-review P0-1): the control host:port is resolved
 ONCE at startup (CONTROL_URL from runtime.json wins; else mDNS/LAN discovery via
@@ -82,11 +84,9 @@ MEETING_CLI = DATA / "bin" / "meeting"
 
 BRIDGE_START = int(time.time())  # created_at floor for FIRST contact with a peer
 
-# idle / turn polling knobs
+# idle-check knobs
 _IDLE_GAP_S = 2.0
 _IDLE_MAX_WAIT_S = 90.0
-_TURN_POLL_S = 1.5
-_TURN_TIMEOUT_S = 120.0
 _CONNECT_RETRIES = 2       # retry a failed connect (before injection) this many times
 _CONNECT_RETRY_GAP_S = 2.0
 
@@ -271,10 +271,11 @@ def _fetch_new_messages(peer: str, cursor: int, known: bool):
 
 
 # ---------------------------------------------------------------------------
-# Codex side: inject one message, read the reply back by turn.id (async).
-# Raises ConnectionError if the failure happened BEFORE injection (safe to
-# retry — the model never ran). Returns None if injected but no reply could be
-# read back (NOT safe to retry — would double-inject). Returns text on success.
+# Codex side: inject one message so the live codex session SEES it. The bridge
+# only wakes codex — codex replies on its own via meeting-say; there is no
+# read-back / relay. Raises _NotInjected if the failure happened BEFORE the turn
+# started (safe to retry). Returns True once the turn is started, False if the
+# thread never went idle or the turn did not start.
 # ---------------------------------------------------------------------------
 class _NotInjected(ConnectionError):
     pass
@@ -289,7 +290,6 @@ async def _codex_inject(ws_addr: str, thread_id: str, peer: str, msg_id: int, bo
 
     pend = {}
     nid = 0
-    injected = False
 
     async def recv_loop():
         # P0-2: on ANY loop end (exception OR normal close), fail every pending
@@ -338,9 +338,6 @@ async def _codex_inject(ws_addr: str, thread_id: str, peer: str, msg_id: int, bo
     def is_idle(st):
         return st.get("type") == "idle" if isinstance(st, dict) else st == "idle"
 
-    def is_completed(st):
-        return st.get("type") == "completed" if isinstance(st, dict) else st == "completed"
-
     try:
         # --- pre-injection phase (connection errors here are retryable) ---
         try:
@@ -359,59 +356,26 @@ async def _codex_inject(ws_addr: str, thread_id: str, peer: str, msg_id: int, bo
                         break
                 if time.monotonic() > deadline:
                     _log(f"thread {thread_id} not idle after {_IDLE_MAX_WAIT_S}s; skipping msg {msg_id}")
-                    return None  # injected=False but not retryable (thread genuinely busy)
+                    return False  # not retryable (thread genuinely busy)
                 await asyncio.sleep(_IDLE_GAP_S)
         except (ConnectionError, asyncio.TimeoutError) as e:
             raise _NotInjected(str(e))
 
-        # --- inject (constraint 4a): from here a failure is NOT retryable ---
+        # --- inject only ---
+        # codex sees the message as a turn (prefixed [peer=X msg_id=N]) and handles
+        # its OWN reply via meeting-say. The bridge deliberately does NOT read the
+        # turn back or relay a reply — outbound is entirely codex's job now.
         text = f"[peer={peer} msg_id={msg_id}] {body}"
         r = await call("turn/start", {"threadId": thread_id,
                                       "input": [{"type": "text", "text": text}]}, timeout=60)
-        injected = True
-        turn_id = (r.get("result") or {}).get("turn", {}).get("id")
-        if not turn_id:
-            _log(f"turn/start returned no turn.id for msg {msg_id}")
-            return None
-
-        # --- read back by EXACT turn.id (constraint 4b) ---
-        t_deadline = time.monotonic() + _TURN_TIMEOUT_S
-        while time.monotonic() < t_deadline:
-            try:
-                rr = await call("thread/read", {"threadId": thread_id, "includeTurns": True})
-            except (ConnectionError, asyncio.TimeoutError) as e:
-                _log(f"read-back lost connection for msg {msg_id} (turn already injected): {e}")
-                return None
-            turns = (rr.get("result") or {}).get("thread", {}).get("turns") or []
-            target = next((t for t in turns if isinstance(t, dict) and t.get("id") == turn_id), None)
-            if target and is_completed(target.get("status")):
-                texts = [it.get("text") for it in (target.get("items") or [])
-                         if isinstance(it, dict) and it.get("type") == "agentMessage" and it.get("text")]
-                return "\n".join(texts) if texts else ""
-            await asyncio.sleep(_TURN_POLL_S)
-        _log(f"turn {turn_id} (msg {msg_id}) not completed in {_TURN_TIMEOUT_S}s")
-        return None
+        if not (r.get("result") or {}).get("turn", {}).get("id"):
+            _log(f"turn/start returned no turn for msg {msg_id}")
+            return False
+        return True
     finally:
         task.cancel()
         try:
             await ws.close()
-        except Exception:
-            pass
-
-
-def _send_reply(peer: str, reply: str) -> None:
-    """Relay the codex reply back to the peer (via --body-file for shell safety)."""
-    tmp = CODEX_DIR / f".reply-{peer}-{os.getpid()}.txt"
-    try:
-        tmp.write_text(reply, encoding="utf-8")
-        r = _run_meeting("send", SELF, peer, f"--body-file={tmp}", "--kind=回应")
-        if r.returncode != 0:
-            _log(f"meeting send {peer} rc={r.returncode}: {(r.stderr or '').strip()[:160]}")
-    except Exception as e:
-        _log(f"meeting send {peer} failed: {e}")
-    finally:
-        try:
-            tmp.unlink()
         except Exception:
             pass
 
@@ -423,21 +387,22 @@ _Q: "queue.Queue[tuple[str,int,str]]" = queue.Queue()
 
 
 def _inject_with_retry(ws_addr, thread_id, peer, msg_id, body):
-    """Return reply text or None. Retries ONLY pre-injection connect failures."""
+    """Return True if the message was delivered into the codex session, else False.
+    Retries ONLY pre-injection connect failures."""
     attempt = 0
     while True:
         try:
-            return asyncio.run(_codex_inject(ws_addr, thread_id, peer, msg_id, body))
+            return bool(asyncio.run(_codex_inject(ws_addr, thread_id, peer, msg_id, body)))
         except _NotInjected as e:
             attempt += 1
             if attempt > _CONNECT_RETRIES:
                 _log(f"msg {msg_id}: give up after {attempt} connect attempts: {e}")
-                return None
+                return False
             _log(f"msg {msg_id}: pre-injection failure ({e}); retry {attempt}/{_CONNECT_RETRIES}")
             time.sleep(_CONNECT_RETRY_GAP_S)
         except Exception as e:
             _log(f"msg {msg_id}: unexpected inject error: {type(e).__name__}: {e}")
-            return None
+            return False
 
 
 def _worker():
@@ -448,16 +413,14 @@ def _worker():
             thread_id = mapping.get("session_id")
             ws_addr = mapping.get("ws_addr")
             if not thread_id or not ws_addr:
-                _log(f"no mapping (session_id/ws_addr) for msg {msg_id} from {peer}; skipping")
-                _send_reply(peer, f"[codex-bridge] 会话未就绪（无映射），未处理 msg_id={msg_id}。")
+                _log(f"no mapping for msg {msg_id} from {peer}; skipping "
+                     f"(codex session has not started a turn yet, so no session_id)")
                 continue
-            _log(f"injecting msg {msg_id} from {peer} -> thread {thread_id}")
-            reply = _inject_with_retry(ws_addr, thread_id, peer, msg_id, body)
-            if reply is None:
-                _send_reply(peer, f"[codex-bridge] 注入超时/失败，未取到回复（msg_id={msg_id}）。")
-            else:
-                _send_reply(peer, reply)
-                _log(f"replied to {peer} for msg {msg_id} ({len(reply)} chars)")
+            _log(f"waking codex with msg {msg_id} from {peer} -> thread {thread_id}")
+            delivered = _inject_with_retry(ws_addr, thread_id, peer, msg_id, body)
+            _log(f"msg {msg_id} from {peer}: "
+                 + ("delivered into codex session (codex replies via meeting-say)"
+                    if delivered else "NOT delivered"))
         except Exception as e:
             _log(f"worker error on msg {msg_id} from {peer}: {type(e).__name__}: {e}")
         finally:

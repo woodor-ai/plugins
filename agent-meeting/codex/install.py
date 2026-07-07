@@ -53,6 +53,89 @@ def _venv_python(meeting_home: Path) -> Path:
     return meeting_home / "venv" / "bin" / "python"
 
 
+_AGENTS_BEGIN = "<!-- agent-meeting:begin (auto-managed by agent-meeting/codex/install.py) -->"
+_AGENTS_END = "<!-- agent-meeting:end -->"
+
+
+def _ensure_windows_sandbox(codex_home: Path):
+    """Windows only: codex's 'elevated' sandbox needs a helper exe
+    (codex-windows-sandbox-setup.exe) this install lacks, which makes EVERY shell
+    command codex runs fail (orchestrator_helper_launch_failed). codex must be able
+    to run shell commands to call the meeting CLI, so force `[windows] sandbox =
+    "unelevated"`. Idempotent."""
+    if not IS_WINDOWS:
+        return
+    import re
+    cfg = codex_home / "config.toml"
+    text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    m = re.search(r'(?ms)^\[windows\][ \t]*\r?\n(.*?)(?=^\[|\Z)', text)
+    if m and re.search(r'(?m)^[ \t]*sandbox[ \t]*=[ \t]*"unelevated"', m.group(1)):
+        print("  [windows] sandbox already \"unelevated\" — no change")
+        return
+    if m:
+        body = m.group(1)
+        if re.search(r'(?m)^[ \t]*sandbox[ \t]*=', body):
+            new_body = re.sub(r'(?m)^[ \t]*sandbox[ \t]*=.*$', 'sandbox = "unelevated"', body, count=1)
+        else:
+            new_body = 'sandbox = "unelevated"\n' + body
+        text = text[:m.start(1)] + new_body + text[m.end(1):]
+    else:
+        text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + '[windows]\nsandbox = "unelevated"\n'
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(text, encoding="utf-8")
+    print('  set [windows] sandbox = "unelevated" '
+          '(codex shell needs this; "elevated" requires a helper exe not present here)')
+
+
+def _ensure_agents_md(codex_home: Path, meeting_home: Path, control: str):
+    """Append (or refresh) an agent-meeting usage section to ~/.codex/AGENTS.md so
+    codex knows it is a peer and how to send. Idempotent — replaces only the block
+    between our markers, never the user's own content."""
+    say = (meeting_home / "bin" / ("meeting-say.cmd" if IS_WINDOWS else "meeting-say"))
+    vpy = _venv_python(meeting_home)
+    cli = meeting_home / "bin" / "meeting"
+    ctrl = control or "http://<your-mac-tailnet-ip>:8765"
+    block = f"""{_AGENTS_BEGIN}
+## agent-meeting (peer messaging)
+
+You are a peer on **agent-meeting** — other agents can message you and you can
+message them.
+
+- **Incoming**: a message from another agent arrives as a normal turn whose text
+  begins with `[peer=X msg_id=N]`. That means agent **X** is talking to you; the
+  rest is X's message.
+- **Reply to X, or message anyone, in ONE PowerShell command**:
+  ```
+  & "{say}" X '你的正文放在单引号里'
+  ```
+  Put the body in **single quotes** (PowerShell treats them literally — safe for
+  Chinese prose and punctuation; a literal `'` inside must be doubled `''`). You do
+  NOT need to know your own name or the control address — meeting-say fills them in.
+- **See who is online**:
+  ```
+  & "{vpy}" "{cli}" list --host {ctrl}
+  ```
+- **Etiquette**: reply only when you have something substantive (an answer, a
+  question, a decision, a status change). Do NOT send bare acks ("收到 / ok / 好的")
+  — a reply wakes the other agent's whole session, so silence is fine when you have
+  nothing to add. You may also start a conversation or message a third agent on your
+  own initiative.
+{_AGENTS_END}"""
+    agents = codex_home / "AGENTS.md"
+    existing = agents.read_text(encoding="utf-8") if agents.exists() else ""
+    import re
+    if _AGENTS_BEGIN in existing and _AGENTS_END in existing:
+        new = re.sub(re.escape(_AGENTS_BEGIN) + r".*?" + re.escape(_AGENTS_END),
+                     block, existing, flags=re.S)
+        action = "refreshed"
+    else:
+        new = (existing.rstrip("\n") + "\n\n" if existing.strip() else "") + block + "\n"
+        action = "appended"
+    agents.parent.mkdir(parents=True, exist_ok=True)
+    agents.write_text(new, encoding="utf-8")
+    print(f"  {action} agent-meeting section in {agents}")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="install.py",
                                  description="codex-only agent-meeting install")
@@ -87,7 +170,12 @@ def main():
     # 2. codex SessionStart register hook
     _run([sys.executable, str(HOOK_INSTALLER)], env, "install codex SessionStart hook")
 
-    # 3. guidance
+    # 3. codex shell fix (Windows) + meeting usage instructions for codex
+    print("\n=== configure codex for outbound (shell + AGENTS.md) ===")
+    _ensure_windows_sandbox(codex_home)
+    _ensure_agents_md(codex_home, meeting_home, args.control_url)
+
+    # 4. guidance
     launcher = HERE / "codex-meeting.py"
     control = args.control_url or "http://<your-mac-tailnet-ip>:8765"
     print("\n=== install complete ===")
