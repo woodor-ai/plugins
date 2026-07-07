@@ -161,9 +161,10 @@ def _process_command_line(pid: int) -> str:
             "if ($p) { $p.CommandLine }"
         )
         try:
+            kw = {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
             r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
                                 "-Command", ps_cmd],
-                               capture_output=True, text=True, timeout=4)
+                               capture_output=True, text=True, timeout=4, **kw)
             if r.returncode == 0:
                 return (r.stdout or "").strip()
         except Exception:
@@ -386,10 +387,11 @@ class Launcher:
             _terminate(self.bridge_proc)
         if self.appserver_proc and self.appserver_proc.poll() is None:
             _terminate(self.appserver_proc)
-        try:
-            RUNTIME_JSON.unlink()
-        except FileNotFoundError:
-            pass
+        if self.lock.acquired:
+            try:
+                RUNTIME_JSON.unlink()
+            except FileNotFoundError:
+                pass
         self.lock.release()
 
 
@@ -435,7 +437,6 @@ def main():
         launcher.setup()
     except AlreadyRunningError as e:
         _log(str(e))
-        launcher.rollback()
         sys.exit(2)
     except Exception as e:
         _log(f"setup failed: {e}; rolling back")
