@@ -49,13 +49,23 @@ def test_generated_config_is_valid_toml_and_roundtrips(tmp_path):
 def test_hook_command_is_windows_safe():
     mod = _load(Path(os.environ.get("CODEX_HOME", "")) or Path.cwd())
     cmd = mod.HOOK_COMMAND
-    # python3 fallback chain present (Windows often lacks python3).
-    assert "python3 " in cmd
-    assert "py -3 " in cmd
-    assert "python " in cmd
-    assert cmd.count("||") == 2
     # No backslashes — they break TOML basic strings; we use forward slashes.
     assert "\\" not in cmd
+    if os.name == "nt":
+        # Windows: codex splits the command on whitespace and ignores quotes, so
+        # the command must be a bare "<python> <pickup>" — no `||`, no quotes.
+        assert "||" not in cmd
+        assert '"' not in cmd
+        assert mod._PICKUP in cmd
+        # exactly two space-separated, space-free tokens (python + pickup)
+        assert len(cmd.split(" ")) == 2
+    else:
+        # POSIX: shell-executed fallback chain (python3 often absent on Windows,
+        # but this branch is the POSIX form).
+        assert "python3 " in cmd
+        assert "py -3 " in cmd
+        assert "python " in cmd
+        assert cmd.count("||") == 2
 
 
 def test_trusted_hash_matches_parsed_command(tmp_path):
