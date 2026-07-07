@@ -60,17 +60,6 @@ reply goes back to the peer. Exit the TUI (or Ctrl-C) to tear everything down.
 
 ## Follow-ups (non-blocking)
 
-- **Single-instance protection**: nothing stops two `codex-meeting` launches for the
-  same name from each starting a bridge — two bridges then both inject every message
-  (double delivery), and each registers the session under its own launch-cwd project.
-  Add a pidfile lock (or reuse an already-running bridge) so a second launch refuses
-  or attaches instead of duplicating. (Note: on Windows one bridge shows up as two
-  `python.exe` processes — the venv-python stub plus its child — which is NOT a
-  duplicate; a real duplicate only comes from a second launch.)
-- **Project-derivation consistency**: the launcher writes `runtime.cwd = os.getcwd()`,
-  so launching from a non-project directory registers the session under the wrong
-  project and inbound frames may misroute. Normalize/validate the launch cwd, or warn
-  when it is not the intended project root.
 - Auto-warm the session (fire an empty first turn on launch) so the mapping is
   ready immediately without the user having to send a message.
 - Hide the transient console window from background/child processes on Windows
