@@ -31,6 +31,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -49,19 +51,56 @@ CONFIG_PATH = CODEX_HOME / "config.toml"
 # SessionStart matchers — match what Claude Code's hooks.json registers
 MATCHERS = ["startup", "resume", "clear", "compact"]
 
-# Codex runs the `command` string through a shell on each fire, so we use a
-# `python3 || py -3 || python` fallback chain to find a working interpreter:
-# Windows often has no `python3` (only `py`/`python`), mirroring the same
-# fallback Claude Code's hooks.json already uses. Paths use forward slashes
-# (Path.as_posix()) because backslashes are invalid escape sequences inside a
-# TOML string, and Python accepts `/` paths on Windows. The script path is
-# double-quoted to tolerate spaces.
-# NOTE (Windows, pending fire-test): assumes Codex shell-executes this command
-# (cmd.exe `||` / `py -3` both work). Validated on macOS only — the Windows
-# Codex CLI was not yet installed on the test machine. See
-# docs/codex-adaptation-investigation.md §7.
+# The HOOK_COMMAND form differs by OS because codex executes hook commands very
+# differently on Windows vs POSIX.
+#
+# POSIX: codex runs the command through a shell, so the `python3 || py -3 ||
+# python` fallback chain works (finds a real interpreter when python3 is absent).
+#
+# Windows (verified on codex 0.140.0): codex's hook runner splits the command on
+# whitespace, does NOT honor quotes, and does NOT go through a shell — so `||`
+# never falls through, and a quoted path becomes a filename WITH literal quotes
+# (not found → the hook exits 1 before the script runs). `python3` is also a
+# Store-alias stub. So on Windows we emit a bare, unquoted, space-free two-token
+# command: "<resolved-python-abspath> <pickup>". Forward slashes throughout
+# (backslashes are invalid TOML escapes; Python accepts `/` on Windows).
 _PICKUP = PICKUP_SCRIPT.as_posix()
-HOOK_COMMAND = f'python3 "{_PICKUP}" || py -3 "{_PICKUP}" || python "{_PICKUP}"'
+
+
+def _resolve_windows_python() -> str:
+    """Return an absolute python.exe for the unquoted Windows hook command.
+
+    `py -3` is the reliable launcher on Windows; ask it for the real interpreter
+    path. Fall back to the interpreter running this installer, then a PATH lookup.
+    """
+    try:
+        r = subprocess.run(["py", "-3", "-c", "import sys;print(sys.executable)"],
+                           capture_output=True, text=True, timeout=10)
+        cand = r.stdout.strip()
+        if r.returncode == 0 and cand and Path(cand).exists():
+            return cand
+    except Exception:
+        pass
+    if sys.executable and Path(sys.executable).exists():
+        return sys.executable
+    return shutil.which("python") or shutil.which("py") or "python"
+
+
+if os.name == "nt":
+    _WIN_PY = Path(_resolve_windows_python()).as_posix()
+    HOOK_COMMAND = f"{_WIN_PY} {_PICKUP}"
+    # The unquoted Windows form only works if BOTH tokens are space-free (codex
+    # splits on whitespace). Warn loudly rather than emit a silently-broken hook.
+    if " " in _WIN_PY or " " in _PICKUP:
+        sys.stderr.write(
+            "WARNING: a space in the python or pickup path breaks the unquoted "
+            "Windows hook command (codex splits on whitespace, ignores quotes).\n"
+            f"         python: {_WIN_PY}\n"
+            f"         pickup: {_PICKUP}\n"
+            "         Relocate the plugin / python to a space-free path.\n"
+        )
+else:
+    HOOK_COMMAND = f'python3 "{_PICKUP}" || py -3 "{_PICKUP}" || python "{_PICKUP}"'
 
 
 # ---------------------------------------------------------------------------
