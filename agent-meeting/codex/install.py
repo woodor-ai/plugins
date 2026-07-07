@@ -27,6 +27,7 @@ Honors MEETING_HOME / CODEX_HOME / CLAUDE_CONFIG_DIR for isolated testing.
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -136,11 +137,62 @@ message them.
     print(f"  {action} agent-meeting section in {agents}")
 
 
+def _write_launcher_defaults(meeting_home: Path, control_url: str):
+    """Persist the control_url so `codex-meeting <name>` needs no --control-url."""
+    if not control_url:
+        return
+    p = meeting_home / "codex" / "launcher.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        existing = {}
+    existing["control_url"] = control_url
+    p.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+    print(f"  saved default control_url -> {p}")
+
+
+def _path_needs_entry(current_path: str, entry: str) -> bool:
+    """True if `entry` is not already a component of `current_path` (case/sep-insensitive)."""
+    norm = os.path.normcase(entry.rstrip("\\/"))
+    parts = [os.path.normcase(p.strip().rstrip("\\/")) for p in current_path.split(os.pathsep) if p.strip()]
+    return norm not in parts
+
+
+def _ensure_path_entry(bin_dir: Path):
+    """Put ~/.agent-meeting/bin on the user's PATH so `codex-meeting` (and the
+    other wrappers) are callable by name. Windows: idempotent user-PATH edit via
+    the registry (no setx 1024-char truncation, REG_EXPAND_SZ preserved). POSIX:
+    print a hint (shell-profile edits vary too much to do safely)."""
+    entry = str(bin_dir)
+    if not IS_WINDOWS:
+        print(f"  add to your shell PATH to call codex-meeting by name: {entry}")
+        return
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ) as k:
+            try:
+                cur, kind = winreg.QueryValueEx(k, "Path")
+            except FileNotFoundError:
+                cur, kind = "", winreg.REG_EXPAND_SZ
+        if not _path_needs_entry(cur or "", entry):
+            print(f"  {entry} already on user PATH")
+            return
+        new = ((cur.rstrip(os.pathsep) + os.pathsep) if cur else "") + entry
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, "Path", 0, winreg.REG_EXPAND_SZ, new)
+        print(f"  added {entry} to user PATH — open a NEW terminal, then `codex-meeting <name>`")
+    except Exception as e:
+        print(f"  (could not update user PATH automatically: {e}; add {entry} manually)")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="install.py",
                                  description="codex-only agent-meeting install")
     ap.add_argument("--control-url", default="",
                     help="agent-meeting control base url, e.g. http://<mac-tailnet-ip>:8765")
+    ap.add_argument("--no-path", action="store_true",
+                    help="do not add ~/.agent-meeting/bin to the user PATH")
     args = ap.parse_args()
 
     for p in (BOOTSTRAP, HOOK_INSTALLER):
@@ -175,7 +227,15 @@ def main():
     _ensure_windows_sandbox(codex_home)
     _ensure_agents_md(codex_home, meeting_home, args.control_url)
 
-    # 4. guidance
+    # 4. convenience: `codex-meeting <name>` callable by name, control_url remembered
+    print("\n=== convenience launcher ===")
+    _write_launcher_defaults(meeting_home, args.control_url)
+    if args.no_path:
+        print(f"  (--no-path) skipped PATH edit; add {meeting_home / 'bin'} manually to call by name")
+    else:
+        _ensure_path_entry(meeting_home / "bin")
+
+    # 5. guidance
     launcher = HERE / "codex-meeting.py"
     control = args.control_url or "http://<your-mac-tailnet-ip>:8765"
     print("\n=== install complete ===")
@@ -184,10 +244,13 @@ def main():
     print(f"  codex config:  {codex_home / 'config.toml'}  (register hook installed)")
     print(f"  codex scripts: {HERE}  (run in place — do not move this clone)")
     print()
-    print("Next — start a bridged live codex session (foreground = your live TUI):")
-    print(f'  "{vpy}" "{launcher}" <name> --control-url {control}')
-    if not args.control_url:
-        print("  (replace <your-mac-tailnet-ip> with the host running agent-meeting-control)")
+    print("Next — start a bridged live codex session (open a NEW terminal first so PATH refreshes):")
+    if args.control_url:
+        print("  codex-meeting <name>            # control-url is remembered; <name> optional too")
+    else:
+        print("  codex-meeting <name> --control-url http://<control-host>:8765")
+    print("Full path form (works in this terminal, no new terminal needed):")
+    print(f'  "{vpy}" "{launcher}" <name>' + (f" --control-url {control}" if not args.control_url else ""))
 
 
 if __name__ == "__main__":

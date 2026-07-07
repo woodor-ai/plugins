@@ -34,6 +34,7 @@ is rolled back so no orphan app-server / bridge is left behind.
 import argparse
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -50,9 +51,25 @@ CODEX_DIR = DATA / "codex"
 LOGS_DIR = CODEX_DIR / "logs"
 RUN_DIR = CODEX_DIR / "run"
 RUNTIME_JSON = CODEX_DIR / "runtime.json"
+LAUNCHER_JSON = CODEX_DIR / "launcher.json"   # persisted defaults (control_url) from install
 MEETING_CLI = DATA / "bin" / "meeting"
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "codex-bridge.py"
 IS_WINDOWS = sys.platform.startswith("win")
+
+
+def _default_control_url() -> str:
+    """Remembered control_url written at install time, so a bare
+    `codex-meeting <name>` needs no --control-url."""
+    try:
+        return (json.loads(LAUNCHER_JSON.read_text(encoding="utf-8")).get("control_url") or "").strip()
+    except Exception:
+        return ""
+
+
+def _default_name() -> str:
+    """A stable per-machine default session name, so even the name is optional."""
+    host = re.sub(r"[^A-Za-z0-9-]", "-", socket.gethostname().split(".")[0]).strip("-") or "host"
+    return f"codex-{host}"[:20]
 
 
 def _venv_python() -> str:
@@ -408,9 +425,11 @@ def _terminate(proc):
 
 def main():
     ap = argparse.ArgumentParser(prog="codex-meeting")
-    ap.add_argument("name", help="agent-meeting session name")
+    ap.add_argument("name", nargs="?", default=None,
+                    help=f"agent-meeting session name (default: {_default_name()})")
     ap.add_argument("--port", type=int, default=8790, help="app-server port (default 8790)")
-    ap.add_argument("--control-url", default="", help="agent-meeting control base url (http://host:port)")
+    ap.add_argument("--control-url", default="",
+                    help="agent-meeting control base url (default: the one saved at install time)")
     ap.add_argument("--no-codex", action="store_true",
                     help="setup + hold + teardown without the foreground codex (testing)")
     args = ap.parse_args()
@@ -422,7 +441,9 @@ def main():
         _log(f"FATAL: codex-bridge.py not found at {BRIDGE_SCRIPT}")
         sys.exit(5)
 
-    launcher = Launcher(args.name, args.port, args.control_url)
+    name = args.name or _default_name()
+    control_url = args.control_url or _default_control_url()
+    launcher = Launcher(name, args.port, control_url)
     stop_event = threading.Event()
 
     def _sig(_signum, _frame):
