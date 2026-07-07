@@ -30,7 +30,10 @@ import uuid
 from pathlib import Path
 
 HOME = Path.home()
-DATA = HOME / ".agent-meeting"
+# Honor MEETING_HOME (same env the meeting CLI and monitor.py already respect) so
+# the whole runtime can be relocated — required for isolated codex-only installs
+# and testing on a machine that already has a live ~/.agent-meeting.
+DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
 DB_DIR = DATA / "db"
 DB = DB_DIR / "rooms.db"
 CONFIG = DATA / "config.json"

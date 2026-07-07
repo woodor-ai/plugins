@@ -55,10 +55,13 @@ if not REGISTER_SCRIPT.exists():
     sys.exit(f"ERROR: codex-register.py not found at {REGISTER_SCRIPT}")
 
 HOME = Path.home()
+# Honor MEETING_HOME so the HOOK_COMMAND points at the right venv during an
+# isolated / relocated install (same env the CLI, monitor, bridge respect).
+AM_HOME = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
 if os.name == "nt":
-    VENV_PYTHON = HOME / ".agent-meeting" / "venv" / "Scripts" / "python.exe"
+    VENV_PYTHON = AM_HOME / "venv" / "Scripts" / "python.exe"
 else:
-    VENV_PYTHON = HOME / ".agent-meeting" / "venv" / "bin" / "python"
+    VENV_PYTHON = AM_HOME / "venv" / "bin" / "python"
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", HOME / ".codex"))
 CONFIG_PATH = CODEX_HOME / "config.toml"
