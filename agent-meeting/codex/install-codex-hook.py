@@ -197,11 +197,32 @@ def remove_agent_meeting_hook_blocks(content: str) -> str:
     return pattern.sub(lambda m: "" if is_ours(m) else m.group(0), content)
 
 
+def _base_index(content: str) -> int:
+    """Position (among all [[hooks.SessionStart]] blocks) of OUR first block.
+
+    Codex keys hook trust by the block's ordinal position in the file
+    (`session_start:<block>:0`). When OTHER SessionStart hooks (e.g. the handoff
+    plugin) already occupy positions 0..N-1, our blocks sit at N..N+3 and our
+    trust entries MUST use those same indices. Hardcoding 0..3 would clobber the
+    other plugin's trust (same key) AND leave our own blocks untrusted — breaking
+    both. Returns the count of blocks preceding our first block; len(headers) if
+    ours are not present.
+    """
+    headers = [m.start() for m in re.finditer(r'^\[\[hooks\.SessionStart\]\]', content, re.MULTILINE)]
+    for idx, pos in enumerate(headers):
+        end = headers[idx + 1] if idx + 1 < len(headers) else len(content)
+        if REGISTER_SCRIPT.name in content[pos:end]:
+            return idx
+    return len(headers)
+
+
 def ensure_state_entries(content: str) -> str:
-    """Upsert [hooks.state."<key>"] entries with current hashes."""
+    """Upsert [hooks.state."<key>"] entries with current hashes, at OUR block
+    indices (base..base+3) so we never collide with other SessionStart hooks."""
     config_path_str = str(CONFIG_PATH)
+    base = _base_index(content)
     for i, matcher in enumerate(MATCHERS):
-        key = f"{config_path_str}:session_start:{i}:0"
+        key = f"{config_path_str}:session_start:{base + i}:0"
         trusted_hash = compute_trusted_hash("session_start", matcher, HOOK_COMMAND)
         content = upsert_state_entry(content, key, trusted_hash)
     return content
@@ -237,9 +258,12 @@ def ensure_project_trust(content: str, project_path: str) -> str:
 
 
 def remove_agent_meeting_state_entries(content: str) -> str:
+    # Must run BEFORE remove_agent_meeting_hook_blocks so _base_index can still
+    # locate our blocks to compute the correct trust-entry indices.
     config_path_str = str(CONFIG_PATH)
-    for i, _ in enumerate(MATCHERS):
-        key = f"{config_path_str}:session_start:{i}:0"
+    base = _base_index(content)
+    for i in range(len(MATCHERS)):
+        key = f"{config_path_str}:session_start:{base + i}:0"
         header = _section_header(key)
         pattern = re.compile(re.escape(header) + r'[^\[]*', re.DOTALL)
         content = pattern.sub("", content)
@@ -269,8 +293,10 @@ def install(project_path: str | None) -> None:
 
 def uninstall() -> None:
     content = read_config()
-    content = remove_agent_meeting_hook_blocks(content)
+    # Order matters: remove trust entries first (their indices are computed from
+    # our still-present blocks), THEN remove the blocks.
     content = remove_agent_meeting_state_entries(content)
+    content = remove_agent_meeting_hook_blocks(content)
     write_config(content)
     print(f"Uninstalled agent-meeting SessionStart hook from {CONFIG_PATH}")
 
