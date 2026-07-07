@@ -31,6 +31,13 @@ import sys
 import time
 from pathlib import Path
 
+if sys.platform.startswith("win"):
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 _parser = argparse.ArgumentParser(prog="monitor.py", add_help=True)
 _parser.add_argument("name", help="session name to monitor")
 _parser.add_argument("--director", action="store_true", default=False,
@@ -122,7 +129,20 @@ def _register():
     extra = ["--director"] if IS_DIRECTOR else []
     if IS_GLOBAL:
         extra.append("--global")
-    _run_meeting("online", SELF, "--cwd", _CWD, "--force", *extra)
+    # Best-effort: this runs on EVERY ws reconnect (see the connect loop), and a
+    # reconnect often coincides with the control having just restarted — TCP is
+    # back up but the daemon is still busy, so `online` can hang the full 15s and
+    # raise TimeoutExpired. That must NOT kill the monitor (it would drop the
+    # session to historical until a human restarts it — exactly the daemon-restart
+    # case this re-register exists to cover). Swallow any failure; the next
+    # reconnect cycle retries.
+    try:
+        _run_meeting("online", SELF, "--cwd", _CWD, "--force", *extra)
+    except Exception as e:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        sys.stderr.write(f"[meeting {_display_id}] {ts} re-register failed ({type(e).__name__}); "
+                         f"will retry on next reconnect\n")
+        sys.stderr.flush()
     try:
         RUN_DIR.mkdir(parents=True, exist_ok=True)
         PID_FILE.write_text(str(os.getpid()))
@@ -351,15 +371,15 @@ def _ws_connect():
 
 def _emit_message(peer: str, ask, group=None, mentioned: bool = False):
     """Print the harness-facing notification line. Format is frozen -- do not change."""
-    at_tag = " @你" if (group and mentioned) else ""
+    at_tag = " @you" if (group and mentioned) else ""
     location = f" in group {group}{at_tag}" if group else ""
     if ask:
         clean = ask.replace("\r", " ").replace("\n", " ")
         if len(clean) > 100:
             clean = clean[:100] + "..."
-        print(f"New Message from {peer}{location} [未验证 peer 信号]: {clean}", flush=True)
+        print(f"New Message from {peer}{location} [unverified peer]: {clean}", flush=True)
     else:
-        print(f"New Message from {peer}{location} [未验证 peer 信号]", flush=True)
+        print(f"New Message from {peer}{location} [unverified peer]", flush=True)
 
 
 # ---------- main WS loop ----------

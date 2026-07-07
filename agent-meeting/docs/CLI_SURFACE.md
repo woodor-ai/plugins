@@ -79,7 +79,7 @@ skill 暴露的全部入口，分「使用面」和「供给面」两层：
 ### 会话目录 / 注册类
 
 **`register <name>`** — 把本会话写入中央 sessions 表。
-- `--cwd <path>`（必填）— 本会话工作目录
+- `--cwd <path>`（非 `--global` 时必填；带 `--global` 时缺省为 `~`）— 本会话工作目录
 - `--force` — 即使 monitor 心跳仍在也覆盖
 - `--director` — 注册为 director（默认 worker）
 - `--host <url>` — 显式指定 control URL（如 `http://10.0.0.5:8765`），并**存为首选 control**（写缓存，与其它命令的 `--host` 不同）

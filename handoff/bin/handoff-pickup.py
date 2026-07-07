@@ -57,7 +57,11 @@ try:
 except (FileNotFoundError, OSError):
     sys.exit(0)
 
-ctx = f"## 上 session 交接（auto-loaded，已归档 → {archive_path}）\n\n{content}"
+todo_note = (
+    "\n\n> **接手要求**：请阅读上方「第 5 段：本轮遗留 todo」，"
+    "将其中各条纳入本 session 的待办（task list），不得只归档不处理。"
+)
+ctx = f"## 上 session 交接（auto-loaded，已归档 → {archive_path}）\n\n{content}{todo_note}"
 
 print(json.dumps({
     "hookSpecificOutput": {

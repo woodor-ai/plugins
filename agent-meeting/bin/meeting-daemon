@@ -48,6 +48,13 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+if sys.platform.startswith("win"):
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
 DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
 _CONFIG_PATH = os.path.join(MEETING_HOME, "config.json")
@@ -908,7 +915,7 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchall()
         lines = [
             f"# Conversation: {self._fmt_id(self_name, self_project)} <-> {self._fmt_id(peer_name, peer_project)}",
-            f"当前发言权: {turn}\n---\n",
+            f"current turn: {turn}\n---\n",
         ]
         for row in reversed(msgs):
             ts = time.strftime("%Y-%m-%d %H:%M PDT", time.localtime(row["created_at"]))

@@ -32,6 +32,7 @@ import secrets
 import signal
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+if sys.platform.startswith("win"):
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -88,16 +96,20 @@ def beacon(event: str):
     t.start()
 
 
-HOST_CACHE = os.path.join(tempfile.gettempdir(), "meeting-host.cache")
-HOST_CACHE_TTL = 60
 MDNS_BROWSE_TIMEOUT = 1.5
+TCP_PROBE_TIMEOUT = 0.6
 SERVICE_TYPE = "_agent-meeting._tcp.local."
 
 ONLINE_THRESHOLD = 12
 
 _NO_CONTROL_MSG = (
-    "未发现中央节点 (agent-meeting-control)。"
-    "请先用 /meeting daemon 把本机设为中央节点，或确认目标 control 在线且同网段。"
+    "No control node found (agent-meeting-control). "
+    "mDNS auto-discovery returned nothing and no last-known-good cache is available. "
+    "Possible causes: control not started / different subnet / multicast blocked "
+    "(Wi-Fi AP isolation or firewall blocking UDP 5353). "
+    "Fix: run /meeting daemon to make this machine the control node; "
+    "or pin a control for unreachable machines — meeting host http://<ip>:<port> (persistent) "
+    "or temporarily export MEETING_HOST=http://<ip>:<port>."
 )
 
 
@@ -167,16 +179,128 @@ def _resolve_peer(host_url: str, raw: str, self_project: str) -> tuple[str, str]
     )
 
 
+# ---------- persistent host config (config.json) ----------
+#
+# Control resolution precedence (highest first):
+#   1. env MEETING_HOST                       — transient override
+#   2. config.json "control_host"             — user-set, sticky; beats mDNS
+#   3. mDNS live discovery                    — auto-follows IP changes
+#   4. config.json "control_cache" (TCP-probed) — auto last-known-good fallback
+#   5. hard-fail with an actionable message
+#
+# 2 and 4 are distinct on purpose: control_host is pinned by the user and is
+# never auto-evicted; control_cache is written automatically on every successful
+# reach and may be refreshed/cleared by discovery. A box where mDNS is
+# permanently dead (Wi-Fi multicast isolation / firewall) needs only to set
+# control_host once — it then survives reboots and any cache logic.
+
+def _read_config() -> dict:
+    try:
+        with open(_CONFIG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_config(cfg: dict):
+    os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+    with open(_CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def _control_host() -> str | None:
+    """User-pinned sticky host (precedence 2). None if unset."""
+    url = _read_config().get("control_host")
+    return url.rstrip("/") if url else None
+
+
+def _read_control_cache() -> str | None:
+    """Auto last-known-good host (precedence 4), ignoring age. None if unset."""
+    entry = _read_config().get("control_cache") or {}
+    url = entry.get("url") if isinstance(entry, dict) else None
+    return url.rstrip("/") if url else None
+
+
+def _read_control_cache_fresh(ttl: float) -> str | None:
+    """Auto last-known-good host only if reached within `ttl` seconds.
+
+    Fast path: lets repeated CLI calls / the 3s monitor poll skip the mDNS
+    browse (~1.5-4.5s) while a control was recently confirmed reachable.
+    """
+    entry = _read_config().get("control_cache") or {}
+    if not isinstance(entry, dict):
+        return None
+    url, ts = entry.get("url"), entry.get("ts", 0)
+    if url and (time.time() - ts) < ttl:
+        return url.rstrip("/")
+    return None
+
+
+def _write_control_cache(url: str):
+    """Seed/refresh the auto last-known-good host. Never touches control_host."""
+    if not url:
+        return
+    cfg = _read_config()
+    cfg["control_cache"] = {"url": url.rstrip("/"), "ts": time.time()}
+    try:
+        _write_config(cfg)
+    except Exception:
+        pass
+
+
+def _clear_control_cache():
+    """Drop the auto cache (e.g. host went unreachable). Keeps control_host."""
+    cfg = _read_config()
+    if "control_cache" in cfg:
+        del cfg["control_cache"]
+        try:
+            _write_config(cfg)
+        except Exception:
+            pass
+
+
+def _tcp_reachable(url: str, timeout: float = TCP_PROBE_TIMEOUT) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or 8765
+    if not host:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _host_entry(url: str, version: str = "") -> dict:
+    url = url.rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    ip = parsed.hostname or ""
+    port = parsed.port or 8765
+    return {"url": url, "host": ip, "ip": ip, "port": port, "version": version}
+
+
 # ---------- LAN discovery (mDNS + HTTP client) ----------
+#
+# Discovery is layered because python-zeroconf is the single most unreliable
+# component in this whole path. Observed on two machines: on a Windows client it
+# receives ZERO mDNS responses (zombie 169.254 NICs / platform quirk) even though
+# the control advertises fine and a raw socket sees it; on the Mac host a cold
+# one-shot browse intermittently loses a timing race and returns empty, then
+# self-heals on the next call. The control and the multicast network are fine in
+# both cases — zeroconf just doesn't hand the packets up.
+#
+# So we never trust a single empty zeroconf browse as "no control": we fall
+# through to a raw-socket mDNS query (bypasses the library entirely), then to a
+# TCP-probed last-known-good. See discover_controls() for the full precedence.
 
-def discover_controls() -> list[dict]:
-    if os.environ.get("MEETING_HOST"):
-        url = os.environ["MEETING_HOST"].rstrip("/")
-        parsed = urllib.parse.urlparse(url)
-        ip = parsed.hostname or ""
-        port = parsed.port or 8765
-        return [{"url": url, "host": ip, "ip": ip, "port": port, "version": ""}]
+RAW_DISCOVER_TIMEOUT = 2.0
+_MCAST_ADDR = "224.0.0.251"
+_MCAST_PORT = 5353
 
+
+def _discover_zeroconf() -> list[dict]:
+    """Normal fast path: browse via python-zeroconf. May flake/return empty."""
     try:
         from zeroconf import IPVersion, ServiceBrowser, ServiceListener, Zeroconf
     except ImportError:
@@ -206,44 +330,226 @@ def discover_controls() -> list[dict]:
             time.sleep(MDNS_BROWSE_TIMEOUT)
             zc.close()
         except Exception:
-            return found
+            break
         if found:
             break
-
     return found
 
 
+# ----- raw-socket mDNS fallback (bypasses python-zeroconf) -----
+#
+# Adapted from a probe roof-notify verified on the exact box where zeroconf was
+# blind. Sends the same PTR query python-zeroconf would, but on a plain UDP
+# socket we control, joined to the multicast group on every up interface. Only
+# parses response packets (QR=1) so our own outgoing query doesn't loopback as a
+# false hit. macOS already holds :5353 via mDNSResponder, so SO_REUSEPORT is
+# mandatory there to co-bind; if we can't bind :5353 we genuinely cannot receive
+# the responses, so we bail rather than bind an ephemeral port that hears nothing.
+
+def _raw_local_ipv4s() -> list[str]:
+    ips: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except Exception:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ips.add(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
+    return [ip for ip in ips if ip != "127.0.0.1" and not ip.startswith("169.254.")]
+
+
+def _raw_build_query(labels, qtype=12) -> bytes:
+    hdr = struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0)
+    q = b"".join(bytes([len(l)]) + l.encode() for l in labels) + b"\x00"
+    return hdr + q + struct.pack("!HH", qtype, 1)
+
+
+def _raw_read_name(data, off):
+    labels, jumped, orig = [], False, off
+    while off < len(data):
+        l = data[off]
+        if l == 0:
+            off += 1
+            break
+        if l & 0xC0 == 0xC0:
+            ptr = ((l & 0x3F) << 8) | data[off + 1]
+            if not jumped:
+                orig = off + 2
+            off, jumped = ptr, True
+            continue
+        off += 1
+        labels.append(data[off:off + l])
+        off += l
+    return b".".join(labels).decode("utf-8", "replace"), (orig if jumped else off)
+
+
+def _raw_parse(data, ptrs, srv, a, txt):
+    try:
+        qd, an, ns, ar = struct.unpack("!HHHH", data[4:12])
+        off = 12
+        for _ in range(qd):
+            _, off = _raw_read_name(data, off)
+            off += 4
+        for _ in range(an + ns + ar):
+            name, off = _raw_read_name(data, off)
+            rtype, _c, _t, rdlen = struct.unpack("!HHIH", data[off:off + 10])
+            off += 10
+            rd = off
+            off += rdlen
+            if rtype == 12:
+                tgt, _ = _raw_read_name(data, rd)
+                ptrs.setdefault(name, set()).add(tgt)
+            elif rtype == 33:
+                _p, _w, port = struct.unpack("!HHH", data[rd:rd + 6])
+                host, _ = _raw_read_name(data, rd + 6)
+                srv[name] = (host, port)
+            elif rtype == 16:
+                props, i = {}, rd
+                while i < rd + rdlen:
+                    ln = data[i]
+                    i += 1
+                    if ln:
+                        kv = data[i:i + ln]
+                        i += ln
+                        k, _, v = kv.partition(b"=")
+                        props[k.decode("utf-8", "replace")] = v.decode("utf-8", "replace")
+                txt[name] = props
+            elif rtype == 1 and rdlen == 4:
+                a[name] = socket.inet_ntoa(data[rd:rd + 4])
+    except Exception:
+        pass
+
+
+def _discover_controls_raw(timeout: float = RAW_DISCOVER_TIMEOUT) -> list[dict]:
+    ifaces = _raw_local_ipv4s() or ["0.0.0.0"]
+    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, "SO_REUSEPORT"):
+        try:
+            rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
+    try:
+        rx.bind(("", _MCAST_PORT))
+    except OSError:
+        # Cannot co-bind :5353 → cannot receive the responses. Raw path is
+        # unavailable on this box; let the caller fall through to the cache.
+        rx.close()
+        return []
+    for ip in ifaces:
+        try:
+            rx.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                          socket.inet_aton(_MCAST_ADDR) + socket.inet_aton(ip))
+        except OSError:
+            pass
+    pkt = _raw_build_query(SERVICE_TYPE.rstrip(".").split("."))
+    for ip in ifaces:
+        try:
+            rx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+            rx.sendto(pkt, (_MCAST_ADDR, _MCAST_PORT))
+        except OSError:
+            pass
+    ptrs, srv, a, txt = {}, {}, {}, {}
+    rx.settimeout(0.5)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            data, _ = rx.recvfrom(65535)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if len(data) >= 12 and (data[2] & 0x80):  # QR=1: response only
+            _raw_parse(data, ptrs, srv, a, txt)
+    rx.close()
+
+    base = SERVICE_TYPE.rstrip(".")
+    out = []
+    for inst in ptrs.get(base, set()) | ptrs.get(base + ".", set()):
+        host_l, port = srv.get(inst, (None, None))
+        if not port:
+            continue
+        ip = a.get(host_l, "")
+        props = txt.get(inst, {})
+        out.append({
+            "url": f"http://{ip}:{port}" if ip else "",
+            "host": props.get("host", "") or host_l or ip,
+            "ip": ip,
+            "port": port,
+            "version": props.get("version", ""),
+        })
+    return [c for c in out if c["url"]]
+
+
+def discover_controls() -> list[dict]:
+    # 1. env override.
+    if os.environ.get("MEETING_HOST"):
+        return [_host_entry(os.environ["MEETING_HOST"])]
+
+    # 2. user-pinned sticky host — beats discovery entirely.
+    sticky = _control_host()
+    if sticky:
+        return [_host_entry(sticky)]
+
+    # 3. zeroconf (fast, normal path). Authoritative when it returns anything.
+    found = _discover_zeroconf()
+    if found:
+        _write_control_cache(found[0]["url"])
+        return found
+
+    # 4. raw-socket mDNS — zeroconf came up empty, but the library is the weak
+    #    link, not the network. Re-query without it before giving up.
+    raw = _discover_controls_raw()
+    if raw:
+        _write_control_cache(raw[0]["url"])
+        return raw
+
+    # 5. TCP-probed last-known-good. Covers boxes where even raw multicast is
+    #    blocked (e.g. true Wi-Fi AP isolation) but a control was reachable before.
+    cached = _read_control_cache()
+    if cached and _tcp_reachable(cached):
+        return [_host_entry(cached)]
+
+    return []
+
+
+HOST_FASTPATH_TTL = 60
+
+
 def discover_host() -> str | None:
+    # 1. env override.
     if os.environ.get("MEETING_HOST"):
         return os.environ["MEETING_HOST"].rstrip("/")
 
-    if os.path.exists(HOST_CACHE):
-        try:
-            with open(HOST_CACHE) as f:
-                cache = json.load(f)
-            if cache.get("expires", 0) > time.time() and cache.get("url"):
-                return cache["url"]
-        except Exception:
-            pass
+    # 2. user-pinned sticky host — beats mDNS, no probe needed.
+    sticky = _control_host()
+    if sticky:
+        return sticky
 
+    # Fast path: a control was confirmed reachable within the TTL — skip the
+    # mDNS browse so back-to-back CLI calls / the 3s monitor poll stay cheap.
+    fresh = _read_control_cache_fresh(HOST_FASTPATH_TTL)
+    if fresh:
+        return fresh
+
+    # 3-5. zeroconf → raw-socket mDNS → TCP-probed auto-cache (see discover_controls).
     controls = discover_controls()
-    if not controls:
-        return None
-
-    url = controls[0]["url"]
-    try:
-        with open(HOST_CACHE, "w") as f:
-            json.dump({"url": url, "expires": time.time() + HOST_CACHE_TTL}, f)
-    except Exception:
-        pass
-    return url
+    return controls[0]["url"] if controls else None
 
 
 def _invalidate_host_cache():
-    try:
-        os.remove(HOST_CACHE)
-    except Exception:
-        pass
+    """Force re-discovery after a host went unreachable.
+
+    Only clears the auto cache — env MEETING_HOST and the user-pinned
+    control_host are intentionally left intact so a deliberate override is
+    never silently dropped on a transient network blip.
+    """
+    _clear_control_cache()
 
 
 def _resolve_host(explicit: str | None = None) -> str:
@@ -488,31 +794,41 @@ def cmd_delete(args):
 
 def cmd_online(args):
     name = args.name
-    cwd = args.cwd
     is_global = getattr(args, "is_global", False)
+    cwd = args.cwd
+    if cwd is None:
+        if is_global:
+            cwd = os.path.expanduser("~")
+        else:
+            print("online: --cwd is required (unless --global)", file=sys.stderr)
+            sys.exit(2)
     project = "*" if is_global else _derive_project(cwd)
     host_name = socket.gethostname()
 
     explicit_host = getattr(args, "host", None)
     host = _resolve_host(explicit_host)
 
-    if explicit_host:
-        try:
-            with open(HOST_CACHE, "w") as f:
-                json.dump({"url": explicit_host.rstrip("/"), "expires": time.time() + HOST_CACHE_TTL}, f)
-        except Exception:
-            pass
-
     payload = {
         "project": project, "name": name, "cwd": cwd,
         "force": args.force,
-        "role": "director" if args.director else None,
+        # Always send an explicit role so re-registration is authoritative:
+        # the daemon upserts role via COALESCE(?, role), so sending None on a
+        # worker re-register would preserve a stale 'director' and make demotion
+        # impossible. "director"/"worker" lets the monitor's --director flag win.
+        "role": "director" if args.director else "worker",
         "host": host_name, "os": _OS_LABEL,
     }
     r = http("POST", host, "/register", body=payload)
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
+    # Any host we just registered against is a good last-known-good — seed the
+    # auto cache so a later mDNS blackout (Wi-Fi multicast isolation, etc.) still
+    # has a reachable fallback. Skipped when env MEETING_HOST drove the resolve,
+    # since that override is transient and shouldn't be persisted.
+    if not os.environ.get("MEETING_HOST"):
+        _write_control_cache(host)
+
     display = name if project == "*" else f"{name}@{project}"
     print(f"online: {display} (cwd={cwd}, host={host_name})")
     beacon("register")
@@ -717,10 +1033,10 @@ def cmd_daemon(args):
             healthy = _probe_health() is not None
             if not healthy:
                 print(
-                    f"\n本机应为 control，但 daemon 未在监听 :{DAEMON_PORT}。"
-                    " 修复：launchctl 自愈未生效时跑 'meeting daemon restart'，"
-                    " 或重开 Claude 会话触发自动拉起。"
-                    " 详见 ~/.agent-meeting/logs/bootstrap.log"
+                    f"\nThis machine is configured as control but the daemon is not listening on :{DAEMON_PORT}. "
+                    "Fix: run 'meeting daemon restart' if launchctl self-heal did not fire, "
+                    "or reopen the Claude session to trigger auto-launch. "
+                    "See ~/.agent-meeting/logs/bootstrap.log"
                 )
 
     elif args.action == "stop":
@@ -826,6 +1142,44 @@ def cmd_token(args):
         "Run `meeting token <value>` on every client machine to distribute it, "
         "or set the MEETING_TOKEN env var. Keep it secret."
     )
+
+
+def cmd_host(args):
+    """Pin / clear / show the sticky control host (config.json control_host).
+
+    For boxes where mDNS discovery is permanently broken (zeroconf blind to
+    multicast, AP isolation, etc.). A pinned host wins over live discovery —
+    precedence 2 — so it survives reboots and any cache logic. One knob.
+    """
+    value = getattr(args, "value", None)
+
+    if value is None:
+        current = _control_host()
+        env = os.environ.get("MEETING_HOST")
+        if env:
+            print(f"control_host (config): {current or '(unset)'}")
+            print(f"MEETING_HOST (env, overrides): {env.rstrip('/')}")
+        else:
+            print(current or "(unset)")
+        return
+
+    cfg = _read_config()
+    if value == "clear":
+        cfg.pop("control_host", None)
+        _write_config(cfg)
+        print("control_host cleared -- discovery falls back to mDNS / raw socket / cache")
+        return
+
+    url = value.rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        print(f"invalid host '{value}': expected http://<ip-or-name>:<port>", file=sys.stderr)
+        sys.exit(2)
+    cfg["control_host"] = url
+    _write_config(cfg)
+    reachable = "reachable" if _tcp_reachable(url) else "NOT reachable right now"
+    print(f"control_host pinned: {url} ({reachable})")
+    print("(this beats mDNS; clear with `meeting host clear`)")
 
 
 def _validate_group_name(name: str) -> str | None:
@@ -963,15 +1317,12 @@ def cmd_group(args):
 def cmd_controls(args):
     controls = discover_controls()
 
-    current_url = None
-    if os.path.exists(HOST_CACHE):
-        try:
-            with open(HOST_CACHE) as f:
-                cache = json.load(f)
-            if cache.get("expires", 0) > time.time() and cache.get("url"):
-                current_url = cache["url"]
-        except Exception:
-            pass
+    # "Current" = whatever this box would actually resolve to right now.
+    current_url = (
+        (os.environ.get("MEETING_HOST") or "").rstrip("/") or None
+        or _control_host()
+        or _read_control_cache()
+    )
 
     if args.json:
         result = []
@@ -988,12 +1339,12 @@ def cmd_controls(args):
         return
 
     if not controls:
-        print("未发现 control 节点")
+        print("no control node found")
         return
 
     for i, c in enumerate(controls):
         is_current = c["url"] == current_url
-        current_tag = "  当前" if is_current else ""
+        current_tag = "  current" if is_current else ""
         print(f"control {i + 1}{current_tag}")
         print(f"  host:    {c['host'] or '(unknown)'}")
         print(f"  ip:port: {c['ip']}:{c['port']}")
@@ -1114,10 +1465,17 @@ def main():
     s.add_argument("value", nargs="?", default=None)
     s.set_defaults(func=cmd_token)
 
+    s = sub.add_parser("host",
+                       help="pin/clear/show a sticky control host for boxes where mDNS is broken")
+    s.add_argument("value", nargs="?", default=None,
+                   help="http://<ip-or-name>:<port> to pin, 'clear' to remove, omit to show")
+    s.set_defaults(func=cmd_host)
+
     s = sub.add_parser("online",
                        help="bring this session online (register in the directory)")
     s.add_argument("name", help="session name to bring online")
-    s.add_argument("--cwd", required=True)
+    s.add_argument("--cwd", default=None,
+                   help="working dir (required unless --global, where it defaults to ~)")
     s.add_argument("--force", action="store_true")
     s.add_argument("--director", action="store_true")
     s.add_argument("--global", dest="is_global", action="store_true",

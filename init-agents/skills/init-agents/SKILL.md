@@ -78,8 +78,8 @@ End every report with:
 name: rd
 description: Development agent for writing code, editing files, running builds and tests, debugging, and bounded refactoring. Use for "implement X" / "fix bug Y" / "add test for Z" / "refactor this function" tasks where the design is already decided. NOT for high-level architecture decisions (use planner instead) and NOT for pure information lookup (use explore instead).
 tools: Read, Edit, Write, Bash, Glob, Grep
-model: claude-sonnet-4-6
-reasoningEffort: high
+model: claude-sonnet-5
+reasoningEffort: xhigh
 color: blue
 ---
 
@@ -112,9 +112,9 @@ You are a hands-on development agent. Your job is to write correct, minimal code
 ```markdown
 ---
 name: planner
-description: Strategic planning and critical analysis agent. Use for high-level work — designing implementation plans for non-trivial features, evaluating architectural trade-offs, reviewing whether a proposed approach is sound, root-cause analysis of complex bugs spanning multiple subsystems, deciding scope of a refactor PR. NOT for writing code (use rd) and NOT for pure lookups (use explore). Worth the cost only when the question is "which direction" rather than "how to type it out".
+description: Strategic planning and critical analysis agent. Use for high-level work — designing implementation plans for non-trivial features, evaluating architectural trade-offs, reviewing whether a proposed approach is sound, root-cause analysis of complex bugs spanning multiple subsystems, deciding scope of a refactor PR. NOT for writing code (use rd) and NOT for pure lookups (use explore). Worth the cost only when the question is "which direction" rather than "how to type it out". If dispatch fails with model-not-available, change model to claude-opus-4-8 and retry.
 tools: Read, Glob, Grep, WebFetch, WebSearch, Bash, TodoWrite
-model: claude-opus-4-8
+model: claude-fable-5
 reasoningEffort: high
 color: purple
 ---
@@ -264,7 +264,7 @@ Current Codex versions cannot dispatch custom agents by name via spawn_agent (is
 
 **Claude Code 宿主**：写完三个文件后，告诉用户：
 
-> 三个 agent 已经写到 `.claude/agents/`。以后调 subagent 时主 agent 应该用 `subagent_type: "explore" | "rd" | "planner"`，对应 Haiku 4.5 / Sonnet 4.6 / Opus 4.8。内置的 `Explore` / `Plan` / `general-purpose` 仍然存在但不再使用。
+> 三个 agent 已经写到 `.claude/agents/`。以后调 subagent 时主 agent 应该用 `subagent_type: "explore" | "rd" | "planner"`，对应 Haiku 4.5 / Sonnet 5 / Fable-5（兜底 Opus 4.8）。内置的 `Explore` / `Plan` / `general-purpose` 仍然存在但不再使用。
 
 **Codex 宿主**：写完三个文件后，告诉用户：
 

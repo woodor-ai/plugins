@@ -1,0 +1,10 @@
+{
+  "name": "init-proj",
+  "version": "0.3.0",
+  "description": "Scaffold a new Tommy-standard project: create <parent>/<name>/ with the three tiered subagent profiles (explore/rd/planner), a .gitignore that keeps the local API key out of git, an interactively-entered project key that never touches the transcript, and a launched agent-meeting director session. Rolls back the directory on failure.",
+  "author": {
+    "name": "Woodor",
+    "url": "https://github.com/woodor-ai"
+  },
+  "homepage": "https://github.com/woodor-ai/plugins"
+}

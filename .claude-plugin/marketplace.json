@@ -28,6 +28,12 @@
       "displayName": "Woodor: Save Money",
       "source": "./save-money",
       "description": "Cost-control hooks for Claude Code sessions: auto-handoff when context nears window limit, truncate oversized tool text output, and delegate main-agent image reads to an explore subagent. All gated by ~/.claude/cost-opt.json (written by the AMBridge PWA Save Money page)."
+    },
+    {
+      "name": "init-proj",
+      "displayName": "Woodor: Init Project",
+      "source": "./init-proj",
+      "description": "Scaffold a new project: create directory, three-tier subagent profiles (explore/rd/planner), git initial commit, and launch a director session. Project creation logic runs via the paid amp CLI; this skill is a thin shell that collects parameters and invokes it."
     }
   ]
 }
