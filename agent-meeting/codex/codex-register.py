@@ -101,12 +101,16 @@ def main() -> None:
     #    app-server session start emits a single hook/started/hook/completed with
     #    source=startup, never all four — so there is no concurrent-matcher race
     #    to guard against, and no claim/lock is needed.
-    cmd = [sys.executable, str(MEETING_BIN), "online", name, "--cwd", cwd]
+    # --force so a re-register is authoritative and never returns rc=1
+    # "already registered" (the bridge daemon may have registered this name first,
+    # which would otherwise surface as an error-ish additionalContext to the user).
+    cmd = [sys.executable, str(MEETING_BIN), "online", name, "--cwd", cwd, "--force"]
     if control_url:
         cmd += ["--host", control_url]
     reg_status = "?"
+    kw = {"creationflags": 0x08000000} if sys.platform.startswith("win") else {}  # CREATE_NO_WINDOW
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, **kw)
         if r.returncode == 0:
             reg_status = "online"
         else:

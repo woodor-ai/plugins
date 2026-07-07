@@ -145,8 +145,9 @@ def _run_meeting(*extra, timeout=20, use_host=True):
     if use_host and CTRL_BASE:
         cmd += ["--host", CTRL_BASE]
     run_cwd = CWD if os.path.isdir(CWD) else None
+    kw = {"creationflags": 0x08000000} if sys.platform.startswith("win") else {}  # CREATE_NO_WINDOW
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                          env=env, cwd=run_cwd)
+                          env=env, cwd=run_cwd, **kw)
 
 
 # ---------------------------------------------------------------------------

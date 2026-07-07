@@ -114,8 +114,9 @@ def _run_meeting(*extra, control_url="", timeout=15):
     cmd = [_venv_python(), str(MEETING_CLI)] + list(extra)
     if control_url:
         cmd += ["--host", control_url]
+    kw = {"creationflags": 0x08000000} if IS_WINDOWS else {}  # CREATE_NO_WINDOW
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
     except Exception:
         return None
 
