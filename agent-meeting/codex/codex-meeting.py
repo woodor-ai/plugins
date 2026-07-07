@@ -42,11 +42,13 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 HOME = Path.home()
 DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
 CODEX_DIR = DATA / "codex"
 LOGS_DIR = CODEX_DIR / "logs"
+RUN_DIR = CODEX_DIR / "run"
 RUNTIME_JSON = CODEX_DIR / "runtime.json"
 MEETING_CLI = DATA / "bin" / "meeting"
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "codex-bridge.py"
@@ -121,6 +123,132 @@ def _run_meeting(*extra, control_url="", timeout=15):
         return None
 
 
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER
+        except Exception:
+            pass
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _process_command_line(pid: int) -> str:
+    if IS_WINDOWS:
+        ps_cmd = (
+            f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}'; "
+            "if ($p) { $p.CommandLine }"
+        )
+        try:
+            r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
+                                "-Command", ps_cmd],
+                               capture_output=True, text=True, timeout=4)
+            if r.returncode == 0:
+                return (r.stdout or "").strip()
+        except Exception:
+            return ""
+        return ""
+
+    proc_cmdline = Path("/proc") / str(pid) / "cmdline"
+    try:
+        raw = proc_cmdline.read_bytes()
+        if raw:
+            return raw.replace(b"\0", b" ").decode(errors="replace").strip()
+    except OSError:
+        pass
+    try:
+        r = subprocess.run(["ps", "-p", str(pid), "-o", "args="],
+                           capture_output=True, text=True, timeout=4)
+        if r.returncode == 0:
+            return (r.stdout or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _is_codex_meeting_process(pid: int) -> bool:
+    if pid == os.getpid():
+        return True
+    if not _pid_exists(pid):
+        return False
+    cmdline = _process_command_line(pid).lower()
+    if not cmdline:
+        return False
+    return "codex-meeting.py" in cmdline or "codex-bridge.py" in cmdline
+
+
+class AlreadyRunningError(RuntimeError):
+    pass
+
+
+class SingleInstanceLock:
+    def __init__(self, name: str):
+        self.name = name
+        safe_name = quote(name, safe="-_.@")
+        self.path = RUN_DIR / f"{safe_name}.pid"
+        self.pid = os.getpid()
+        self.acquired = False
+
+    def acquire(self):
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            except FileExistsError:
+                old_pid = self._read_pid()
+                if old_pid and _is_codex_meeting_process(old_pid):
+                    raise AlreadyRunningError(f"codex-meeting {self.name} 已在运行，pid={old_pid}")
+                stale = f"pid={old_pid}" if old_pid else "unreadable pid"
+                _log(f"removing stale pidfile for {self.name} ({stale})")
+                try:
+                    self.path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            with os.fdopen(fd, "w", encoding="ascii") as f:
+                f.write(f"{self.pid}\n")
+            self.acquired = True
+            return
+
+    def release(self):
+        if not self.acquired:
+            return
+        try:
+            if self._read_pid() == self.pid:
+                self.path.unlink()
+        except FileNotFoundError:
+            pass
+        finally:
+            self.acquired = False
+
+    def _read_pid(self) -> int:
+        try:
+            return int(self.path.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            return 0
+
+
 def _discover_control_url() -> str:
     r = _run_meeting("controls", "--json")
     if not r or r.returncode != 0 or not r.stdout.strip():
@@ -136,6 +264,28 @@ def _discover_control_url() -> str:
         return ""
 
 
+def _git_toplevel(cwd: str) -> str:
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                           cwd=cwd, capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return os.path.abspath(r.stdout.strip())
+    except Exception:
+        pass
+    return ""
+
+
+def _normalize_runtime_cwd(cwd: str) -> str:
+    abs_cwd = os.path.abspath(cwd)
+    top = _git_toplevel(abs_cwd)
+    if not top:
+        _log(f"WARN: cwd is not inside a git worktree; project will be derived from cwd ({abs_cwd})")
+        return abs_cwd
+    if os.path.normcase(os.path.normpath(top)) != os.path.normcase(os.path.normpath(abs_cwd)):
+        _log(f"WARN: normalizing runtime cwd to git toplevel ({top}) from launch cwd ({abs_cwd})")
+    return top
+
+
 class Launcher:
     def __init__(self, name, preferred_port, control_url):
         self.name = name
@@ -144,10 +294,12 @@ class Launcher:
         self.port = None
         self.appserver_proc = None      # our app-server Popen (None if reused)
         self.bridge_proc = None
+        self.lock = SingleInstanceLock(name)
         self._torn_down = False
 
     # ---- setup ----
     def setup(self):
+        self.lock.acquire()
         self.port, reuse = _pick_port(self.preferred_port)
         ws_addr = f"ws://127.0.0.1:{self.port}"
         if reuse:
@@ -163,17 +315,16 @@ class Launcher:
         # runtime.json (shared endpoint for register hook + bridge)
         if not self.control_url:
             self.control_url = _discover_control_url()
+        runtime_cwd = _normalize_runtime_cwd(os.getcwd())
         CODEX_DIR.mkdir(parents=True, exist_ok=True)
-        # cwd = this launcher's cwd = the cwd the foreground `codex --remote`
-        # inherits = the codex thread's cwd the register hook will report. The
-        # bridge derives its project (X-Meeting-Project for /subscribe) from this
-        # BEFORE the mapping exists, so it must match what the register hook uses
-        # for `meeting online --cwd`, or inbound frames won't route to the bridge.
+        # The bridge derives its project before the SessionStart mapping exists,
+        # so use the git toplevel when possible to match the register hook's
+        # project derivation for launches from subdirectories.
         RUNTIME_JSON.write_text(json.dumps({
             "name": self.name,
             "ws_addr": ws_addr,
             "control_url": self.control_url,
-            "cwd": os.getcwd(),
+            "cwd": runtime_cwd,
         }, ensure_ascii=False), encoding="utf-8")
         _log(f"wrote runtime.json (ws_addr={ws_addr}, control_url={self.control_url or 'autodiscover'})")
 
@@ -227,6 +378,7 @@ class Launcher:
             _log("removed runtime.json")
         except FileNotFoundError:
             pass
+        self.lock.release()
 
     def rollback(self):
         # setup failure: kill anything we started, leave reused resources alone
@@ -238,6 +390,7 @@ class Launcher:
             RUNTIME_JSON.unlink()
         except FileNotFoundError:
             pass
+        self.lock.release()
 
 
 def _terminate(proc):
@@ -280,6 +433,10 @@ def main():
 
     try:
         launcher.setup()
+    except AlreadyRunningError as e:
+        _log(str(e))
+        launcher.rollback()
+        sys.exit(2)
     except Exception as e:
         _log(f"setup failed: {e}; rolling back")
         launcher.rollback()
