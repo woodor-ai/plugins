@@ -75,17 +75,26 @@ PID_FILE = RUN_DIR / f"{SELF}.pid"
 
 
 def _derive_project(cwd: str) -> str:
-    """Derive project name from git repo root basename, or cwd basename."""
+    """Derive a stable project name from the main git working tree.
+
+    Uses ``--git-common-dir`` (not ``--show-toplevel``) so a git worktree resolves
+    to its MAIN repo identity instead of the worktree directory name. Otherwise a
+    session running inside a worktree gets a per-command identity that diverges
+    from its registered/online identity, and peer messages land in a room it can
+    never read. Falls back to the cwd basename for non-git directories.
+    """
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
             cwd=cwd, capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            top = result.stdout.strip()
-            if top:
-                name = os.path.basename(top)
-                return "_" if name == "*" else name
+            common_dir = result.stdout.strip()
+            if common_dir:
+                # common_dir is the main repo's .git dir; its parent is the repo root
+                name = os.path.basename(os.path.dirname(os.path.normpath(common_dir)))
+                if name:
+                    return "_" if name == "*" else name
     except Exception:
         pass
     name = os.path.basename(os.path.normpath(cwd))
