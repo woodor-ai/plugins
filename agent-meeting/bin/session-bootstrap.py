@@ -204,6 +204,15 @@ def ensure_bin_wrappers():
             name = src.name if (src.suffix == ".py" or not IS_WINDOWS) else src.with_suffix(".cmd").name
             if not (BIN_LINK / name).exists():
                 return False
+        # Also check the codex/ wrapper entries: an upgrade from an install that had
+        # codex-meeting to one that expects mycodex would be skipped by the sentinel
+        # even though mycodex is absent.
+        for _stem, _script in (("mycodex", "codex-meeting.py"), ("meeting-say", "meeting-say.py")):
+            if not (PLUGIN_ROOT / "codex" / _script).exists():
+                continue
+            _wname = f"{_stem}.cmd" if IS_WINDOWS else _stem
+            if not (BIN_LINK / _wname).exists():
+                return False
         return True
 
     if (existing_root == current_root
@@ -248,10 +257,12 @@ def ensure_bin_wrappers():
                 dest.chmod(0o755)
 
         # Convenience entries for codex bridge scripts that live in codex/ (not
-        # bin/): the launcher `codex-meeting` and the outbound helper `meeting-say`.
-        # Built into tmp_bin so they are part of the atomic swap below.
-        for _stem in ("codex-meeting", "meeting-say"):
-            _src = (PLUGIN_ROOT / "codex" / f"{_stem}.py")
+        # bin/): the launcher `mycodex` (wraps codex-meeting.py) and the outbound
+        # helper `meeting-say`. Built into tmp_bin so they are part of the atomic
+        # swap below. Old `codex-meeting` wrappers are gone because the whole
+        # BIN_LINK directory is replaced (rmtree + rename) on every regeneration.
+        for _stem, _script in (("mycodex", "codex-meeting.py"), ("meeting-say", "meeting-say.py")):
+            _src = (PLUGIN_ROOT / "codex" / _script)
             if not _src.exists():
                 continue
             if IS_WINDOWS:

@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
 """
-agent-meeting: codex-only install entrypoint.
+agent-meeting codex install — unified entry point for the interactive installer
+(install-codex.py) and direct standalone use.
 
-One command to make a fresh, codex-only machine (NO Claude Code) able to use
-agent-meeting with codex. Assumes this plugin repo is already cloned locally.
+Entry point for the installer: run_install(ctx)
+Standalone use:                python install.py [--control-url URL]
 
-    python install.py [--control-url http://<mac-tailnet-ip>:8765]
+What run_install does (in order):
+  1. Run session-bootstrap (builds ~/.agent-meeting: venv + zeroconf + websockets +
+     bin/ wrappers including mycodex).
+  2. Discover LAN controls via `meeting controls --json`; prompt the user to confirm
+     or enter the control URL.
+  3. Write the control_url to launcher.json so bare `mycodex` needs no --control-url.
+  4. Install the codex SessionStart register hook into ~/.codex/config.toml.
+  5. Windows: force [windows] sandbox = "unelevated" in config.toml.
+  6. Write the agent-meeting usage block into ~/.codex/AGENTS.md.
+  7. Put ~/.agent-meeting/bin on the user PATH (Windows: idempotent winreg edit).
 
-What it does:
-  1. Runs session-bootstrap.py (with PLUGIN_ROOT pointed at this clone) to build
-     the ~/.agent-meeting runtime: venv + zeroconf + websockets + bin/ (the
-     `meeting` CLI and friends). On a machine without Claude Code the statusline
-     registration self-skips and, because a fresh config is is_host=false, no
-     daemon / Windows persistence is installed (the control stays on the host).
-  2. Runs install-codex-hook.py to install the codex SessionStart register hook
-     into ~/.codex/config.toml (unquoted venv-python command; trust entries placed
-     after any pre-existing SessionStart hooks so nothing else is clobbered).
-  3. Prints how to start a bridged live codex session.
-
-The codex scripts (codex-bridge.py / codex-register.py / codex-meeting.py) run
-in place from this clone — the hook + launcher reference each other by __file__,
-and the hook command embeds this clone's codex-register.py absolute path — so
-DO NOT move the clone after installing (re-run install.py if you do).
-
-Honors MEETING_HOME / CODEX_HOME / CLAUDE_CONFIG_DIR for isolated testing.
+All paths are resolved from __file__ so when called from the installed copy every
+hook, wrapper, and script path points to the install directory — not plugins-src.
+Honors MEETING_HOME / CODEX_HOME for isolated testing.
 """
 
 import argparse
@@ -33,8 +29,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent          # <clone>/agent-meeting/codex/
-PLUGIN_ROOT = HERE.parent                        # <clone>/agent-meeting/
+HERE = Path(__file__).resolve().parent          # <install>/agent-meeting/codex/
+PLUGIN_ROOT = HERE.parent                        # <install>/agent-meeting/
 BOOTSTRAP = PLUGIN_ROOT / "bin" / "session-bootstrap.py"
 HOOK_INSTALLER = HERE / "install-codex-hook.py"
 IS_WINDOWS = sys.platform.startswith("win")
@@ -59,11 +55,7 @@ _AGENTS_END = "<!-- agent-meeting:end -->"
 
 
 def _ensure_windows_sandbox(codex_home: Path):
-    """Windows only: codex's 'elevated' sandbox needs a helper exe
-    (codex-windows-sandbox-setup.exe) this install lacks, which makes EVERY shell
-    command codex runs fail (orchestrator_helper_launch_failed). codex must be able
-    to run shell commands to call the meeting CLI, so force `[windows] sandbox =
-    "unelevated"`. Idempotent."""
+    """Windows only: force [windows] sandbox = "unelevated" in config.toml. Idempotent."""
     if not IS_WINDOWS:
         return
     import re
@@ -71,7 +63,7 @@ def _ensure_windows_sandbox(codex_home: Path):
     text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
     m = re.search(r'(?ms)^\[windows\][ \t]*\r?\n(.*?)(?=^\[|\Z)', text)
     if m and re.search(r'(?m)^[ \t]*sandbox[ \t]*=[ \t]*"unelevated"', m.group(1)):
-        print("  [windows] sandbox already \"unelevated\" — no change")
+        print('  [windows] sandbox already "unelevated" — no change')
         return
     if m:
         body = m.group(1)
@@ -84,17 +76,11 @@ def _ensure_windows_sandbox(codex_home: Path):
         text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + '[windows]\nsandbox = "unelevated"\n'
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(text, encoding="utf-8")
-    print('  set [windows] sandbox = "unelevated" '
-          '(codex shell needs this; "elevated" requires a helper exe not present here)')
+    print('  set [windows] sandbox = "unelevated"')
 
 
 def _ensure_agents_md(codex_home: Path, meeting_home: Path, control: str):
-    """Append (or refresh) an agent-meeting usage section to ~/.codex/AGENTS.md so
-    codex knows it is a peer and how to send. Idempotent — replaces only the block
-    between our markers, never the user's own content."""
-    # Always use the extensionless script form (plain Python file) with the venv
-    # python explicitly — do NOT use the .cmd wrapper, which routes through cmd.exe
-    # and mangles < / > in %* as redirection when the body contains those characters.
+    """Append (or refresh) the agent-meeting usage block in ~/.codex/AGENTS.md. Idempotent."""
     say = meeting_home / "bin" / "meeting-say"
     vpy = _venv_python(meeting_home)
     cli = meeting_home / "bin" / "meeting"
@@ -109,7 +95,7 @@ message them.
   `[peer=X msg_id=N]` means agent **X** is talking to you directly.
   Reply (or message anyone) with ONE command:
   ```
-  & "{vpy}" "{say}" X '你的正文放在单引号里'
+  & "{vpy}" "{say}" X '正文放在单引号里'
   ```
   Put the body in **single quotes** (PowerShell treats them literally — safe for
   Chinese prose and punctuation; a literal `'` inside must be doubled `''`). You do
@@ -118,7 +104,7 @@ message them.
   `[group=G peer=X msg_id=N]` means agent **X** sent to group **G**. Reply to the
   group (so all members see it) using the group name as the recipient:
   ```
-  & "{vpy}" "{say}" G '你的正文'
+  & "{vpy}" "{say}" G '正文'
   ```
   Use **G** (the group name), not **X** (the sender), as the recipient.
 - **See who is online**:
@@ -147,7 +133,7 @@ message them.
 
 
 def _write_launcher_defaults(meeting_home: Path, control_url: str):
-    """Persist the control_url so `codex-meeting <name>` needs no --control-url."""
+    """Persist control_url so bare `mycodex` needs no --control-url."""
     if not control_url:
         return
     p = meeting_home / "codex" / "launcher.json"
@@ -162,20 +148,16 @@ def _write_launcher_defaults(meeting_home: Path, control_url: str):
 
 
 def _path_needs_entry(current_path: str, entry: str) -> bool:
-    """True if `entry` is not already a component of `current_path` (case/sep-insensitive)."""
     norm = os.path.normcase(entry.rstrip("\\/"))
     parts = [os.path.normcase(p.strip().rstrip("\\/")) for p in current_path.split(os.pathsep) if p.strip()]
     return norm not in parts
 
 
 def _ensure_path_entry(bin_dir: Path):
-    """Put ~/.agent-meeting/bin on the user's PATH so `codex-meeting` (and the
-    other wrappers) are callable by name. Windows: idempotent user-PATH edit via
-    the registry (no setx 1024-char truncation, REG_EXPAND_SZ preserved). POSIX:
-    print a hint (shell-profile edits vary too much to do safely)."""
+    """Put ~/.agent-meeting/bin on the user PATH so `mycodex` is callable by name."""
     entry = str(bin_dir)
     if not IS_WINDOWS:
-        print(f"  add to your shell PATH to call codex-meeting by name: {entry}")
+        print(f"  add to your shell PATH to call mycodex by name: {entry}")
         return
     try:
         import winreg
@@ -190,19 +172,54 @@ def _ensure_path_entry(bin_dir: Path):
         new = ((cur.rstrip(os.pathsep) + os.pathsep) if cur else "") + entry
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
             winreg.SetValueEx(k, "Path", 0, winreg.REG_EXPAND_SZ, new)
-        print(f"  added {entry} to user PATH — open a NEW terminal, then `codex-meeting <name>`")
+        print(f"  added {entry} to user PATH — open a NEW terminal, then `mycodex <name>`")
     except Exception as e:
         print(f"  (could not update user PATH automatically: {e}; add {entry} manually)")
 
 
-def main():
-    ap = argparse.ArgumentParser(prog="install.py",
-                                 description="codex-only agent-meeting install")
-    ap.add_argument("--control-url", default="",
-                    help="agent-meeting control base url, e.g. http://<mac-tailnet-ip>:8765")
-    ap.add_argument("--no-path", action="store_true",
-                    help="do not add ~/.agent-meeting/bin to the user PATH")
-    args = ap.parse_args()
+def _parse_controls(json_str: str) -> str:
+    """Parse `meeting controls --json` output. Returns best URL or ''.
+
+    Prefers the entry with is_current=True; falls back to the first entry.
+    """
+    try:
+        controls = json.loads(json_str)
+        if not controls:
+            return ""
+        c = next((x for x in controls if x.get("is_current")), controls[0])
+        ip, port = c.get("ip", ""), c.get("port", "")
+        return f"http://{ip}:{port}" if ip and port else ""
+    except Exception:
+        return ""
+
+
+def _discover_control(meeting_home: Path, vpy: Path) -> str:
+    """Query the LAN for agent-meeting controls. Returns the best URL or ''."""
+    cli = meeting_home / "bin" / "meeting"
+    if not cli.exists():
+        return ""
+    kw = {"creationflags": 0x08000000} if IS_WINDOWS else {}
+    try:
+        r = subprocess.run(
+            [str(vpy), str(cli), "controls", "--json"],
+            capture_output=True, text=True, timeout=10, **kw,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return ""
+        return _parse_controls(r.stdout)
+    except Exception:
+        return ""
+
+
+def run_install(ctx: dict) -> None:
+    """Unified install entry point called by install-codex.py (and usable standalone).
+
+    ctx keys: install_dir, plugins_src_dir, prompt (callable), is_windows.
+    Paths are derived from __file__ so they always point to the installed copy.
+    """
+    prompt = ctx.get("prompt") or (
+        lambda msg, default="": (input(f"{msg} [{default}]: " if default else f"{msg}: ").strip() or default)
+    )
 
     for p in (BOOTSTRAP, HOOK_INSTALLER):
         if not p.exists():
@@ -211,55 +228,83 @@ def main():
     meeting_home = Path(os.environ.get("MEETING_HOME") or (Path.home() / ".agent-meeting"))
     codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
 
-    # Child processes inherit our env (incl. MEETING_HOME / CODEX_HOME /
-    # CLAUDE_CONFIG_DIR) plus PLUGIN_ROOT so bootstrap wraps THIS clone's bin/.
     env = os.environ.copy()
     env["PLUGIN_ROOT"] = str(PLUGIN_ROOT)
 
-    print(f"agent-meeting codex install")
-    print(f"  clone (PLUGIN_ROOT): {PLUGIN_ROOT}")
-    print(f"  runtime (MEETING_HOME): {meeting_home}")
-    print(f"  codex config (CODEX_HOME): {codex_home}")
+    print(f"agent-meeting install")
+    print(f"  plugin root : {PLUGIN_ROOT}")
+    print(f"  runtime     : {meeting_home}")
+    print(f"  codex config: {codex_home}")
 
-    # 1. runtime
+    # 1. bootstrap runtime (venv + zeroconf + websockets + bin/ wrappers incl. mycodex)
     _run([sys.executable, str(BOOTSTRAP)], env, "bootstrap ~/.agent-meeting runtime")
 
     vpy = _venv_python(meeting_home)
     if not vpy.exists():
         sys.exit(f"install: venv python not found after bootstrap: {vpy}")
 
-    # 2. codex SessionStart register hook
+    # 2. discover control URL via LAN broadcast
+    print("\n=== discover control ===")
+    discovered = _discover_control(meeting_home, vpy)
+    if discovered:
+        print(f"  found: {discovered}")
+    else:
+        print("  no control found on LAN (zeroconf scan)")
+
+    control_url = prompt("  control URL (http://x.x.x.x:8765)", discovered)
+    if not control_url:
+        print("  WARNING: no control URL set; re-run install or use --control-url with mycodex")
+
+    # 3. write launcher defaults
+    _write_launcher_defaults(meeting_home, control_url)
+
+    # 4. codex SessionStart register hook
     _run([sys.executable, str(HOOK_INSTALLER)], env, "install codex SessionStart hook")
 
-    # 3. codex shell fix (Windows) + meeting usage instructions for codex
-    print("\n=== configure codex for outbound (shell + AGENTS.md) ===")
+    # 5. Windows sandbox fix + AGENTS.md
+    print("\n=== configure codex outbound ===")
     _ensure_windows_sandbox(codex_home)
-    _ensure_agents_md(codex_home, meeting_home, args.control_url)
+    _ensure_agents_md(codex_home, meeting_home, control_url)
 
-    # 4. convenience: `codex-meeting <name>` callable by name, control_url remembered
-    print("\n=== convenience launcher ===")
-    _write_launcher_defaults(meeting_home, args.control_url)
-    if args.no_path:
-        print(f"  (--no-path) skipped PATH edit; add {meeting_home / 'bin'} manually to call by name")
-    else:
-        _ensure_path_entry(meeting_home / "bin")
+    # 6. PATH
+    print("\n=== PATH ===")
+    _ensure_path_entry(meeting_home / "bin")
 
-    # 5. guidance
-    launcher = HERE / "codex-meeting.py"
-    control = args.control_url or "http://<your-mac-tailnet-ip>:8765"
-    print("\n=== install complete ===")
-    print(f"  runtime:       {meeting_home}")
-    print(f"  meeting CLI:   {meeting_home / 'bin' / 'meeting'}")
-    print(f"  codex config:  {codex_home / 'config.toml'}  (register hook installed)")
-    print(f"  codex scripts: {HERE}  (run in place — do not move this clone)")
+    print("\n=== agent-meeting install complete ===")
+    print(f"  runtime : {meeting_home}")
+    print(f"  mycodex : {meeting_home / 'bin' / 'mycodex'}")
     print()
-    print("Next — start a bridged live codex session (open a NEW terminal first so PATH refreshes):")
-    if args.control_url:
-        print("  codex-meeting <name>            # control-url is remembered; <name> optional too")
+    print("Next: open a NEW terminal and run `mycodex` or `mycodex <name>`")
+    if control_url:
+        print("  (control URL is remembered — no flag needed)")
     else:
-        print("  codex-meeting <name> --control-url http://<control-host>:8765")
-    print("Full path form (works in this terminal, no new terminal needed):")
-    print(f'  "{vpy}" "{launcher}" <name>' + (f" --control-url {control}" if not args.control_url else ""))
+        print("  mycodex <name> --control-url http://<control-host>:8765")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="install.py",
+                                 description="agent-meeting codex install (standalone)")
+    ap.add_argument("--control-url", default="",
+                    help="pre-fill the control URL prompt")
+    args = ap.parse_args()
+
+    prefill = args.control_url
+
+    def _cli_prompt(msg, default=""):
+        actual_default = prefill if ("control" in msg.lower() and prefill) else default
+        try:
+            val = input(f"{msg} [{actual_default}]: " if actual_default else f"{msg}: ").strip()
+        except EOFError:
+            return actual_default
+        return val or actual_default
+
+    ctx = {
+        "install_dir": PLUGIN_ROOT,
+        "plugins_src_dir": PLUGIN_ROOT.parent.parent,
+        "prompt": _cli_prompt,
+        "is_windows": IS_WINDOWS,
+    }
+    run_install(ctx)
 
 
 if __name__ == "__main__":

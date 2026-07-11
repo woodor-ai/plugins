@@ -13,7 +13,7 @@ only on the `~/.agent-meeting` runtime (venv + `meeting` CLI). They honor
 
 | file | role |
 |---|---|
-| `install.py` | codex-only install entrypoint: bootstrap runtime + install hook |
+| `install.py` | install entry point: `run_install(ctx)` interface + standalone CLI |
 | `install-codex-hook.py` | writes the SessionStart register hook into `~/.codex/config.toml` |
 | `codex-register.py` | the hook target — registers the session + writes the mapping file |
 | `codex-bridge.py` | long-running daemon — WS `/subscribe` inbound + heartbeat, injects into the codex app-server thread, relays the reply |
@@ -21,25 +21,37 @@ only on the `~/.agent-meeting` runtime (venv + `meeting` CLI). They honor
 
 ## Install (fresh, codex-only machine)
 
-```
-git clone <this repo>
-python <repo>/agent-meeting/codex/install.py --control-url http://<control-host>:8765
+**One-liner (PowerShell):**
+```powershell
+iwr -useb https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.ps1 | iex
 ```
 
-Builds `~/.agent-meeting` (venv + zeroconf + websockets + `meeting` CLI) and
+**One-liner (macOS / Linux):**
+```sh
+curl -fsSL https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.sh | bash
+```
+
+**Manual:**
+```
+git clone https://github.com/woodor-ai/plugins
+python <repo>/install-codex.py
+```
+
+The interactive installer copies selected plugins to `~/.codex/plugins/<name>`,
+builds `~/.agent-meeting` (venv + zeroconf + websockets + `meeting` CLI), and
 installs the codex SessionStart hook. On a client machine no daemon/persistence
 is installed — the agent-meeting control stays on the host.
 
 ## Run a bridged live session
 
 ```
-<venv-python> <repo>/agent-meeting/codex/codex-meeting.py <name> --control-url http://<control-host>:8765
+mycodex [<name>]
 ```
 
-(`install.py` prints the exact command with resolved paths.) This starts the
-app-server + bridge in the background and drops you into a live `codex --remote`
-TUI. Peers can now message `<name>`; the message appears in your session and the
-reply goes back to the peer. Exit the TUI (or Ctrl-C) to tear everything down.
+This starts the app-server + bridge in the background and drops you into a live
+`codex --remote` TUI. Peers can now message `<name>`; the message appears in
+your session and the reply goes back to the peer. Exit the TUI (or Ctrl-C) to
+tear everything down.
 
 ## Known limitations
 
