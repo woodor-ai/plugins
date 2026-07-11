@@ -295,7 +295,7 @@ def test_generate_mycodex_command_posix(tmp_path):
     assert "--update" in content
     # no .cmd/.ps1 siblings written on POSIX
     assert not (bin_dir / "mycodex.cmd").exists()
-    assert not (bin_dir / "mycodex.ps1").exists()
+    assert not (bin_dir / "mycodex-impl.ps1").exists()
 
 
 def test_generate_mycodex_command_windows(tmp_path, monkeypatch):
@@ -305,13 +305,17 @@ def test_generate_mycodex_command_windows(tmp_path, monkeypatch):
 
     mod._generate_mycodex_command(ROOT, bin_dir)
 
-    dest_ps1 = bin_dir / "mycodex.ps1"
+    dest_ps1 = bin_dir / "mycodex-impl.ps1"
     dest_cmd = bin_dir / "mycodex.cmd"
     assert dest_ps1.exists()
     assert dest_cmd.exists()
-    assert dest_ps1.read_text() == (ROOT / "agent-meeting" / "codex" / "mycodex.ps1").read_text()
+    assert dest_ps1.read_text() == (ROOT / "agent-meeting" / "codex" / "mycodex-impl.ps1").read_text()
     assert dest_cmd.read_text() == (ROOT / "agent-meeting" / "codex" / "mycodex.cmd").read_text()
     assert not (bin_dir / "mycodex").exists()
+    # single-entry rule: bin/ must never contain a same-named mycodex.ps1 —
+    # PowerShell would resolve it before mycodex.cmd and hit the default
+    # Restricted execution policy in a real user shell.
+    assert not (bin_dir / "mycodex.ps1").exists()
 
 
 def test_generate_mycodex_command_creates_bin_dir(tmp_path):
@@ -405,9 +409,10 @@ def test_cleanup_stale_codex_plugins_refuses_wrong_dir(tmp_path):
 
 
 def test_cleanup_stale_codex_plugins_removes_windows_mycodex_leftover(tmp_path, monkeypatch):
-    """Windows only: a pre-dual-extension extensionless `mycodex` left in bin/
-    must be swept, since the Windows regen path only ever writes
-    mycodex.ps1 / mycodex.cmd (never an extensionless copy)."""
+    """Windows only: a pre-dual-extension extensionless `mycodex`, and a
+    pre-single-entry same-named `mycodex.ps1`, left in bin/ must both be
+    swept, since the Windows regen path only ever writes mycodex-impl.ps1 /
+    mycodex.cmd."""
     mod = _load()
     monkeypatch.setattr(mod, "IS_WINDOWS", True)
     meeting_home = tmp_path / "meeting-home"
@@ -415,13 +420,15 @@ def test_cleanup_stale_codex_plugins_removes_windows_mycodex_leftover(tmp_path, 
     bin_dir.mkdir(parents=True)
     (bin_dir / "mycodex").write_text("#!/bin/sh\necho old posix shim on windows\n")
     (bin_dir / "mycodex.cmd").write_text("@echo off\r\n")
-    (bin_dir / "mycodex.ps1").write_text("# current\n")
+    (bin_dir / "mycodex.ps1").write_text("# old same-named shim\n")
+    (bin_dir / "mycodex-impl.ps1").write_text("# current\n")
 
     mod._cleanup_stale_codex_plugins(meeting_home, bin_dir)
 
     assert not (bin_dir / "mycodex").exists()
+    assert not (bin_dir / "mycodex.ps1").exists()
     assert (bin_dir / "mycodex.cmd").exists()
-    assert (bin_dir / "mycodex.ps1").exists()
+    assert (bin_dir / "mycodex-impl.ps1").exists()
 
 
 def test_cleanup_stale_codex_plugins_leaves_posix_mycodex_alone(tmp_path):

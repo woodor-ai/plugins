@@ -163,15 +163,21 @@ def _generate_mycodex_command(plugins_src: Path, bin_dir: Path) -> None:
     checkout and reruns this installer; bare `mycodex [<name>] ...` starts a
     bridged codex session (needs agent-meeting installed).
 
-    Copies agent-meeting/codex/mycodex-posix.sh (+ .ps1/.cmd on Windows) verbatim
-    — that plugin subtree is the single source of truth and travels with every
-    agent-meeting install, so session-bootstrap.py's SessionStart hook can
-    regenerate the exact same file without needing this root installer present.
+    Copies agent-meeting/codex/mycodex-posix.sh (+ mycodex.cmd/mycodex-impl.ps1
+    on Windows) verbatim — that plugin subtree is the single source of truth
+    and travels with every agent-meeting install, so session-bootstrap.py's
+    SessionStart hook can regenerate the exact same file without needing this
+    root installer present.
+
+    Windows only ever gets mycodex.cmd on PATH; mycodex-impl.ps1 holds the
+    actual logic and is invoked by the .cmd via -ExecutionPolicy Bypass. A
+    same-named mycodex.ps1 is deliberately never written — see the header
+    comment in mycodex-impl.ps1 for why.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
     src_dir = plugins_src / "agent-meeting" / "codex"
     if IS_WINDOWS:
-        shutil.copy2(str(src_dir / "mycodex.ps1"), str(bin_dir / "mycodex.ps1"))
+        shutil.copy2(str(src_dir / "mycodex-impl.ps1"), str(bin_dir / "mycodex-impl.ps1"))
         shutil.copy2(str(src_dir / "mycodex.cmd"), str(bin_dir / "mycodex.cmd"))
     else:
         dest_sh = bin_dir / "mycodex"
@@ -185,15 +191,19 @@ def _cleanup_stale_codex_plugins(meeting_home: Path, bin_dir: Path) -> None:
     unlinks known files by name — never recurses.
 
     Windows only: an extensionless `mycodex` here is always a leftover from a
-    pre-dual-extension install (this installer only ever writes mycodex.ps1 /
-    mycodex.cmd on Windows — see _generate_mycodex_command). On POSIX that same
-    filename IS the current artifact, so it must never be swept here.
+    pre-dual-extension install, and a same-named `mycodex.ps1` is always a
+    leftover from a pre-single-entry install (this installer only ever writes
+    mycodex-impl.ps1 / mycodex.cmd on Windows — see _generate_mycodex_command).
+    A `mycodex.ps1` sibling to `mycodex.cmd` would get resolved first by
+    PowerShell and blocked by the default execution policy, which is exactly
+    the bug this rename fixes. On POSIX `mycodex` (no extension) IS the
+    current artifact, so it must never be swept here.
     """
     if bin_dir.resolve() != (meeting_home / "bin").resolve():
         return
     names = _STALE_CODEX_PLUGINS_NAMES
     if IS_WINDOWS:
-        names = names + ("mycodex",)
+        names = names + ("mycodex", "mycodex.ps1")
     for name in names:
         p = bin_dir / name
         if p.is_file():

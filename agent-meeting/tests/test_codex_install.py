@@ -179,7 +179,7 @@ def _make_plugin_root(base: Path) -> Path:
     (pr / "codex" / "codex-meeting.py").write_text("# stub\n")
     (pr / "codex" / "meeting-say.py").write_text("# stub\n")
     (pr / "codex" / "mycodex-posix.sh").write_text("#!/bin/sh\necho mycodex-stub\n")
-    (pr / "codex" / "mycodex.ps1").write_text("# mycodex-stub\n")
+    (pr / "codex" / "mycodex-impl.ps1").write_text("# mycodex-stub\n")
     (pr / "codex" / "mycodex.cmd").write_text("@echo off\r\n")
     (pr / ".claude-plugin" / "plugin.json").write_text(
         json.dumps({"name": "agent-meeting", "version": "0.8.39"})
@@ -268,11 +268,12 @@ def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Windows-only extensionless `mycodex` leftover cleanup — a pre-dual-extension
-# install (or an old bootstrap on Windows) could leave a POSIX-shell
-# extensionless `mycodex` sitting in bin/ forever, since Windows only ever
-# regenerates mycodex.ps1/.cmd. IS_WINDOWS is force-patched here since the
-# test host is macOS; all file operations exercised are OS-agnostic.
+# Windows-only stale-file cleanup — a pre-dual-extension install could leave a
+# POSIX-shell extensionless `mycodex` sitting in bin/ forever, and a
+# pre-single-entry install could leave a same-named `mycodex.ps1` sitting in
+# bin/ forever, since Windows only ever regenerates mycodex-impl.ps1/.cmd.
+# IS_WINDOWS is force-patched here since the test host is macOS; all file
+# operations exercised are OS-agnostic.
 # ---------------------------------------------------------------------------
 
 def test_windows_mycodex_leftover_removed_on_regen(tmp_path):
@@ -284,6 +285,7 @@ def test_windows_mycodex_leftover_removed_on_regen(tmp_path):
     bin_dir = meeting_home / "bin"
     bin_dir.mkdir(parents=True)
     (bin_dir / "mycodex").write_text("#!/bin/sh\necho old posix shim stuck on windows\n")
+    (bin_dir / "mycodex.ps1").write_text("# old same-named shim\n")
 
     mod = _load_bootstrap(meeting_home, plugin_root)
     mod.IS_WINDOWS = True
@@ -295,15 +297,18 @@ def test_windows_mycodex_leftover_removed_on_regen(tmp_path):
     mod.ensure_bin_wrappers()
 
     assert not (bin_dir / "mycodex").exists()
+    assert not (bin_dir / "mycodex.ps1").exists(), (
+        "bin/ must never keep a same-named mycodex.ps1 next to mycodex.cmd"
+    )
     assert (bin_dir / "mycodex.cmd").exists()
-    assert (bin_dir / "mycodex.ps1").exists()
+    assert (bin_dir / "mycodex-impl.ps1").exists()
 
 
 def test_windows_mycodex_leftover_swept_on_sentinel_match(tmp_path):
     """Once the sentinel matches and _all_present() is satisfied, the full
     regen path never runs again — the stale-file sweep must still fire on
-    that early-return path, or a leftover extensionless `mycodex` would
-    persist forever on Windows."""
+    that early-return path, or leftover stale mycodex files would persist
+    forever on Windows."""
     meeting_home = tmp_path / "meeting"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
@@ -320,14 +325,19 @@ def test_windows_mycodex_leftover_swept_on_sentinel_match(tmp_path):
 
     mod.ensure_bin_wrappers()  # first call: full regen, settles the sentinel
     assert (bin_dir / "mycodex.cmd").exists()
+    assert not (bin_dir / "mycodex.ps1").exists()
 
-    # Simulate a leftover from a pre-dual-extension install reappearing.
+    # Simulate leftovers from older installs reappearing.
     (bin_dir / "mycodex").write_text("old posix shim stuck on windows\n")
+    (bin_dir / "mycodex.ps1").write_text("old same-named shim stuck on windows\n")
 
     mod.ensure_bin_wrappers()  # second call: sentinel matches -> early-return path
 
     assert not (bin_dir / "mycodex").exists(), (
         "stale extensionless mycodex must be swept even on the early-return path"
     )
+    assert not (bin_dir / "mycodex.ps1").exists(), (
+        "stale same-named mycodex.ps1 must be swept even on the early-return path"
+    )
     assert (bin_dir / "mycodex.cmd").exists()
-    assert (bin_dir / "mycodex.ps1").exists()
+    assert (bin_dir / "mycodex-impl.ps1").exists()

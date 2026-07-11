@@ -9,11 +9,18 @@
 #                                         (run `mycodex --update` first).
 #
 # Single source of truth, copied verbatim (no per-install templating) into
-# ~/.agent-meeting/bin/mycodex.ps1 by both install-codex.py (root installer,
+# ~/.agent-meeting/bin/mycodex-impl.ps1 by both install-codex.py (root installer,
 # unconditional — makes `--update` work even before agent-meeting is installed)
 # and session-bootstrap.py (agent-meeting's own SessionStart hook — self-heals
 # this file if bin/ is ever wiped and rebuilt). Fully self-locating: no absolute
 # path is baked in, so the file is byte-identical everywhere it is copied.
+#
+# Named mycodex-impl.ps1 (not mycodex.ps1) deliberately: PowerShell resolves a
+# bare `mycodex` to a same-named .ps1 before the .cmd sibling, and a .ps1 with
+# the command's own name is blocked by the default Restricted execution policy
+# in a real user shell. mycodex.cmd is the only PATH entry and invokes this
+# file explicitly with -ExecutionPolicy Bypass, sidestepping that resolution
+# order entirely.
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$RestArgs
