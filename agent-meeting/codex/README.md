@@ -55,13 +55,6 @@ tear everything down.
 
 ## Known limitations
 
-- **Mapping is written on the session's first turn, not at session open.** The
-  register hook fires when codex runs its first turn, so a brand-new idle session
-  has no `sessions/<name>.json` yet. Send one message in the codex TUI to trigger
-  the first turn (this writes the mapping with the thread's `session_id`); after
-  that, incoming peer messages are injected normally. Until the mapping exists the
-  bridge logs the failure and freezes the cursor for that peer — the message is
-  retried automatically on the next WS reconnect rather than dropped.
 - **Idle detection only guards against an in-flight model turn**, not "the user is
   typing but hasn't hit enter". The bridge waits for the thread to read idle twice
   before injecting; it can still inject between a user's keystrokes.
@@ -70,11 +63,26 @@ tear everything down.
   must be two space-free tokens (the `~/.agent-meeting` venv path satisfies this).
 - **`https://` / `wss://` control endpoints are not supported yet** — plaintext
   `http://` (→ plaintext ws) only.
+- **Auto-warm is best-effort.** `codex-meeting` fires a minimal turn on the
+  app-server right after startup (`thread/start` + `turn/start`, same protocol the
+  bridge uses to inject peer messages) so the name↔session mapping exists before
+  you type anything, then launches the foreground session as `codex resume
+  <thread> --remote <addr>` instead of a bare `--remote`. If warm-up fails for any
+  reason (app-server not ready yet, `websockets` missing, protocol error) it logs
+  and falls back to a plain fresh `codex --remote <addr>` — the original
+  first-turn-mapping window (see the old changelog) reopens only in that fallback
+  case.
+- **Control instructions (`control:restart` / `control:clear`) are injected only
+  when fresh** — created within the last 10 minutes AND after this bridge process
+  started. Stale or unrecognized `control:<x>` kinds are logged and dropped, never
+  injected, so they can't wake the live session with noise.
+- **Group charter is cached per group name for 3 minutes** inside the bridge
+  process (`meeting group charter <name>`), so a burst of messages in the same
+  group doesn't re-run the CLI on every single one. 1:1 messages never look up or
+  inject a charter.
 
 ## Follow-ups (non-blocking)
 
-- Auto-warm the session (fire an empty first turn on launch) so the mapping is
-  ready immediately without the user having to send a message.
 - Hide the transient console window from background/child processes on Windows
   (`CREATE_NO_WINDOW`) — needs desktop verification. (The blank PowerShell window the
   user may see is codex's OWN command shell, a child of the codex app-server, not one

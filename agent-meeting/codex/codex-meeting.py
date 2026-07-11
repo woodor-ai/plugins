@@ -32,6 +32,7 @@ is rolled back so no orphan app-server / bridge is left behind.
 """
 
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -44,6 +45,11 @@ import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import quote
+
+try:
+    import websockets  # noqa: F401 — used by the warm-up helper (best-effort; optional)
+except ImportError:
+    websockets = None
 
 HOME = Path.home()
 DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
@@ -313,6 +319,115 @@ def _normalize_runtime_cwd(cwd: str) -> str:
     return top
 
 
+# ---------------------------------------------------------------------------
+# Auto-warm: the codex SessionStart register hook fires on the session's first
+# TURN, not on process launch — the TUI defers `thread/start` until the user
+# actually sends something. That leaves a window between `mycodex` starting
+# and the user's first keystroke where the bridge has no mapping to inject
+# into. Fix: fire one minimal turn ourselves via the app-server protocol
+# (same style as codex-bridge.py's _codex_inject) right after the app-server
+# is up — this creates a thread + fires the hook immediately, and the
+# foreground codex is then told to `resume` that exact thread instead of
+# opening a brand-new one. Best-effort: any failure just falls back to a
+# plain fresh `codex --remote` session; it must never block the launch.
+# ---------------------------------------------------------------------------
+_WARM_PROMPT = ("[agent-meeting warm-up] Automated startup turn from the codex-meeting "
+                "launcher. No reply needed — just let this settle and wait for real messages.")
+_WARM_CALL_TIMEOUT_S = 15
+_WARM_TOTAL_TIMEOUT_S = 30
+
+
+async def _warm_up_thread_async(ws_addr: str, cwd: str):
+    """Create a fresh thread and fire one minimal turn on it. Returns the new
+    thread id on success, None on any failure. Mirrors codex-bridge.py's
+    _codex_inject connection/call plumbing."""
+    ws = await websockets.connect(ws_addr, max_size=None, open_timeout=10)
+    pend = {}
+    nid = 0
+
+    async def recv_loop():
+        try:
+            async for data in ws:
+                try:
+                    m = json.loads(data)
+                except Exception:
+                    continue
+                if isinstance(m, dict) and "id" in m and "method" not in m:
+                    fut = pend.pop(m["id"], None)
+                    if fut and not fut.done():
+                        fut.set_result(m)
+        except Exception:
+            pass
+        finally:
+            err = ConnectionError("codex app-server connection closed")
+            for fut in list(pend.values()):
+                if not fut.done():
+                    fut.set_exception(err)
+            pend.clear()
+
+    task = asyncio.create_task(recv_loop())
+
+    async def call(method, params=None, timeout=_WARM_CALL_TIMEOUT_S):
+        nonlocal nid
+        if task.done():
+            raise ConnectionError("receiver task ended; connection is dead")
+        nid += 1
+        rid = nid
+        req = {"jsonrpc": "2.0", "id": rid, "method": method}
+        if params is not None:
+            req["params"] = params
+        fut = asyncio.get_event_loop().create_future()
+        pend[rid] = fut
+        try:
+            await ws.send(json.dumps(req))
+        except Exception as e:
+            pend.pop(rid, None)
+            raise ConnectionError(f"send failed: {e}")
+        return await asyncio.wait_for(fut, timeout)
+
+    try:
+        await call("initialize", {"clientInfo": {"name": "codex-meeting-warmup", "version": "1"}})
+        r = await call("thread/start", {"cwd": cwd, "sessionStartSource": "startup"})
+        thread_id = ((r.get("result") or {}).get("thread") or {}).get("id")
+        if not thread_id:
+            _log(f"warm-up: thread/start returned no thread id: {r}")
+            return None
+        r2 = await call("turn/start",
+                        {"threadId": thread_id, "input": [{"type": "text", "text": _WARM_PROMPT}]},
+                        timeout=30)
+        if not (r2.get("result") or {}).get("turn", {}).get("id"):
+            _log(f"warm-up: turn/start returned no turn id: {r2}")
+            return None
+        return thread_id
+    finally:
+        task.cancel()
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+def _run_warm_up(ws_addr: str, cwd: str):
+    """Sync, best-effort wrapper: never raises, bounded total wait, returns the
+    warmed thread id or None (never blocks the actual codex launch on failure)."""
+    if websockets is None:
+        _log("warm-up skipped: `websockets` not available in this interpreter")
+        return None
+    try:
+        return asyncio.run(asyncio.wait_for(_warm_up_thread_async(ws_addr, cwd), _WARM_TOTAL_TIMEOUT_S))
+    except Exception as e:
+        _log(f"warm-up failed ({type(e).__name__}: {e}); continuing without a pre-warmed thread")
+        return None
+
+
+def _build_codex_launch_cmd(ws_addr: str, thread_id):
+    """Foreground codex command: resume the pre-warmed thread if we have one,
+    else fall back to a plain fresh --remote session."""
+    if thread_id:
+        return ["codex", "resume", thread_id, "--remote", ws_addr]
+    return ["codex", "--remote", ws_addr]
+
+
 class Launcher:
     def __init__(self, name, preferred_port, control_url):
         self.name = name
@@ -321,6 +436,7 @@ class Launcher:
         self.port = None
         self.appserver_proc = None      # our app-server Popen (None if reused)
         self.bridge_proc = None
+        self.warm_thread_id = None      # set by setup() if auto-warm succeeded
         self.lock = SingleInstanceLock(name)
         self._torn_down = False
 
@@ -355,6 +471,15 @@ class Launcher:
         }, ensure_ascii=False), encoding="utf-8")
         _log(f"wrote runtime.json (ws_addr={ws_addr}, control_url={self.control_url or 'autodiscover'})")
 
+        # auto-warm: fire one minimal turn now so the name<->session mapping is
+        # ready before the user types anything (best-effort, never fatal)
+        _log("warming up session (firing an initial turn on the app-server)")
+        self.warm_thread_id = _run_warm_up(ws_addr, runtime_cwd)
+        if self.warm_thread_id:
+            _log(f"warm-up ok (thread={self.warm_thread_id}); codex will resume this thread")
+        else:
+            _log("warm-up did not complete; codex will open a fresh session instead (non-fatal)")
+
         # bridge daemon
         _log("starting bridge daemon")
         self.bridge_proc = _spawn_detached(
@@ -380,9 +505,10 @@ class Launcher:
     # ---- foreground ----
     def run_codex(self):
         ws_addr = f"ws://127.0.0.1:{self.port}"
-        _log(f"launching foreground: codex --remote {ws_addr}  (Ctrl-C to end + teardown)")
+        cmd = _build_codex_launch_cmd(ws_addr, self.warm_thread_id)
+        _log(f"launching foreground: {' '.join(cmd)}  (Ctrl-C to end + teardown)")
         try:
-            subprocess.run(["codex", "--remote", ws_addr])
+            subprocess.run(cmd)
         except FileNotFoundError:
             _log("ERROR: `codex` not found on PATH")
 

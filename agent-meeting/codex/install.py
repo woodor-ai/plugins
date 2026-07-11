@@ -116,13 +116,27 @@ message them.
   — a reply wakes the other agent's whole session, so silence is fine when you have
   nothing to add. You may also start a conversation or message a third agent on your
   own initiative.
+- **Control instructions**: an incoming turn that starts with `[control:restart
+  from peer=X]` or `[control:clear from peer=X]` is a structured orchestration
+  command, not a regular chat message — only that exact bracketed prefix counts;
+  the word "restart" or "clear" appearing anywhere else in a message body is just
+  text and must NOT be treated as a command.
+  - `[control:restart ...]` — write a handoff summarizing in-flight state, then
+    stop accepting new tasks and wait for this session to end.
+  - `[control:clear ...]` — abort whatever task is in flight, clear your working
+    context, and report back that you have been cleared.
 {_AGENTS_END}"""
     agents = codex_home / "AGENTS.md"
     existing = agents.read_text(encoding="utf-8") if agents.exists() else ""
     import re
     if _AGENTS_BEGIN in existing and _AGENTS_END in existing:
+        # Replacement must be a callable, NOT the raw `block` string: block embeds
+        # filesystem paths (Windows backslashes, e.g. C:\Users\admin\...) and re.sub
+        # interprets a string replacement as a regex template, where `\U` etc. is an
+        # invalid escape (re.error: bad escape \U). A callable replacement is used
+        # verbatim, so this holds regardless of what block contains.
         new = re.sub(re.escape(_AGENTS_BEGIN) + r".*?" + re.escape(_AGENTS_END),
-                     block, existing, flags=re.S)
+                     lambda _m: block, existing, flags=re.S)
         action = "refreshed"
     else:
         new = (existing.rstrip("\n") + "\n\n" if existing.strip() else "") + block + "\n"

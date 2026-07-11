@@ -239,7 +239,8 @@ def _register():
 # Inbound: fetch bodies via `meeting read`. `known` gates first-contact history.
 # ---------------------------------------------------------------------------
 def _fetch_new_messages(room: str, cursor: int, known: bool):
-    """Return (rows, new_cursor). rows = [(id, sender_name, body), ...] ascending, inbound only.
+    """Return (rows, new_cursor). rows = [(id, created_at, sender_name, kind, body), ...]
+    ascending, inbound only.
 
     known=True (room has a persisted cursor): process everything id>cursor, even
     if created before this process started — that IS the disconnect catch-up.
@@ -268,6 +269,7 @@ def _fetch_new_messages(room: str, cursor: int, known: bool):
         except ValueError:
             continue
         sender_id = parts[2]
+        kind = parts[3]
         body = parts[5].replace("\\n", "\n")
         new_cursor = max(new_cursor, mid)
         if mid <= cursor:
@@ -276,7 +278,7 @@ def _fetch_new_messages(room: str, cursor: int, known: bool):
             continue
         if not known and created < BRIDGE_START:  # first contact: no history replay
             continue
-        out.append((mid, sender_id.split("@", 1)[0], body))
+        out.append((mid, created, sender_id.split("@", 1)[0], kind, body))
     return out, new_cursor
 
 
@@ -390,8 +392,72 @@ async def _codex_inject(ws_addr: str, thread_id: str, msg_id: int, text: str):
 
 
 # ---------------------------------------------------------------------------
+# control:* instructions (kind column) — never inferred from body text.
+# Fresh control:restart / control:clear are injected as a turn with an
+# explicit prefix; codex executes the actual action per AGENTS.md. Stale or
+# unknown control kinds are logged only (never injected — keeps the live
+# session free of noise for garbage that shouldn't wake it at all).
+# ---------------------------------------------------------------------------
+_CONTROL_STALE_S = 600
+
+_CONTROL_DIRECTIVES = {
+    "restart": "Write a handoff card summarizing in-flight state now, then stop "
+               "accepting new tasks and wait for this session to end.",
+    "clear": "Abort whatever task is in flight, clear your working context, and "
+             "report back that you have been cleared.",
+}
+
+
+def _handle_control(room: str, mid: int, created: int, sender: str, kind: str):
+    """Return injection text for a fresh, known control:<action>; None (log-only) otherwise."""
+    action = kind.split(":", 1)[1] if ":" in kind else ""
+    age_s = int(time.time()) - created
+    if age_s > _CONTROL_STALE_S or created < BRIDGE_START:
+        mins = max(0, age_s) // 60
+        _log(f"ignoring stale control:{action} msg {mid} from {sender} in {room} ({mins} min ago)")
+        return None
+    directive = _CONTROL_DIRECTIVES.get(action)
+    if directive is None:
+        _log(f"unknown control instruction 'control:{action}' msg {mid} from {sender} in {room}; ignoring")
+        return None
+    return f"[control:{action} from peer={sender}] {directive}"
+
+
+# ---------------------------------------------------------------------------
+# Group charter — injected ahead of the body for group messages only (never
+# for 1:1). Cached per group name for a few minutes so a burst of group
+# messages doesn't re-run `meeting group charter` on every single one.
+# ---------------------------------------------------------------------------
+_GROUP_CHARTER_TTL_S = 180
+_group_charter_cache: dict = {}  # group_name -> (fetched_monotonic, charter_text_or_empty)
+
+
+def _get_group_charter(group_name: str) -> str:
+    now = time.monotonic()
+    cached = _group_charter_cache.get(group_name)
+    if cached and now - cached[0] < _GROUP_CHARTER_TTL_S:
+        return cached[1]
+    charter = ""
+    try:
+        r = _run_meeting("group", "charter", group_name)
+        if r.returncode == 0:
+            out = (r.stdout or "").strip()
+            if out and not out.startswith("(no charter set"):
+                charter = out
+        else:
+            _log(f"group charter lookup rc={r.returncode} for {group_name}: "
+                 f"{(r.stderr or '').strip()[:160]}")
+    except Exception as e:
+        _log(f"group charter lookup failed for {group_name}: {e}")
+    _group_charter_cache[group_name] = (now, charter)
+    return charter
+
+
+# ---------------------------------------------------------------------------
 # Worker: drain the global serial FIFO, one message at a time.
-# Queue item: (room, msg_id, sender_name, body, group_or_None)
+# Queue item: (room, msg_id, sender_name, text) — text is the fully composed
+# injection text (control prefix / group envelope+charter / peer envelope
+# already applied by _process_room).
 # ---------------------------------------------------------------------------
 _Q: "queue.Queue[tuple]" = queue.Queue()
 
@@ -417,7 +483,7 @@ def _inject_with_retry(ws_addr, thread_id, msg_id, text):
 
 def _worker():
     while True:
-        room, msg_id, sender, body, group = _Q.get()
+        room, msg_id, sender, text = _Q.get()
         try:
             mapping = _read_json(MAPPING_FILE)
             thread_id = mapping.get("session_id")
@@ -428,10 +494,6 @@ def _worker():
                 _peer_blocked.add(room)
                 continue
             _log(f"waking codex with msg {msg_id} from {sender} -> thread {thread_id}")
-            if group:
-                text = f"[group={group} peer={sender} msg_id={msg_id}] {body}"
-            else:
-                text = f"[peer={sender} msg_id={msg_id}] {body}"
             delivered = _inject_with_retry(ws_addr, thread_id, msg_id, text)
             if delivered:
                 if room not in _peer_blocked:
@@ -589,6 +651,10 @@ def _process_room(room: str, group: str = None):
 
     group=None: DM room; group=<name>: group room; prefix injected text accordingly.
     Cursor is only advanced (and persisted) in the worker after successful injection.
+
+    control:* messages (kind column) never go through the normal body/charter
+    formatting below — they are routed through _handle_control instead, and a
+    stale/unknown one is dropped here (log-only, never enqueued).
     """
     _room_groups[room] = group
     known = room in _known_peers
@@ -596,9 +662,22 @@ def _process_room(room: str, group: str = None):
     rows, new_horizon = _fetch_new_messages(room, since, known)
     _session_cursors[room] = new_horizon
     _known_peers.add(room)
-    for mid, sender, body in rows:
+    for mid, created, sender, kind, body in rows:
+        if kind.startswith("control:"):
+            text = _handle_control(room, mid, created, sender, kind)
+            if text is None:
+                continue
+            _log(f"queue control msg {mid} ({kind}) from {sender} in {room}")
+            _Q.put((room, mid, sender, text))
+            continue
+        if group:
+            prefix = f"[group={group} peer={sender} msg_id={mid}]"
+            charter = _get_group_charter(group)
+            text = f"{prefix} [group charter] {charter}\n{body}" if charter else f"{prefix} {body}"
+        else:
+            text = f"[peer={sender} msg_id={mid}] {body}"
         _log(f"queue msg {mid} from {sender} in {room}")
-        _Q.put((room, mid, sender, body, group))
+        _Q.put((room, mid, sender, text))
 
 
 def _subscribe_loop():

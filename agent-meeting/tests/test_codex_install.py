@@ -110,6 +110,61 @@ def test_parse_controls_invalid_json():
 
 
 # ---------------------------------------------------------------------------
+# _ensure_agents_md refresh branch — regression for the Windows-path bad-escape
+# crash (re.sub was passed `block` as a raw replacement string; a Windows venv
+# path like C:\Users\admin\... contains `\U`, which re.sub's template parser
+# rejects with `re.error: bad escape \U`). Only the REFRESH branch is affected
+# (existing AGENTS.md already has the begin/end markers) — a fresh install
+# takes the append branch and never hits re.sub.
+# ---------------------------------------------------------------------------
+
+def test_ensure_agents_md_refresh_with_windows_backslash_path(tmp_path):
+    mod = _load_install()
+    codex_home = tmp_path / "codex_home"
+    meeting_home = tmp_path / "meeting_home"
+    codex_home.mkdir()
+    meeting_home.mkdir()
+
+    agents = codex_home / "AGENTS.md"
+    agents.write_text(
+        f"some pre-existing content\n\n{mod._AGENTS_BEGIN}\nstale block\n{mod._AGENTS_END}\n",
+        encoding="utf-8",
+    )
+
+    # Force a Windows-style backslash path into the generated block (this is
+    # what a real Windows install produces via _venv_python; on this test
+    # machine pathlib would render POSIX paths, so fake it directly). `mod` is
+    # a fresh, throwaway module instance for this test only — no restore needed.
+    win_vpy = r"C:\Users\admin\.agent-meeting\venv\Scripts\python.exe"
+    mod._venv_python = lambda _meeting_home: win_vpy
+    mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
+
+    text = agents.read_text(encoding="utf-8")
+    assert "some pre-existing content" in text, "unrelated pre-existing content must survive the refresh"
+    assert win_vpy in text
+    assert "agent-meeting (peer messaging)" in text
+    assert "stale block" not in text
+
+
+def test_ensure_agents_md_append_branch_unaffected(tmp_path):
+    """Sanity: a fresh AGENTS.md (no markers yet) takes the append branch,
+    which never touches re.sub and was never at risk."""
+    mod = _load_install()
+    codex_home = tmp_path / "codex_home"
+    meeting_home = tmp_path / "meeting_home"
+    codex_home.mkdir()
+    meeting_home.mkdir()
+
+    win_vpy = r"C:\Users\admin\.agent-meeting\venv\Scripts\python.exe"
+    mod._venv_python = lambda _meeting_home: win_vpy
+    mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
+
+    text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
+    assert win_vpy in text
+    assert mod._AGENTS_BEGIN in text and mod._AGENTS_END in text
+
+
+# ---------------------------------------------------------------------------
 # bootstrap wrapper generation (POSIX only — .cmd branch is Windows-specific)
 # ---------------------------------------------------------------------------
 
