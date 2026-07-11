@@ -170,8 +170,11 @@ def ensure_bin_wrappers():
     New design: bin/ is a real directory. Extensionless scripts (meeting,
     meeting-daemon) become thin shell wrappers that exec the venv
     python with the real plugin script path. .py files (monitor.py, statusline.py,
-    session-bootstrap.py) are COPIED, because callers explicitly pass
-    `python3 ~/.agent-meeting/bin/foo.py` and so they must be real .py files.
+    session-bootstrap.py, meeting_common.py) are COPIED, because callers
+    explicitly pass `python3 ~/.agent-meeting/bin/foo.py` and so they must be
+    real .py files -- this is also how codex-bridge.py and codex-meeting.py
+    (which run from <plugin>/codex/, never copied) get an importable copy of
+    meeting_common.py: they add this directory to sys.path at startup.
     We copy rather than symlink: symlink_to() needs Administrator / Developer-Mode
     privilege on Windows and would crash the whole bootstrap (taking statusLine
     registration down with it); a copy is privilege-free and identical on every OS.

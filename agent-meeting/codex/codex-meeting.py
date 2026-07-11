@@ -62,6 +62,18 @@ MEETING_CLI = DATA / "bin" / "meeting"
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "codex-bridge.py"
 IS_WINDOWS = sys.platform.startswith("win")
 
+# Shared meeting-CLI/discovery kernel (also used by monitor.py and codex-bridge.py).
+# Soft-fail on import: this module is loaded directly by tests via importlib
+# (test_codex_meeting_warmup.py) without a bootstrapped runtime, and none of the
+# warm-up/launch-cmd logic under test touches meeting_common -- only the actual
+# CLI-invoking functions (_run_meeting, _discover_control_url) need it, and they
+# already tolerate failure the same way they tolerate a missing `meeting` binary.
+sys.path.insert(0, str(DATA / "bin"))
+try:
+    import meeting_common
+except ImportError:
+    meeting_common = None
+
 
 def _default_control_url() -> str:
     """Remembered control_url written at install time, so a bare
@@ -136,12 +148,12 @@ def _spawn_detached(cmd, log_path: Path):
 
 
 def _run_meeting(*extra, control_url="", timeout=15):
-    cmd = [_venv_python(), str(MEETING_CLI)] + list(extra)
-    if control_url:
-        cmd += ["--host", control_url]
-    kw = {"creationflags": 0x08000000} if IS_WINDOWS else {}  # CREATE_NO_WINDOW
+    if meeting_common is None:
+        return None
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+        return meeting_common.run_meeting_cli(
+            MEETING_CLI, *extra, python=_venv_python(),
+            host=(control_url or None), timeout=timeout)
     except Exception:
         return None
 
@@ -274,49 +286,9 @@ class SingleInstanceLock:
 
 
 def _discover_control_url() -> str:
-    r = _run_meeting("controls", "--json")
-    if not r or r.returncode != 0 or not r.stdout.strip():
+    if meeting_common is None:
         return ""
-    try:
-        controls = json.loads(r.stdout)
-        if not controls:
-            return ""
-        c = next((x for x in controls if x.get("is_current")), controls[0])
-        ip, port = c.get("ip", ""), c.get("port", "")
-        return f"http://{ip}:{port}" if ip and port else ""
-    except Exception:
-        return ""
-
-
-def _git_main_root(cwd: str) -> str:
-    """Return the absolute path of the main git repo root for the tree containing cwd.
-
-    Uses --git-common-dir (not --show-toplevel) so a git worktree resolves to its
-    main repo root, matching the project name the meeting CLI derives and registers.
-    """
-    try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=cwd, capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0:
-            common_dir = r.stdout.strip()
-            if common_dir:
-                return os.path.normpath(os.path.dirname(os.path.normpath(common_dir)))
-    except Exception:
-        pass
-    return ""
-
-
-def _normalize_runtime_cwd(cwd: str) -> str:
-    abs_cwd = os.path.abspath(cwd)
-    top = _git_main_root(abs_cwd)
-    if not top:
-        _log(f"WARN: cwd is not inside a git worktree; project will be derived from cwd ({abs_cwd})")
-        return abs_cwd
-    if os.path.normcase(os.path.normpath(top)) != os.path.normcase(os.path.normpath(abs_cwd)):
-        _log(f"WARN: normalizing runtime cwd to git main root ({top}) from launch cwd ({abs_cwd})")
-    return top
+    return meeting_common.discover_control(_run_meeting).get("base_url", "")
 
 
 # ---------------------------------------------------------------------------
@@ -458,11 +430,18 @@ class Launcher:
         # runtime.json (shared endpoint for register hook + bridge)
         if not self.control_url:
             self.control_url = _discover_control_url()
-        runtime_cwd = _normalize_runtime_cwd(os.getcwd())
+        # Raw launch cwd, NOT normalized to the git main root: this becomes the
+        # actual working directory for the warm-up thread (and the bridge's CWD
+        # fallback), so a launch from inside a worktree must keep operating on
+        # that worktree's checkout. Project-name matching between this launcher,
+        # the register hook, and the bridge is already guaranteed by
+        # meeting_common.derive_project's --git-common-dir resolution regardless
+        # of which cwd (worktree or main root) is passed in -- no normalization
+        # of the cwd itself is needed for that. (Removed _normalize_runtime_cwd /
+        # _git_main_root, which forced this to the main root and would have
+        # pointed a worktree-launched codex session at the wrong checkout.)
+        runtime_cwd = os.getcwd()
         CODEX_DIR.mkdir(parents=True, exist_ok=True)
-        # The bridge derives its project before the SessionStart mapping exists,
-        # so use the git toplevel when possible to match the register hook's
-        # project derivation for launches from subdirectories.
         RUNTIME_JSON.write_text(json.dumps({
             "name": self.name,
             "ws_addr": ws_addr,

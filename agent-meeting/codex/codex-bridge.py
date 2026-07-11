@@ -44,16 +44,9 @@ Requires `websockets` in the agent-meeting venv (bootstrap installs it).
 
 import argparse
 import asyncio
-import base64
-import hashlib
 import json
 import os
 import queue
-import random
-import select
-import socket
-import struct
-import subprocess
 import sys
 import threading
 import time
@@ -82,6 +75,18 @@ MAPPING_FILE = CODEX_DIR / "sessions" / f"{SELF}.json"
 CURSOR_FILE = CODEX_DIR / "cursors" / f"{SELF}.json"
 MEETING_CLI = DATA / "bin" / "meeting"
 
+# Shared WS/discovery/project-derivation kernel: copied into DATA/bin alongside
+# monitor.py by session-bootstrap.py's ensure_bin_wrappers (every .py file in
+# the plugin's bin/ is copied there), so it is importable once the runtime has
+# been bootstrapped at least once.
+sys.path.insert(0, str(DATA / "bin"))
+try:
+    import meeting_common
+except ImportError:
+    sys.stderr.write(f"codex-bridge: missing shared module meeting_common at {DATA / 'bin'} "
+                      "-- run session-bootstrap.py (or install.py) first.\n")
+    sys.exit(3)
+
 BRIDGE_START = int(time.time())  # created_at floor for FIRST contact with a peer
 
 # idle-check knobs
@@ -103,24 +108,7 @@ def _log(msg: str) -> None:
     sys.stderr.flush()
 
 
-def _derive_project(cwd: str) -> str:
-    # Uses --git-common-dir (not --show-toplevel) so a git worktree resolves to
-    # its main repo root, matching the identity registered by the meeting CLI.
-    try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=cwd, capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0:
-            common_dir = r.stdout.strip()
-            if common_dir:
-                name = os.path.basename(os.path.dirname(os.path.normpath(common_dir)))
-                if name:
-                    return "_" if name == "*" else name
-    except Exception:
-        pass
-    name = os.path.basename(os.path.normpath(cwd))
-    return "_" if name == "*" else name
+_derive_project = meeting_common.derive_project
 
 
 def _read_json(path: Path) -> dict:
@@ -147,14 +135,11 @@ if not MEETING_CLI.exists():
 # project (cx-test@ft, not cx-test@<launch-dir-project>).
 # ---------------------------------------------------------------------------
 def _run_meeting(*extra, timeout=20, use_host=True):
-    env = os.environ.copy()
-    cmd = [sys.executable, str(MEETING_CLI)] + list(extra)
-    if use_host and CTRL_BASE:
-        cmd += ["--host", CTRL_BASE]
     run_cwd = CWD if os.path.isdir(CWD) else None
-    kw = {"creationflags": 0x08000000} if sys.platform.startswith("win") else {}  # CREATE_NO_WINDOW
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                          env=env, cwd=run_cwd, **kw)
+    return meeting_common.run_meeting_cli(
+        MEETING_CLI, *extra, python=sys.executable,
+        host=(CTRL_BASE if use_host and CTRL_BASE else None),
+        cwd=run_cwd, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -168,22 +153,12 @@ CTRL_BASE = ""   # e.g. http://10.0.0.114:8765 — passed as --host to every mee
 
 def _discover_control_endpoint():
     """Return (host, port, base_url) via mDNS/LAN discovery, or None."""
-    try:
-        # controls discovery does not take --host
-        r = _run_meeting("controls", "--json", use_host=False)
-        if r.returncode != 0 or not r.stdout.strip():
-            return None
-        controls = json.loads(r.stdout)
-        if not controls:
-            return None
-        c = next((x for x in controls if x.get("is_current")), controls[0])
-        ip = c.get("ip", "")
-        port = int(c.get("port", 0) or 0)
-        if not ip or not port:
-            return None
-        return ip, port, f"http://{ip}:{port}"
-    except Exception:
+    # controls discovery does not take --host
+    info = meeting_common.discover_control(lambda *a: _run_meeting(*a, use_host=False))
+    ip, port = info.get("ip", ""), info.get("port", "")
+    if not ip or not port:
         return None
+    return ip, int(port), info.get("base_url", "")
 
 
 def _resolve_control():
@@ -512,132 +487,11 @@ def _worker():
 
 
 # ---------------------------------------------------------------------------
-# WS /subscribe kernel (forked from monitor.py) — inbound + heartbeat.
-# Uses the single resolved control endpoint (CTRL_HOST/CTRL_PORT).
+# WS /subscribe kernel: meeting_common.WSSubscribeClient (shared with
+# monitor.py). Uses the single resolved control endpoint (CTRL_HOST/CTRL_PORT)
+# -- resolve_addr below is a fixed closure, never re-discovered per reconnect
+# (that's the P0-1 single-control-endpoint invariant).
 # ---------------------------------------------------------------------------
-def _read_token():
-    try:
-        with open(DATA / "config.json") as f:
-            return json.load(f).get("auth_token") or None
-    except Exception:
-        return None
-
-
-def _ws_make_key():
-    raw = base64.b64encode(os.urandom(16)).decode()
-    accept = base64.b64encode(
-        hashlib.sha1((raw + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
-    ).decode()
-    return raw, accept
-
-
-def _ws_send_masked(sock, opcode, payload: bytes):
-    mask = os.urandom(4)
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    n = len(payload)
-    if n < 126:
-        header = struct.pack("!BB", 0x80 | opcode, 0x80 | n)
-    elif n < 65536:
-        header = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, n)
-    else:
-        header = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, n)
-    sock.sendall(header + mask + masked)
-
-
-def _ws_recv_exact(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            raise IOError("EOF")
-        buf += chunk
-    return buf
-
-
-def _ws_read_frame(sock):
-    header = _ws_recv_exact(sock, 2)
-    b0, b1 = header[0], header[1]
-    fin = (b0 & 0x80) != 0
-    opcode = b0 & 0x0F
-    masked = (b1 & 0x80) != 0
-    length = b1 & 0x7F
-    if not fin:
-        raise IOError("fragmented frame not supported")
-    if length == 126:
-        length = struct.unpack("!H", _ws_recv_exact(sock, 2))[0]
-    elif length == 127:
-        length = struct.unpack("!Q", _ws_recv_exact(sock, 8))[0]
-    mask_key = _ws_recv_exact(sock, 4) if masked else b""
-    payload = _ws_recv_exact(sock, length) if length else b""
-    if masked:
-        payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
-    return opcode, payload
-
-
-def _ws_connect():
-    try:
-        sock = socket.create_connection((CTRL_HOST, CTRL_PORT), timeout=10)
-    except Exception as e:
-        _log(f"ws connect failed ({CTRL_HOST}:{CTRL_PORT}): {e}")
-        return None
-    ws_key, expected_accept = _ws_make_key()
-    token = _read_token()
-    headers = [
-        "GET /subscribe HTTP/1.1",
-        f"Host: {CTRL_HOST}:{CTRL_PORT}",
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        f"Sec-WebSocket-Key: {ws_key}",
-        "Sec-WebSocket-Version: 13",
-        f"X-Meeting-Name: {SELF}",
-        f"X-Meeting-Project: {PROJECT}",
-        "X-Meeting-Proto: 1",
-    ]
-    if token:
-        headers.append(f"Authorization: Bearer {token}")
-    try:
-        sock.sendall(("\r\n".join(headers) + "\r\n\r\n").encode())
-        line = b""
-        while not line.endswith(b"\r\n"):
-            ch = sock.recv(1)
-            if not ch:
-                raise IOError("closed during handshake")
-            line += ch
-        status_line = line.decode().strip()
-        resp = {}
-        while True:
-            hline = b""
-            while not hline.endswith(b"\r\n"):
-                ch = sock.recv(1)
-                if not ch:
-                    raise IOError("closed reading headers")
-                hline += ch
-            hline = hline.decode().strip()
-            if not hline:
-                break
-            if ":" in hline:
-                k, _, v = hline.partition(":")
-                resp[k.strip().lower()] = v.strip()
-        if "101" not in status_line:
-            raise IOError(f"handshake rejected: {status_line}")
-        if resp.get("sec-websocket-accept", "") != expected_accept:
-            raise IOError("Sec-WebSocket-Accept mismatch")
-        sock.settimeout(None)
-        return sock
-    except Exception as e:
-        _log(f"ws handshake failed: {e}")
-        try:
-            sock.close()
-        except Exception:
-            pass
-        return None
-
-
-_WS_PING_INTERVAL = 5
-_WS_DEAD_TIMEOUT = 15
-_BACKOFF_BASE = 1.0
-_BACKOFF_MAX = 30.0
-_BACKOFF_JITTER = 0.20
 
 _cursors: dict = {}          # committed cursors (persisted to disk only on success)
 _session_cursors: dict = {}  # in-session fetch horizon (not persisted; dedup within session)
@@ -680,95 +534,37 @@ def _process_room(room: str, group: str = None):
         _Q.put((room, mid, sender, text))
 
 
-def _subscribe_loop():
-    backoff = _BACKOFF_BASE
-    while True:
-        sock = _ws_connect()
-        if sock is None:
-            delay = min(backoff * random.uniform(1 - _BACKOFF_JITTER, 1 + _BACKOFF_JITTER), _BACKOFF_MAX)
-            time.sleep(delay)
-            backoff = min(backoff * 2, _BACKOFF_MAX)
-            continue
-        backoff = _BACKOFF_BASE
-        _log(f"ws /subscribe connected to {CTRL_BASE}")
-        _register()
-        # On reconnect: unblock rooms that had injection failures so their messages
-        # can be retried. Clear session cursors for blocked rooms so _process_room
-        # re-fetches from the committed cursor (not the in-session fetch horizon).
-        for r in list(_peer_blocked):
-            _session_cursors.pop(r, None)
-        _peer_blocked.clear()
-        # P1-4: catch up all known rooms for anything sent while disconnected.
-        for room in list(_known_peers):
-            _process_room(room, group=_room_groups.get(room))
+def _on_text(msg: dict) -> None:
+    if msg.get("type") != "msg":
+        return
+    sender = msg.get("sender", "")
+    sender_project = msg.get("sender_project", "")
+    group = msg.get("group") or None
+    if sender == SELF and sender_project == PROJECT:
+        return  # self-sent
+    if group:
+        # Group message: honour mention filter same as monitor.py. If mention
+        # field is present and falsy, the message was directed at someone else
+        # (@them, not @us) — skip it.
+        if "mention" in msg and not msg["mention"]:
+            return
+        _process_room(group, group=group)
+    else:
+        _process_room(sender)
 
-        last_frame = time.time()
-        last_ping = time.time()
-        disconnected = False
-        while not disconnected:
-            try:
-                readable, _, _ = select.select([sock], [], [], 1.0)
-            except Exception:
-                break
-            now = time.time()
-            if now - last_frame > _WS_DEAD_TIMEOUT:
-                _log("no frame for dead-timeout; reconnecting")
-                break
-            if now - last_ping >= _WS_PING_INTERVAL:
-                try:
-                    _ws_send_masked(sock, 0x9, b"ping")
-                except Exception:
-                    break
-                last_ping = now
-            if not readable:
-                continue
-            try:
-                opcode, payload = _ws_read_frame(sock)
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except Exception as e:
-                _log(f"ws read error: {type(e).__name__}: {e}")
-                break
-            last_frame = time.time()
 
-            if opcode == 0x1:  # text
-                try:
-                    msg = json.loads(payload.decode("utf-8"))
-                except Exception:
-                    continue
-                if msg.get("type") == "msg":
-                    sender = msg.get("sender", "")
-                    sender_project = msg.get("sender_project", "")
-                    group = msg.get("group") or None
-                    if sender == SELF and sender_project == PROJECT:
-                        continue  # self-sent
-                    if group:
-                        # Group message: honour mention filter same as monitor.py.
-                        # If mention field is present and falsy, the message was
-                        # directed at someone else (@them, not @us) — skip it.
-                        if "mention" in msg and not msg["mention"]:
-                            continue
-                        _process_room(group, group=group)
-                    else:
-                        _process_room(sender)
-            elif opcode == 0x9:  # ping -> pong
-                try:
-                    _ws_send_masked(sock, 0xA, payload)
-                except Exception:
-                    break
-            elif opcode == 0xA:  # pong
-                pass
-            elif opcode == 0x8:  # close
-                break
-
-        try:
-            sock.close()
-        except Exception:
-            pass
-        delay = min(backoff * random.uniform(1 - _BACKOFF_JITTER, 1 + _BACKOFF_JITTER), _BACKOFF_MAX)
-        _log(f"reconnecting in {delay:.1f}s")
-        time.sleep(delay)
-        backoff = min(backoff * 2, _BACKOFF_MAX)
+def _on_connect() -> None:
+    # CTRL_BASE is fixed (resolved once in main()) -- already logged at startup.
+    _register()
+    # On reconnect: unblock rooms that had injection failures so their messages
+    # can be retried. Clear session cursors for blocked rooms so _process_room
+    # re-fetches from the committed cursor (not the in-session fetch horizon).
+    for r in list(_peer_blocked):
+        _session_cursors.pop(r, None)
+    _peer_blocked.clear()
+    # P1-4: catch up all known rooms for anything sent while disconnected.
+    for room in list(_known_peers):
+        _process_room(room, group=_room_groups.get(room))
 
 
 def main():
@@ -780,8 +576,14 @@ def main():
     _register()
     t = threading.Thread(target=_worker, name="codex-inject-worker", daemon=True)
     t.start()
+    ws_client = meeting_common.WSSubscribeClient(
+        self_name=SELF, project=PROJECT,
+        resolve_addr=lambda: (CTRL_HOST, CTRL_PORT),  # fixed -- resolved once above (P0-1)
+        read_token=lambda: meeting_common.read_auth_token(DATA),
+        on_text=_on_text, on_connect=_on_connect, log=_log,
+    )
     try:
-        _subscribe_loop()
+        ws_client.run_forever()
     except (KeyboardInterrupt, SystemExit):
         pass
 
