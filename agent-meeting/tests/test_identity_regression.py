@@ -780,34 +780,34 @@ def test_tc11_global_priority_over_scoped():
 # ---------- TC12: _derive_project sanitizes basename=='*' ----------
 
 def test_tc12_derive_project_sanitizes_star():
-    """_derive_project must never return '*'; a cwd ending in '/*' must yield '_'."""
-    print("\n[TC12] _derive_project 清洗 basename=='*'")
+    """_derive_project must never return '*'; a cwd ending in '/*' must yield '_'.
 
-    # We test this via the CLI binary directly: register with a cwd whose basename is '*'
-    # The daemon will receive whatever project the CLI sends; we verify it's not '*'.
-    # We simulate by registering directly with project='_' (expected output) and confirming
-    # the daemon accepts it; separately we test the CLI derive logic by importing the function.
+    Also verifies the --git-common-dir implementation: a git worktree must resolve
+    to the main repo name, not the worktree directory name.
+    """
+    print("\n[TC12] _derive_project 清洗 basename=='*' + worktree 收敛到主仓名")
 
-    # Replicate _derive_project logic here to unit-test the sanitization contract.
-    # Both meeting CLI and monitor.py share the same logic; this test verifies the
-    # invariant: basename == "*" must be rewritten to "_".
+    # Replicate the current --git-common-dir implementation used by both
+    # codex-bridge.py and monitor.py (v0.8.38+). The old --show-toplevel version
+    # would fail the worktree sub-test below.
     def _derive_project_impl(cwd: str) -> str:
         try:
             result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
                 cwd=cwd, capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0:
-                top = result.stdout.strip()
-                if top:
-                    name = os.path.basename(top)
-                    return "_" if name == "*" else name
+                common_dir = result.stdout.strip()
+                if common_dir:
+                    name = os.path.basename(os.path.dirname(os.path.normpath(common_dir)))
+                    if name:
+                        return "_" if name == "*" else name
         except Exception:
             pass
         name = os.path.basename(os.path.normpath(cwd))
         return "_" if name == "*" else name
 
-    # Create a temp dir named '*' to test the non-git fallback path
+    # Non-git fallback path: cwd whose basename is '*' must yield '_'
     star_parent = tempfile.mkdtemp(prefix="tc12-")
     star_dir = os.path.join(star_parent, "*")
     os.makedirs(star_dir, exist_ok=True)
@@ -820,10 +820,39 @@ def test_tc12_derive_project_sanitizes_star():
     finally:
         shutil.rmtree(star_parent, ignore_errors=True)
 
-    # Verify registration via the daemon with project='*' comes only from --global,
-    # not from a derived cwd — test that the CLI would sanitize it.
-    # (Integration check: if we directly sent project='*' via register API it works,
-    # but _derive_project can never produce it — verified above.)
+    # Worktree convergence: _derive_project from a worktree must return the MAIN
+    # repo's basename, not the worktree directory's basename.
+    main_dir = tempfile.mkdtemp(prefix="tc12-main-")
+    wt_dir = tempfile.mkdtemp(prefix="tc12-wt-")
+    try:
+        subprocess.run(["git", "init", main_dir], capture_output=True, check=False)
+        subprocess.run(["git", "-C", main_dir, "config", "user.email", "t@t.com"],
+                       capture_output=True)
+        subprocess.run(["git", "-C", main_dir, "config", "user.name", "T"],
+                       capture_output=True)
+        open(os.path.join(main_dir, "f"), "w").close()
+        subprocess.run(["git", "-C", main_dir, "add", "."], capture_output=True)
+        subprocess.run(["git", "-C", main_dir, "commit", "-m", "init"],
+                       capture_output=True, check=False)
+        r_wt = subprocess.run(
+            ["git", "-C", main_dir, "worktree", "add", wt_dir, "-b", "tc12-feat"],
+            capture_output=True,
+        )
+        if r_wt.returncode == 0:
+            expected = os.path.basename(os.path.normpath(main_dir))
+            got = _derive_project_impl(wt_dir)
+            check("TC12: worktree resolves to main repo name (not worktree dir name)",
+                  got == expected, f"got {got!r}, expected {expected!r}")
+        else:
+            print(f"  [TC12] SKIP worktree sub-test (git worktree add failed: "
+                  f"{r_wt.stderr.decode(errors='replace').strip()[:80]})")
+    finally:
+        subprocess.run(["git", "-C", main_dir, "worktree", "remove", "--force", wt_dir],
+                       capture_output=True, check=False)
+        shutil.rmtree(main_dir, ignore_errors=True)
+        shutil.rmtree(wt_dir, ignore_errors=True)
+
+    # Sentinel: _derive_project(non-git-dir) returns cwd basename, never '*'
     check("TC12: sentinel unreachable via _derive_project", True)
 
 

@@ -48,7 +48,8 @@ reply goes back to the peer. Exit the TUI (or Ctrl-C) to tear everything down.
   has no `sessions/<name>.json` yet. Send one message in the codex TUI to trigger
   the first turn (this writes the mapping with the thread's `session_id`); after
   that, incoming peer messages are injected normally. Until the mapping exists the
-  bridge replies with a "session not ready" notice and skips.
+  bridge logs the failure and freezes the cursor for that peer — the message is
+  retried automatically on the next WS reconnect rather than dropped.
 - **Idle detection only guards against an in-flight model turn**, not "the user is
   typing but hasn't hit enter". The bridge waits for the thread to read idle twice
   before injecting; it can still inject between a user's keystrokes.

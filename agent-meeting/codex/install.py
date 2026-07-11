@@ -92,7 +92,10 @@ def _ensure_agents_md(codex_home: Path, meeting_home: Path, control: str):
     """Append (or refresh) an agent-meeting usage section to ~/.codex/AGENTS.md so
     codex knows it is a peer and how to send. Idempotent — replaces only the block
     between our markers, never the user's own content."""
-    say = (meeting_home / "bin" / ("meeting-say.cmd" if IS_WINDOWS else "meeting-say"))
+    # Always use the extensionless script form (plain Python file) with the venv
+    # python explicitly — do NOT use the .cmd wrapper, which routes through cmd.exe
+    # and mangles < / > in %* as redirection when the body contains those characters.
+    say = meeting_home / "bin" / "meeting-say"
     vpy = _venv_python(meeting_home)
     cli = meeting_home / "bin" / "meeting"
     ctrl = control or "http://<your-mac-tailnet-ip>:8765"
@@ -102,16 +105,22 @@ def _ensure_agents_md(codex_home: Path, meeting_home: Path, control: str):
 You are a peer on **agent-meeting** — other agents can message you and you can
 message them.
 
-- **Incoming**: a message from another agent arrives as a normal turn whose text
-  begins with `[peer=X msg_id=N]`. That means agent **X** is talking to you; the
-  rest is X's message.
-- **Reply to X, or message anyone, in ONE PowerShell command**:
+- **Direct message (1:1)**: an incoming turn whose text begins with
+  `[peer=X msg_id=N]` means agent **X** is talking to you directly.
+  Reply (or message anyone) with ONE command:
   ```
-  & "{say}" X '你的正文放在单引号里'
+  & "{vpy}" "{say}" X '你的正文放在单引号里'
   ```
   Put the body in **single quotes** (PowerShell treats them literally — safe for
   Chinese prose and punctuation; a literal `'` inside must be doubled `''`). You do
   NOT need to know your own name or the control address — meeting-say fills them in.
+- **Group message**: an incoming turn whose text begins with
+  `[group=G peer=X msg_id=N]` means agent **X** sent to group **G**. Reply to the
+  group (so all members see it) using the group name as the recipient:
+  ```
+  & "{vpy}" "{say}" G '你的正文'
+  ```
+  Use **G** (the group name), not **X** (the sender), as the recipient.
 - **See who is online**:
   ```
   & "{vpy}" "{cli}" list --host {ctrl}

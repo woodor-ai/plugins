@@ -256,6 +256,10 @@ def ensure_bin_wrappers():
                 continue
             if IS_WINDOWS:
                 (tmp_bin / f"{_stem}.cmd").write_text(f'@echo off\r\n"{py}" "{_src}" %*\r\n')
+                # Extensionless copy: invoke as `python.exe <bin>\{_stem} <args>` via
+                # CreateProcess, bypassing cmd.exe which mangles < / > in %* as redirection.
+                # meeting-say is the primary carrier of user text and MUST use this form.
+                _shutil.copyfile(str(_src), str(tmp_bin / _stem))
             else:
                 _w = tmp_bin / _stem
                 _w.write_text(f'#!/bin/sh\nexec "{py}" "{_src}" "$@"\n')

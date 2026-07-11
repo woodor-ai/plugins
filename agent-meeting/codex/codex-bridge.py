@@ -104,12 +104,19 @@ def _log(msg: str) -> None:
 
 
 def _derive_project(cwd: str) -> str:
+    # Uses --git-common-dir (not --show-toplevel) so a git worktree resolves to
+    # its main repo root, matching the identity registered by the meeting CLI.
     try:
-        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                           cwd=cwd, capture_output=True, text=True, timeout=5)
-        if r.returncode == 0 and r.stdout.strip():
-            name = os.path.basename(r.stdout.strip())
-            return "_" if name == "*" else name
+        r = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            common_dir = r.stdout.strip()
+            if common_dir:
+                name = os.path.basename(os.path.dirname(os.path.normpath(common_dir)))
+                if name:
+                    return "_" if name == "*" else name
     except Exception:
         pass
     name = os.path.basename(os.path.normpath(cwd))
@@ -231,26 +238,29 @@ def _register():
 # ---------------------------------------------------------------------------
 # Inbound: fetch bodies via `meeting read`. `known` gates first-contact history.
 # ---------------------------------------------------------------------------
-def _fetch_new_messages(peer: str, cursor: int, known: bool):
-    """Return (rows, new_cursor). rows = [(id, body), ...] ascending, inbound only.
+def _fetch_new_messages(room: str, cursor: int, known: bool):
+    """Return (rows, new_cursor). rows = [(id, sender_name, body), ...] ascending, inbound only.
 
-    known=True (peer has a persisted cursor): process everything id>cursor, even
+    known=True (room has a persisted cursor): process everything id>cursor, even
     if created before this process started — that IS the disconnect catch-up.
     known=False (first contact): additionally require created_at >= BRIDGE_START
-    so we never replay a long history on first sight of a peer.
+    so we never replay a long history on first sight of a room.
+
+    TSV columns from `meeting read`: id TAB created_at TAB sender_id TAB kind TAB ask TAB body
+    split(..., 5) keeps body intact even when it contains tab characters.
     """
     try:
-        r = _run_meeting("read", SELF, peer, "--since", str(cursor), "--limit", "50")
+        r = _run_meeting("read", SELF, room, "--since", str(cursor), "--limit", "50")
     except Exception as e:
-        _log(f"meeting read {peer} failed: {e}")
+        _log(f"meeting read {room} failed: {e}")
         return [], cursor
     if r.returncode != 0:
-        _log(f"meeting read {peer} rc={r.returncode}: {(r.stderr or '').strip()[:160]}")
+        _log(f"meeting read {room} rc={r.returncode}: {(r.stderr or '').strip()[:160]}")
         return [], cursor
     out = []
     new_cursor = cursor
     for line in r.stdout.splitlines():
-        parts = line.split("\t")
+        parts = line.split("\t", 5)
         if len(parts) < 6:
             continue
         try:
@@ -266,7 +276,7 @@ def _fetch_new_messages(peer: str, cursor: int, known: bool):
             continue
         if not known and created < BRIDGE_START:  # first contact: no history replay
             continue
-        out.append((mid, body))
+        out.append((mid, sender_id.split("@", 1)[0], body))
     return out, new_cursor
 
 
@@ -281,7 +291,7 @@ class _NotInjected(ConnectionError):
     pass
 
 
-async def _codex_inject(ws_addr: str, thread_id: str, peer: str, msg_id: int, body: str):
+async def _codex_inject(ws_addr: str, thread_id: str, msg_id: int, text: str):
     import websockets as _ws
     try:
         ws = await _ws.connect(ws_addr, max_size=None, open_timeout=10)
@@ -362,10 +372,9 @@ async def _codex_inject(ws_addr: str, thread_id: str, peer: str, msg_id: int, bo
             raise _NotInjected(str(e))
 
         # --- inject only ---
-        # codex sees the message as a turn (prefixed [peer=X msg_id=N]) and handles
-        # its OWN reply via meeting-say. The bridge deliberately does NOT read the
-        # turn back or relay a reply — outbound is entirely codex's job now.
-        text = f"[peer={peer} msg_id={msg_id}] {body}"
+        # codex sees the message as a turn and handles its OWN reply via meeting-say.
+        # The bridge deliberately does NOT read the turn back or relay a reply —
+        # outbound is entirely codex's job now.
         r = await call("turn/start", {"threadId": thread_id,
                                       "input": [{"type": "text", "text": text}]}, timeout=60)
         if not (r.get("result") or {}).get("turn", {}).get("id"):
@@ -382,17 +391,18 @@ async def _codex_inject(ws_addr: str, thread_id: str, peer: str, msg_id: int, bo
 
 # ---------------------------------------------------------------------------
 # Worker: drain the global serial FIFO, one message at a time.
+# Queue item: (room, msg_id, sender_name, body, group_or_None)
 # ---------------------------------------------------------------------------
-_Q: "queue.Queue[tuple[str,int,str]]" = queue.Queue()
+_Q: "queue.Queue[tuple]" = queue.Queue()
 
 
-def _inject_with_retry(ws_addr, thread_id, peer, msg_id, body):
+def _inject_with_retry(ws_addr, thread_id, msg_id, text):
     """Return True if the message was delivered into the codex session, else False.
     Retries ONLY pre-injection connect failures."""
     attempt = 0
     while True:
         try:
-            return bool(asyncio.run(_codex_inject(ws_addr, thread_id, peer, msg_id, body)))
+            return bool(asyncio.run(_codex_inject(ws_addr, thread_id, msg_id, text)))
         except _NotInjected as e:
             attempt += 1
             if attempt > _CONNECT_RETRIES:
@@ -407,22 +417,34 @@ def _inject_with_retry(ws_addr, thread_id, peer, msg_id, body):
 
 def _worker():
     while True:
-        peer, msg_id, body = _Q.get()
+        room, msg_id, sender, body, group = _Q.get()
         try:
             mapping = _read_json(MAPPING_FILE)
             thread_id = mapping.get("session_id")
             ws_addr = mapping.get("ws_addr")
             if not thread_id or not ws_addr:
-                _log(f"no mapping for msg {msg_id} from {peer}; skipping "
+                _log(f"no mapping for msg {msg_id} from {sender}; blocking {room} until reconnect "
                      f"(codex session has not started a turn yet, so no session_id)")
+                _peer_blocked.add(room)
                 continue
-            _log(f"waking codex with msg {msg_id} from {peer} -> thread {thread_id}")
-            delivered = _inject_with_retry(ws_addr, thread_id, peer, msg_id, body)
-            _log(f"msg {msg_id} from {peer}: "
-                 + ("delivered into codex session (codex replies via meeting-say)"
-                    if delivered else "NOT delivered"))
+            _log(f"waking codex with msg {msg_id} from {sender} -> thread {thread_id}")
+            if group:
+                text = f"[group={group} peer={sender} msg_id={msg_id}] {body}"
+            else:
+                text = f"[peer={sender} msg_id={msg_id}] {body}"
+            delivered = _inject_with_retry(ws_addr, thread_id, msg_id, text)
+            if delivered:
+                if room not in _peer_blocked:
+                    _cursors[room] = max(_cursors.get(room, 0), msg_id)
+                    _save_cursors(_cursors)
+                _log(f"msg {msg_id} from {sender}: delivered into codex session"
+                     + (" (cursor NOT advanced; earlier failure pending for this room)"
+                        if room in _peer_blocked else ""))
+            else:
+                _peer_blocked.add(room)
+                _log(f"msg {msg_id} from {sender}: NOT delivered; blocking {room}")
         except Exception as e:
-            _log(f"worker error on msg {msg_id} from {peer}: {type(e).__name__}: {e}")
+            _log(f"worker error on msg {msg_id} from {sender}: {type(e).__name__}: {e}")
         finally:
             _Q.task_done()
 
@@ -555,20 +577,28 @@ _BACKOFF_BASE = 1.0
 _BACKOFF_MAX = 30.0
 _BACKOFF_JITTER = 0.20
 
-_cursors: dict = {}
+_cursors: dict = {}          # committed cursors (persisted to disk only on success)
+_session_cursors: dict = {}  # in-session fetch horizon (not persisted; dedup within session)
 _known_peers: set = set()
+_peer_blocked: set = set()   # rooms blocked after an injection failure; cursor frozen
+_room_groups: dict = {}      # room name -> group name, or None for DMs
 
 
-def _process_peer(peer: str):
-    """Fetch new inbound from peer, enqueue, persist cursor."""
-    known = peer in _known_peers
-    rows, _cursors[peer] = _fetch_new_messages(peer, _cursors.get(peer, 0), known)
-    _known_peers.add(peer)
-    if rows:
-        _save_cursors(_cursors)
-        for mid, body in rows:
-            _log(f"queue msg {mid} from {peer}")
-            _Q.put((peer, mid, body))
+def _process_room(room: str, group: str = None):
+    """Fetch new inbound from room (peer or group name), enqueue. Does NOT persist cursor.
+
+    group=None: DM room; group=<name>: group room; prefix injected text accordingly.
+    Cursor is only advanced (and persisted) in the worker after successful injection.
+    """
+    _room_groups[room] = group
+    known = room in _known_peers
+    since = max(_session_cursors.get(room, 0), _cursors.get(room, 0))
+    rows, new_horizon = _fetch_new_messages(room, since, known)
+    _session_cursors[room] = new_horizon
+    _known_peers.add(room)
+    for mid, sender, body in rows:
+        _log(f"queue msg {mid} from {sender} in {room}")
+        _Q.put((room, mid, sender, body, group))
 
 
 def _subscribe_loop():
@@ -583,9 +613,15 @@ def _subscribe_loop():
         backoff = _BACKOFF_BASE
         _log(f"ws /subscribe connected to {CTRL_BASE}")
         _register()
-        # P1-4: catch up known peers for anything sent while we were disconnected.
-        for peer in list(_known_peers):
-            _process_peer(peer)
+        # On reconnect: unblock rooms that had injection failures so their messages
+        # can be retried. Clear session cursors for blocked rooms so _process_room
+        # re-fetches from the committed cursor (not the in-session fetch horizon).
+        for r in list(_peer_blocked):
+            _session_cursors.pop(r, None)
+        _peer_blocked.clear()
+        # P1-4: catch up all known rooms for anything sent while disconnected.
+        for room in list(_known_peers):
+            _process_room(room, group=_room_groups.get(room))
 
         last_frame = time.time()
         last_ping = time.time()
@@ -624,9 +660,18 @@ def _subscribe_loop():
                 if msg.get("type") == "msg":
                     sender = msg.get("sender", "")
                     sender_project = msg.get("sender_project", "")
+                    group = msg.get("group") or None
                     if sender == SELF and sender_project == PROJECT:
                         continue  # self-sent
-                    _process_peer(sender)
+                    if group:
+                        # Group message: honour mention filter same as monitor.py.
+                        # If mention field is present and falsy, the message was
+                        # directed at someone else (@them, not @us) — skip it.
+                        if "mention" in msg and not msg["mention"]:
+                            continue
+                        _process_room(group, group=group)
+                    else:
+                        _process_room(sender)
             elif opcode == 0x9:  # ping -> pong
                 try:
                     _ws_send_masked(sock, 0xA, payload)

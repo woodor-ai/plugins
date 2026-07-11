@@ -73,8 +73,8 @@ def _default_name() -> str:
 
 
 def _venv_python() -> str:
-    # Prefer the interpreter running this launcher if it is the agent-meeting venv;
-    # otherwise fall back to the known venv path.
+    # Use the agent-meeting venv python; fall back to the current interpreter
+    # if the venv has not been created yet.
     if IS_WINDOWS:
         cand = DATA / "venv" / "Scripts" / "python.exe"
     else:
@@ -282,12 +282,21 @@ def _discover_control_url() -> str:
         return ""
 
 
-def _git_toplevel(cwd: str) -> str:
+def _git_main_root(cwd: str) -> str:
+    """Return the absolute path of the main git repo root for the tree containing cwd.
+
+    Uses --git-common-dir (not --show-toplevel) so a git worktree resolves to its
+    main repo root, matching the project name the meeting CLI derives and registers.
+    """
     try:
-        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                           cwd=cwd, capture_output=True, text=True, timeout=5)
-        if r.returncode == 0 and r.stdout.strip():
-            return os.path.abspath(r.stdout.strip())
+        r = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            common_dir = r.stdout.strip()
+            if common_dir:
+                return os.path.normpath(os.path.dirname(os.path.normpath(common_dir)))
     except Exception:
         pass
     return ""
@@ -295,12 +304,12 @@ def _git_toplevel(cwd: str) -> str:
 
 def _normalize_runtime_cwd(cwd: str) -> str:
     abs_cwd = os.path.abspath(cwd)
-    top = _git_toplevel(abs_cwd)
+    top = _git_main_root(abs_cwd)
     if not top:
         _log(f"WARN: cwd is not inside a git worktree; project will be derived from cwd ({abs_cwd})")
         return abs_cwd
     if os.path.normcase(os.path.normpath(top)) != os.path.normcase(os.path.normpath(abs_cwd)):
-        _log(f"WARN: normalizing runtime cwd to git toplevel ({top}) from launch cwd ({abs_cwd})")
+        _log(f"WARN: normalizing runtime cwd to git main root ({top}) from launch cwd ({abs_cwd})")
     return top
 
 
@@ -468,7 +477,7 @@ def main():
         if args.no_codex:
             # Testing hold: wait for SIGINT/SIGTERM, or a stop-file (deterministic
             # trigger on Windows where catchable signals are awkward to deliver).
-            stop_file = CODEX_DIR / f".stop-{args.name}"
+            stop_file = CODEX_DIR / f".stop-{name}"
             try:
                 stop_file.unlink()
             except FileNotFoundError:
