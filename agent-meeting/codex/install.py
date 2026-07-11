@@ -217,8 +217,36 @@ def _ensure_path_entry(bin_dir: Path):
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
             winreg.SetValueEx(k, "Path", 0, winreg.REG_EXPAND_SZ, new)
         print(f"  added {entry} to user PATH — open a NEW terminal, then `mycodex <name>`")
+        _broadcast_environment_change()
     except Exception as e:
         print(f"  (could not update user PATH automatically: {e}; add {entry} manually)")
+
+
+def _broadcast_environment_change() -> None:
+    """Tell already-running processes (Explorer, etc.) that HKCU\\Environment changed.
+
+    winreg writes the registry directly and — unlike `setx` — does not broadcast
+    WM_SETTINGCHANGE, so Explorer keeps handing out the stale PATH to any window
+    opened via the Start menu / Win+R until this fires (or the user logs off).
+    """
+    try:
+        import ctypes
+        result = ctypes.c_size_t()
+        ok = ctypes.windll.user32.SendMessageTimeoutW(
+            0xFFFF,  # HWND_BROADCAST
+            0x001A,  # WM_SETTINGCHANGE
+            0,
+            "Environment",
+            0x0002,  # SMTO_ABORTIFHUNG
+            5000,
+            ctypes.byref(result),
+        )
+        if not ok:
+            print("  (could not notify running windows of the PATH change; a reboot or new login will pick it up)")
+        else:
+            print("  windows were notified — a new window (any app) will already see the updated PATH")
+    except Exception:
+        print("  (could not notify running windows of the PATH change; open a NEW window, or reboot, to pick it up)")
 
 
 def _parse_controls(json_str: str) -> str:
