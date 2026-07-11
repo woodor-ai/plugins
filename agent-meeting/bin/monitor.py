@@ -232,7 +232,7 @@ def _on_connect() -> None:
 
 
 _ws_client = meeting_common.WSSubscribeClient(
-    self_name=SELF, project=_PROJECT,
+    self_name=SELF, project=lambda: _PROJECT,
     resolve_addr=_resolve_ws_addr, read_token=_read_token,
     on_text=_on_text, on_connect=_on_connect, log=_log,
 )

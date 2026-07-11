@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import queue
 from pathlib import Path
 
@@ -266,3 +267,105 @@ def test_group_injection_prefix():
 
     grp_text = build_text("team", "alice", 2, "hi group", group="team")
     assert grp_text == "[group=team peer=alice msg_id=2] hi group"
+
+
+# ---------------------------------------------------------------------------
+# v0.8.53 — identity (cwd/project) is re-derived from MAPPING_FILE on every
+# use instead of being fixed once at module load. Inline replica of
+# codex-bridge.py's _current_identity: mtime-cached, mapping > runtime > HOME.
+# ---------------------------------------------------------------------------
+
+def _make_current_identity(mapping_file: Path, runtime_cwd: str, home: str, derive_project):
+    unset = object()
+    cache = {"mtime": unset, "cwd": None, "project": None}
+
+    def _read_json(path: Path) -> dict:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def current_identity():
+        try:
+            mtime = mapping_file.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime != cache["mtime"]:
+            mapping = _read_json(mapping_file) if mtime is not None else {}
+            cwd = mapping.get("cwd") or runtime_cwd or home
+            cache["mtime"] = mtime
+            cache["cwd"] = cwd
+            cache["project"] = derive_project(cwd)
+        return cache["cwd"], cache["project"]
+
+    return current_identity
+
+
+def test_current_identity_prefers_mapping_over_runtime_and_home():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        mapping_file = tmp / "sessions" / "cx.json"
+        mapping_file.parent.mkdir(parents=True)
+        # No mapping yet -> falls back to runtime cwd
+        current_identity = _make_current_identity(
+            mapping_file, runtime_cwd="/runtime/cwd", home="/home/x",
+            derive_project=lambda cwd: os.path.basename(cwd))
+        cwd, project = current_identity()
+        assert (cwd, project) == ("/runtime/cwd", "cwd")
+
+        # Mapping now written by the SessionStart hook -> must win over runtime
+        mapping_file.write_text(json.dumps({"cwd": "/real/project"}), encoding="utf-8")
+        cwd, project = current_identity()
+        assert (cwd, project) == ("/real/project", "project")
+
+
+def test_current_identity_updates_when_mapping_changes_mid_session():
+    """A session reused under the same name: mapping starts stale (prior
+    session's cwd) then the SessionStart hook overwrites it with the new
+    session's cwd. The next identity check must reflect the NEW cwd, not the
+    one cached from the first read (this is the split-identity bug: two
+    project identities for the same session name)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        mapping_file = tmp / "sessions" / "cx.json"
+        mapping_file.parent.mkdir(parents=True)
+        mapping_file.write_text(json.dumps({"cwd": "/old/session"}), encoding="utf-8")
+
+        current_identity = _make_current_identity(
+            mapping_file, runtime_cwd="/runtime/cwd", home="/home/x",
+            derive_project=lambda cwd: os.path.basename(cwd))
+        assert current_identity() == ("/old/session", "session")
+
+        # Hook rewrites the mapping (new session, same name) -- mtime advances
+        time.sleep(0.01)
+        mapping_file.write_text(json.dumps({"cwd": "/new/session"}), encoding="utf-8")
+        assert current_identity() == ("/new/session", "session")
+
+
+def test_self_filter_uses_current_identity_not_a_fixed_value():
+    """Self-sent filtering must use whatever project MAPPING_FILE derives to
+    RIGHT NOW, not a value fixed at process start -- otherwise once the
+    mapping's cwd changes, the bridge stops recognizing its own outbound
+    messages (or worse, treats a real peer's identical name@project as self)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        mapping_file = tmp / "sessions" / "cx.json"
+        mapping_file.parent.mkdir(parents=True)
+        mapping_file.write_text(json.dumps({"cwd": "/proj-a"}), encoding="utf-8")
+
+        current_identity = _make_current_identity(
+            mapping_file, runtime_cwd="/proj-a", home="/home/x",
+            derive_project=lambda cwd: os.path.basename(cwd))
+
+        def is_self_sent(sender, sender_project, self_name="cx"):
+            _, project = current_identity()
+            return sender == self_name and sender_project == project
+
+        assert is_self_sent("cx", "proj-a") is True
+        assert is_self_sent("cx", "proj-b") is False  # stale project: not recognized as self
+
+        # Mapping updates to the new project -- self-filter must follow immediately
+        time.sleep(0.01)
+        mapping_file.write_text(json.dumps({"cwd": "/proj-b"}), encoding="utf-8")
+        assert is_self_sent("cx", "proj-b") is True
+        assert is_self_sent("cx", "proj-a") is False

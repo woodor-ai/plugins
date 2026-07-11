@@ -118,15 +118,42 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-_RT = _read_json(RUNTIME_JSON)
+_RT = _read_json(RUNTIME_JSON)  # written once by the launcher before this process starts; static
 CONTROL_URL = (_RT.get("control_url") or "").strip()
-_MAP0 = _read_json(MAPPING_FILE)
-CWD = _MAP0.get("cwd") or _RT.get("cwd") or str(HOME)
-PROJECT = _derive_project(CWD)
 
 # Startup sanity: the meeting CLI must exist (P1-3: fail loudly, not per-call).
 if not MEETING_CLI.exists():
     _fatal(f"meeting CLI not found at {MEETING_CLI}", code=5)
+
+
+# ---------------------------------------------------------------------------
+# bug#2: identity (cwd/project) is NOT resolved once at module load. The
+# codex SessionStart hook (codex-register.py) atomically rewrites MAPPING_FILE
+# with the live session's cwd, and it can do so AFTER this bridge has already
+# started (warm-up racing bridge spawn, or a stale leftover file from a prior
+# session under the same name). Re-deriving on every use keeps the bridge's
+# declared identity (self-filter, registration, WS handshake) in sync with
+# whatever MAPPING_FILE says right now. Cached on the file's mtime so
+# _derive_project's git subprocess call only reruns when the mapping changes.
+# ---------------------------------------------------------------------------
+_UNSET = object()
+_identity_cache = {"mtime": _UNSET, "cwd": None, "project": None}
+
+
+def _current_identity() -> "tuple[str, str]":
+    """Return (cwd, project) derived from the CURRENT MAPPING_FILE, falling
+    back to runtime.json's cwd, then HOME, if the mapping is absent."""
+    try:
+        mtime = MAPPING_FILE.stat().st_mtime
+    except OSError:
+        mtime = None
+    if mtime != _identity_cache["mtime"]:
+        mapping = _read_json(MAPPING_FILE) if mtime is not None else {}
+        cwd = mapping.get("cwd") or _RT.get("cwd") or str(HOME)
+        _identity_cache["mtime"] = mtime
+        _identity_cache["cwd"] = cwd
+        _identity_cache["project"] = _derive_project(cwd)
+    return _identity_cache["cwd"], _identity_cache["project"]
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +162,8 @@ if not MEETING_CLI.exists():
 # project (cx-test@ft, not cx-test@<launch-dir-project>).
 # ---------------------------------------------------------------------------
 def _run_meeting(*extra, timeout=20, use_host=True):
-    run_cwd = CWD if os.path.isdir(CWD) else None
+    cwd, _ = _current_identity()
+    run_cwd = cwd if os.path.isdir(cwd) else None
     return meeting_common.run_meeting_cli(
         MEETING_CLI, *extra, python=sys.executable,
         host=(CTRL_BASE if use_host and CTRL_BASE else None),
@@ -204,8 +232,9 @@ def _save_cursors(cursors: dict) -> None:
 def _register():
     """Ensure the session is registered (idempotent upsert). Heartbeat is kept by
     the WS /subscribe ping-pong; registration must exist."""
+    cwd, _ = _current_identity()
     try:
-        _run_meeting("online", SELF, "--cwd", CWD, "--force")
+        _run_meeting("online", SELF, "--cwd", cwd, "--force")
     except Exception as e:
         _log(f"re-register failed ({type(e).__name__}); will retry on reconnect")
 
@@ -598,7 +627,8 @@ def _on_text(msg: dict) -> None:
     sender = msg.get("sender", "")
     sender_project = msg.get("sender_project", "")
     group = msg.get("group") or None
-    if sender == SELF and sender_project == PROJECT:
+    _, project = _current_identity()
+    if sender == SELF and sender_project == project:
         return  # self-sent
     if group:
         # Group message: honour mention filter same as monitor.py. If mention
@@ -631,7 +661,8 @@ def main():
     _resolve_control()
     _cursors.update(_load_cursors())
     _known_peers.update(_cursors.keys())
-    _log(f"starting (project={PROJECT}, cwd={CWD}, control={CTRL_BASE}, "
+    cwd, project = _current_identity()
+    _log(f"starting (project={project}, cwd={cwd}, control={CTRL_BASE}, "
          f"known_peers={sorted(_known_peers)})")
     _register()
     t = threading.Thread(target=_worker, name="codex-inject-worker", daemon=True)
@@ -639,7 +670,7 @@ def main():
     rt = threading.Thread(target=_retry_worker, name="codex-inject-retry", daemon=True)
     rt.start()
     ws_client = meeting_common.WSSubscribeClient(
-        self_name=SELF, project=PROJECT,
+        self_name=SELF, project=lambda: _current_identity()[1],
         resolve_addr=lambda: (CTRL_HOST, CTRL_PORT),  # fixed -- resolved once above (P0-1)
         read_token=lambda: meeting_common.read_auth_token(DATA),
         on_text=_on_text, on_connect=_on_connect, log=_log,

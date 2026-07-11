@@ -230,6 +230,11 @@ class WSSubscribeClient:
             (codex-bridge.py, which resolves the control ONCE at startup) or a
             fresh-discovery closure to re-resolve on every reconnect
             (monitor.py).
+        project: callable() -> str, the X-Meeting-Project handshake header.
+            Called on every connect attempt -- pass a fixed-value closure for a
+            static project (monitor.py, whose own cwd never changes) or a
+            fresh-derivation closure (codex-bridge.py, whose session mapping
+            file's cwd can be updated underneath a long-lived process).
         read_token: callable() -> str | None, the bearer token for Authorization.
         on_text: callable(msg: dict) -- called for every decoded JSON text frame.
         on_connect: callable() | None -- called once per successful handshake,
@@ -269,7 +274,7 @@ class WSSubscribeClient:
             f"Sec-WebSocket-Key: {ws_key}",
             "Sec-WebSocket-Version: 13",
             f"X-Meeting-Name: {self.self_name}",
-            f"X-Meeting-Project: {self.project}",
+            f"X-Meeting-Project: {self.project()}",
             "X-Meeting-Proto: 1",
         ]
         if token:
