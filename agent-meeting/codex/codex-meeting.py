@@ -139,14 +139,20 @@ def _spawn_detached(cmd, log_path: Path):
     logf = open(log_path, "a", encoding="utf-8")
     kwargs = dict(stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     if IS_WINDOWS:
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — survive console events,
-        # stay killable by pid. CREATE_NO_WINDOW on top: under Windows Terminal /
-        # ConPTY hosts, DETACHED_PROCESS alone has been observed to still pop a
-        # visible console for a python.exe child (real-machine report: a blank
-        # console stayed open running venv/Scripts/python.exe with no output) --
-        # CREATE_NO_WINDOW is the flag every other short-lived subprocess call in
-        # this codebase already relies on for a guaranteed-invisible launch.
-        kwargs["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
+        # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP -- NOT DETACHED_PROCESS.
+        # Real-machine finding: app-server and the codex bridge each spawn their
+        # OWN console-subsystem grandchildren (codex's code-mode-host.exe helper,
+        # and powershell.exe it shells out to run commands). A console child with
+        # no creation flags of its own INHERITS its parent's console by default.
+        # CREATE_NO_WINDOW gives OUR process a real (but hidden) console, so that
+        # whole descendant chain inherits the SAME hidden console and stays
+        # invisible. DETACHED_PROCESS instead gives our process NO console at
+        # all, so each console-subsystem grandchild has nothing to inherit and
+        # pops its own NEW visible window instead -- the exact opposite of what
+        # we want, and the actual source of the blank python.exe /
+        # code-mode-host.exe / powershell.exe windows Tommy saw. NEW_PROCESS_GROUP
+        # is kept so Ctrl-C in our own console doesn't also signal these children.
+        kwargs["creationflags"] = 0x08000000 | 0x00000200
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen(cmd, **kwargs)
