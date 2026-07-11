@@ -210,10 +210,10 @@ def ensure_bin_wrappers():
         # Also check the codex/ wrapper entries: an upgrade from an install that had
         # codex-meeting to one that expects mycodex would be skipped by the sentinel
         # even though mycodex is absent.
-        for _stem, _script in (("mycodex", "codex-meeting.py"), ("meeting-say", "meeting-say.py")):
-            if not (PLUGIN_ROOT / "codex" / _script).exists():
-                continue
-            _wname = f"{_stem}.cmd" if IS_WINDOWS else _stem
+        if not (BIN_LINK / ("mycodex.cmd" if IS_WINDOWS else "mycodex")).exists():
+            return False
+        if (PLUGIN_ROOT / "codex" / "meeting-say.py").exists():
+            _wname = "meeting-say.cmd" if IS_WINDOWS else "meeting-say"
             if not (BIN_LINK / _wname).exists():
                 return False
         return True
@@ -259,24 +259,35 @@ def ensure_bin_wrappers():
                 dest.write_text(f'#!/bin/sh\nexec "{py}" "{src}" "$@"\n')
                 dest.chmod(0o755)
 
-        # Convenience entries for codex bridge scripts that live in codex/ (not
-        # bin/): the launcher `mycodex` (wraps codex-meeting.py) and the outbound
-        # helper `meeting-say`. Built into tmp_bin so they are part of the atomic
-        # swap below. Old `codex-meeting` wrappers are gone because the whole
-        # BIN_LINK directory is replaced (rmtree + rename) on every regeneration.
-        for _stem, _script in (("mycodex", "codex-meeting.py"), ("meeting-say", "meeting-say.py")):
-            _src = (PLUGIN_ROOT / "codex" / _script)
-            if not _src.exists():
-                continue
+        # `mycodex`: copied verbatim from agent-meeting/codex/mycodex-posix.sh (+
+        # .ps1/.cmd on Windows) — the single source of truth also used by the root
+        # installer (install-codex.py), so both sites regenerate the exact same
+        # file. Unconditional: mycodex must always self-heal here even if
+        # codex-meeting.py itself is (temporarily) missing — its own "not
+        # installed" check handles that case at runtime.
+        _mycodex_src_dir = PLUGIN_ROOT / "codex"
+        if IS_WINDOWS and (_mycodex_src_dir / "mycodex.ps1").exists():
+            _shutil.copyfile(str(_mycodex_src_dir / "mycodex.ps1"), str(tmp_bin / "mycodex.ps1"))
+            _shutil.copyfile(str(_mycodex_src_dir / "mycodex.cmd"), str(tmp_bin / "mycodex.cmd"))
+        elif not IS_WINDOWS and (_mycodex_src_dir / "mycodex-posix.sh").exists():
+            _dest_sh = tmp_bin / "mycodex"
+            _shutil.copyfile(str(_mycodex_src_dir / "mycodex-posix.sh"), str(_dest_sh))
+            _dest_sh.chmod(0o755)
+
+        # `meeting-say`: outbound helper living in codex/ (not bin/), wrapped the
+        # same way as the generic bin/ entries above. Built into tmp_bin so it is
+        # part of the atomic swap below.
+        _say_src = PLUGIN_ROOT / "codex" / "meeting-say.py"
+        if _say_src.exists():
             if IS_WINDOWS:
-                (tmp_bin / f"{_stem}.cmd").write_text(f'@echo off\r\n"{py}" "{_src}" %*\r\n')
-                # Extensionless copy: invoke as `python.exe <bin>\{_stem} <args>` via
+                (tmp_bin / "meeting-say.cmd").write_text(f'@echo off\r\n"{py}" "{_say_src}" %*\r\n')
+                # Extensionless copy: invoke as `python.exe <bin>\meeting-say <args>` via
                 # CreateProcess, bypassing cmd.exe which mangles < / > in %* as redirection.
                 # meeting-say is the primary carrier of user text and MUST use this form.
-                _shutil.copyfile(str(_src), str(tmp_bin / _stem))
+                _shutil.copyfile(str(_say_src), str(tmp_bin / "meeting-say"))
             else:
-                _w = tmp_bin / _stem
-                _w.write_text(f'#!/bin/sh\nexec "{py}" "{_src}" "$@"\n')
+                _w = tmp_bin / "meeting-say"
+                _w.write_text(f'#!/bin/sh\nexec "{py}" "{_say_src}" "$@"\n')
                 _w.chmod(0o755)
     except Exception:
         _shutil.rmtree(str(tmp_bin), ignore_errors=True)
@@ -300,7 +311,21 @@ def ensure_bin_wrappers():
 
     os.rename(str(tmp_bin), str(BIN_LINK))
     sentinel.write_text(current_root)
+    _cleanup_stale_codex_plugins(BIN_LINK)
     log(f"generated venv-python wrappers in bin/ (plugin: {plugin_bin.name})")
+
+
+def _cleanup_stale_codex_plugins(bin_dir: Path) -> None:
+    """Delete only the three exact leftover codex-plugins* filenames from a prior
+    install (superseded by mycodex --update). Refuses to act unless bin_dir
+    resolves to exactly DATA/bin, and only ever unlinks those three files by
+    name — never recurses."""
+    if bin_dir.resolve() != (DATA / "bin").resolve():
+        return
+    for name in ("codex-plugins", "codex-plugins.cmd", "codex-plugins.ps1"):
+        p = bin_dir / name
+        if p.is_file():
+            p.unlink()
 
 
 # ---------- 2. venv + zeroconf ----------

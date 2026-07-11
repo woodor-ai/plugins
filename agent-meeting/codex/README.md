@@ -42,12 +42,12 @@ builds `~/.agent-meeting` (venv + zeroconf + websockets + `meeting` CLI), and
 installs the codex SessionStart hook. On a client machine no daemon/persistence
 is installed — the agent-meeting control stays on the host.
 
-As long as at least one plugin was installed, the installer also drops a
-`codex-plugins` command into `~/.agent-meeting/bin` (added to PATH). **Later,
-to install more plugins or update existing ones, just run:**
+The installer also drops a single `mycodex` command into `~/.agent-meeting/bin`
+(added to PATH) — unconditionally, regardless of which plugins you selected
+above. **Later, to install more plugins or update existing ones, just run:**
 
 ```
-codex-plugins
+mycodex --update
 ```
 
 instead of re-pasting the one-liner — it pulls (or clones, if missing) the
@@ -58,13 +58,14 @@ agent-meeting.
 ## Run a bridged live session
 
 ```
-mycodex [<name>]
+mycodex [<name>] [--port N] [--control-url URL]
 ```
 
 This starts the app-server + bridge in the background and drops you into a live
 `codex --remote` TUI. Peers can now message `<name>`; the message appears in
 your session and the reply goes back to the peer. Exit the TUI (or Ctrl-C) to
-tear everything down.
+tear everything down. If agent-meeting is not installed yet, `mycodex` reports
+that clearly and tells you to run `mycodex --update` first.
 
 ## Known limitations
 

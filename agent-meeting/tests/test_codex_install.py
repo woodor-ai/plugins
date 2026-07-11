@@ -178,6 +178,9 @@ def _make_plugin_root(base: Path) -> Path:
     (pr / "bin" / "meeting-daemon").write_text("#!/bin/sh\necho daemon\n")
     (pr / "codex" / "codex-meeting.py").write_text("# stub\n")
     (pr / "codex" / "meeting-say.py").write_text("# stub\n")
+    (pr / "codex" / "mycodex-posix.sh").write_text("#!/bin/sh\necho mycodex-stub\n")
+    (pr / "codex" / "mycodex.ps1").write_text("# mycodex-stub\n")
+    (pr / "codex" / "mycodex.cmd").write_text("@echo off\r\n")
     (pr / ".claude-plugin" / "plugin.json").write_text(
         json.dumps({"name": "agent-meeting", "version": "0.8.39"})
     )

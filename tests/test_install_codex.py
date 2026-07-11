@@ -276,53 +276,49 @@ def test_run_interactive_empty_answer_falls_back_to_default(tmp_path, monkeypatc
 
 
 # ---------------------------------------------------------------------------
-# codex-plugins convenience command
+# mycodex convenience command
 # ---------------------------------------------------------------------------
 
-def test_generate_codex_plugins_command_posix(tmp_path):
+def test_generate_mycodex_command_posix(tmp_path):
     mod = _load()
     assert mod.IS_WINDOWS is False  # test host is macOS/Linux
     bin_dir = tmp_path / "bin"
 
-    mod._generate_codex_plugins_command(ROOT, bin_dir)
+    mod._generate_mycodex_command(ROOT, bin_dir)
 
-    dest = bin_dir / "codex-plugins"
+    dest = bin_dir / "mycodex"
     assert dest.exists()
     assert dest.stat().st_mode & 0o111  # executable
     content = dest.read_text()
-    assert content == (ROOT / "install-codex-plugins.sh").read_text()
+    assert content == (ROOT / "agent-meeting" / "codex" / "mycodex-posix.sh").read_text()
     assert '"$DEST/install-codex.py" "$@"' in content
-    assert "git clone" in content and "pull --ff-only" in content
+    assert "--update" in content
     # no .cmd/.ps1 siblings written on POSIX
-    assert not (bin_dir / "codex-plugins.cmd").exists()
-    assert not (bin_dir / "codex-plugins.ps1").exists()
+    assert not (bin_dir / "mycodex.cmd").exists()
+    assert not (bin_dir / "mycodex.ps1").exists()
 
 
-def test_generate_codex_plugins_command_windows(tmp_path, monkeypatch):
+def test_generate_mycodex_command_windows(tmp_path, monkeypatch):
     mod = _load()
     monkeypatch.setattr(mod, "IS_WINDOWS", True)
     bin_dir = tmp_path / "bin"
 
-    mod._generate_codex_plugins_command(ROOT, bin_dir)
+    mod._generate_mycodex_command(ROOT, bin_dir)
 
-    dest_ps1 = bin_dir / "codex-plugins.ps1"
-    dest_cmd = bin_dir / "codex-plugins.cmd"
+    dest_ps1 = bin_dir / "mycodex.ps1"
+    dest_cmd = bin_dir / "mycodex.cmd"
     assert dest_ps1.exists()
     assert dest_cmd.exists()
-    assert dest_ps1.read_text() == (ROOT / "install-codex-plugins.ps1").read_text()
-    assert "@args" in dest_ps1.read_text()  # args forwarded to install-codex.py
-    cmd_content = dest_cmd.read_text()
-    assert "powershell" in cmd_content.lower()
-    assert str(dest_ps1) in cmd_content
-    assert "%*" in cmd_content  # args forwarded from .cmd to the .ps1
-    assert not (bin_dir / "codex-plugins").exists()
+    assert dest_ps1.read_text() == (ROOT / "agent-meeting" / "codex" / "mycodex.ps1").read_text()
+    assert dest_cmd.read_text() == (ROOT / "agent-meeting" / "codex" / "mycodex.cmd").read_text()
+    assert not (bin_dir / "mycodex").exists()
 
 
-def test_generate_codex_plugins_command_creates_bin_dir(tmp_path):
+def test_generate_mycodex_command_creates_bin_dir(tmp_path):
     mod = _load()
     bin_dir = tmp_path / "does" / "not" / "exist" / "bin"
-    mod._generate_codex_plugins_command(ROOT, bin_dir)
-    assert (bin_dir / "codex-plugins").exists()
+    mod._generate_mycodex_command(ROOT, bin_dir)
+    assert (bin_dir / "mycodex").exists()
 
 
 def test_ensure_bin_on_path_posix_no_crash(tmp_path, capsys):
@@ -334,7 +330,7 @@ def test_ensure_bin_on_path_posix_no_crash(tmp_path, capsys):
     assert str(bin_dir) in out
 
 
-def test_main_generates_codex_plugins_command_when_something_installed(tmp_path, monkeypatch):
+def test_main_generates_mycodex_command_when_something_installed(tmp_path, monkeypatch):
     mod = _load()
     meeting_home = tmp_path / "meeting-home"
     monkeypatch.setenv("MEETING_HOME", str(meeting_home))
@@ -346,12 +342,15 @@ def test_main_generates_codex_plugins_command_when_something_installed(tmp_path,
 
     mod.main()
 
-    dest = meeting_home / "bin" / "codex-plugins"
+    dest = meeting_home / "bin" / "mycodex"
     assert dest.exists()
     assert dest.stat().st_mode & 0o111
 
 
-def test_main_skips_codex_plugins_when_nothing_installed(tmp_path, monkeypatch):
+def test_main_generates_mycodex_command_even_when_nothing_installed(tmp_path, monkeypatch):
+    """mycodex must be dropped unconditionally so `--update` always works, even
+    when the user skipped every plugin in this run (e.g. agent-meeting was
+    already installed and they only wanted to update `handoff`)."""
     mod = _load()
     meeting_home = tmp_path / "meeting-home"
     monkeypatch.setenv("MEETING_HOME", str(meeting_home))
@@ -363,7 +362,46 @@ def test_main_skips_codex_plugins_when_nothing_installed(tmp_path, monkeypatch):
 
     mod.main()
 
-    assert not (meeting_home / "bin").exists()
+    dest = meeting_home / "bin" / "mycodex"
+    assert dest.exists()
+    assert dest.stat().st_mode & 0o111
+
+
+def test_main_cleans_up_stale_codex_plugins(tmp_path, monkeypatch):
+    mod = _load()
+    meeting_home = tmp_path / "meeting-home"
+    bin_dir = meeting_home / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "codex-plugins").write_text("#!/bin/sh\necho old\n")
+    (bin_dir / "codex-plugins.cmd").write_text("@echo off\r\n")
+    (bin_dir / "codex-plugins.ps1").write_text("# old\n")
+
+    monkeypatch.setenv("MEETING_HOME", str(meeting_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(
+        mod, "run_interactive",
+        lambda *a, **k: {"installed": [], "skipped": []},
+    )
+
+    mod.main()
+
+    assert not (bin_dir / "codex-plugins").exists()
+    assert not (bin_dir / "codex-plugins.cmd").exists()
+    assert not (bin_dir / "codex-plugins.ps1").exists()
+    assert (bin_dir / "mycodex").exists()
+
+
+def test_cleanup_stale_codex_plugins_refuses_wrong_dir(tmp_path):
+    """Safety guard: only ever acts on <meeting_home>/bin, never anywhere else."""
+    mod = _load()
+    meeting_home = tmp_path / "meeting-home"
+    other_dir = tmp_path / "some-other-dir"
+    other_dir.mkdir(parents=True)
+    (other_dir / "codex-plugins").write_text("do not delete")
+
+    mod._cleanup_stale_codex_plugins(meeting_home, other_dir)
+
+    assert (other_dir / "codex-plugins").read_text() == "do not delete"
 
 
 def test_run_interactive_multiple_plugins(tmp_path):

@@ -3,9 +3,9 @@
 # Usage (one-liner):
 #   curl -fsSL https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.sh | bash
 #
-# Also copied verbatim to ~/.agent-meeting/bin/codex-plugins by install-codex.py
-# after the first install — run `codex-plugins` locally afterwards instead of
-# re-pasting the one-liner. Any extra args are forwarded to install-codex.py.
+# After the first install, run `mycodex --update` locally instead of re-pasting
+# this one-liner — install-codex.py drops a `mycodex` command (unconditionally)
+# whose --update branch does this same clone-or-pull + rerun-installer dance.
 set -e
 
 REPO_URL="https://github.com/woodor-ai/plugins"

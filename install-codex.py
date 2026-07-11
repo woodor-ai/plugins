@@ -153,31 +153,46 @@ def run_interactive(plugins_src: Path, codex_home: Path, prompt_fn=None) -> dict
     return {"installed": installed, "skipped": skipped}
 
 
-def _generate_codex_plugins_command(plugins_src: Path, bin_dir: Path) -> None:
-    """Install a local `codex-plugins` command into bin_dir (same dir + generation
-    mechanism as `mycodex`): re-running it later pulls (or clones) the canonical
-    ~/.codex/plugins-src checkout and reruns this installer, args passed through.
+_STALE_CODEX_PLUGINS_NAMES = ("codex-plugins", "codex-plugins.cmd", "codex-plugins.ps1")
 
-    Copies the existing bootstrap scripts (install-codex-plugins.sh/.ps1) verbatim
-    instead of reimplementing clone/pull — those scripts already are "clone-or-pull
-    + run the installer", so this stays a single source of truth.
+
+def _generate_mycodex_command(plugins_src: Path, bin_dir: Path) -> None:
+    """Install the unified `mycodex` command into bin_dir, unconditionally.
+
+    `mycodex --update` pulls (or clones) the canonical ~/.codex/plugins-src
+    checkout and reruns this installer; bare `mycodex [<name>] ...` starts a
+    bridged codex session (needs agent-meeting installed).
+
+    Copies agent-meeting/codex/mycodex-posix.sh (+ .ps1/.cmd on Windows) verbatim
+    — that plugin subtree is the single source of truth and travels with every
+    agent-meeting install, so session-bootstrap.py's SessionStart hook can
+    regenerate the exact same file without needing this root installer present.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
+    src_dir = plugins_src / "agent-meeting" / "codex"
     if IS_WINDOWS:
-        dest_ps1 = bin_dir / "codex-plugins.ps1"
-        shutil.copy2(str(plugins_src / "install-codex-plugins.ps1"), str(dest_ps1))
-        dest_cmd = bin_dir / "codex-plugins.cmd"
-        dest_cmd.write_text(
-            f'@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "{dest_ps1}" %*\r\n'
-        )
+        shutil.copy2(str(src_dir / "mycodex.ps1"), str(bin_dir / "mycodex.ps1"))
+        shutil.copy2(str(src_dir / "mycodex.cmd"), str(bin_dir / "mycodex.cmd"))
     else:
-        dest_sh = bin_dir / "codex-plugins"
-        shutil.copy2(str(plugins_src / "install-codex-plugins.sh"), str(dest_sh))
+        dest_sh = bin_dir / "mycodex"
+        shutil.copy2(str(src_dir / "mycodex-posix.sh"), str(dest_sh))
         dest_sh.chmod(0o755)
 
 
+def _cleanup_stale_codex_plugins(meeting_home: Path, bin_dir: Path) -> None:
+    """Delete only the three exact leftover codex-plugins* filenames from a prior
+    install. Refuses to act unless bin_dir resolves to exactly <meeting_home>/bin,
+    and only ever unlinks those three files by name — never recurses."""
+    if bin_dir.resolve() != (meeting_home / "bin").resolve():
+        return
+    for name in _STALE_CODEX_PLUGINS_NAMES:
+        p = bin_dir / name
+        if p.is_file():
+            p.unlink()
+
+
 def _ensure_bin_on_path(bin_dir: Path) -> None:
-    """Put bin_dir on PATH so `codex-plugins` is callable by name, even when the
+    """Put bin_dir on PATH so `mycodex` is callable by name, even when the
     agent-meeting plugin itself was not selected for install.
 
     Reuses agent-meeting's own winreg PATH helper (Windows: idempotent user-PATH
@@ -215,12 +230,17 @@ def main():
         print("Open a NEW terminal and run: mycodex")
         print("Or:                          mycodex <session-name>")
 
-        bin_dir = Path(os.environ.get("MEETING_HOME") or str(_default_meeting_home())) / "bin"
-        _generate_codex_plugins_command(HERE, bin_dir)
-        _ensure_bin_on_path(bin_dir)
-        print()
-        print(f"codex-plugins command installed -> {bin_dir}")
-        print("Next time you want to install/update plugins, just run: codex-plugins")
+    # mycodex is dropped unconditionally — independent of which plugins were
+    # selected above — so `mycodex --update` always works, even on a machine
+    # that has never installed agent-meeting.
+    meeting_home = Path(os.environ.get("MEETING_HOME") or str(_default_meeting_home()))
+    bin_dir = meeting_home / "bin"
+    _generate_mycodex_command(HERE, bin_dir)
+    _cleanup_stale_codex_plugins(meeting_home, bin_dir)
+    _ensure_bin_on_path(bin_dir)
+    print()
+    print(f"mycodex command installed -> {bin_dir}")
+    print("Next time you want to install/update plugins, just run: mycodex --update")
 
 
 if __name__ == "__main__":
