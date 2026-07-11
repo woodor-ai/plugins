@@ -74,8 +74,21 @@ def _copy_dir(src: Path, dest: Path) -> None:
 
 
 def _copy_plugin(src: Path, dest: Path) -> None:
-    """Copy plugin src to dest, clearing dest first."""
+    """Copy plugin src to dest, clearing dest first.
+
+    Safety guard: an existing non-empty dest is only cleared when it is
+    recognizable as a previous plugin install (contains the codex/install.py
+    sentinel). Anything else — the current directory, a repo checkout, a
+    random user directory — is refused with an error instead of being wiped.
+    """
+    dest = dest.resolve()
     if dest.exists():
+        if any(dest.iterdir()) and not (dest / "codex" / "install.py").exists():
+            sys.exit(
+                f"install: refusing to clear {dest} — it is not empty and does not "
+                f"look like a previous plugin install (no codex/install.py). "
+                f"Choose a different install directory."
+            )
         shutil.rmtree(str(dest))
     dest.mkdir(parents=True)
     _copy_dir(src, dest)
@@ -110,7 +123,10 @@ def run_interactive(plugins_src: Path, codex_home: Path, prompt_fn=None) -> dict
             continue
 
         default_dest = str(_default_install_dir(codex_home, name))
-        install_str = pf(f"  Install directory", default_dest)
+        # Empty answer always falls back to the default — enforced here, not in
+        # the prompt function, so no prompt implementation can yield Path("")
+        # (which is Path(".") and once caused the cwd to be wiped).
+        install_str = (pf(f"  Install directory", default_dest) or "").strip() or default_dest
         install_dir = Path(install_str)
 
         print(f"  Copying {name} -> {install_dir} ...")

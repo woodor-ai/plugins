@@ -73,7 +73,41 @@ def test_copy_excludes_tests_pycache_claudeplugin(tmp_path):
     assert not (dest / ".claude-plugin").exists()
 
 
-def test_copy_clears_stale_dest(tmp_path):
+def test_copy_clears_stale_previous_install(tmp_path):
+    """A dest recognizable as a previous install (codex/install.py sentinel) is cleared."""
+    mod = _load()
+    src = tmp_path / "src"
+    dest = tmp_path / "dest"
+    src.mkdir()
+    (src / "codex").mkdir()
+    (src / "codex" / "install.py").write_text("def run_install(ctx): pass\n")
+
+    # dest looks like a previous install: has the sentinel + a stale leftover
+    (dest / "codex").mkdir(parents=True)
+    (dest / "codex" / "install.py").write_text("# old version\n")
+    stale = dest / "stale.txt"
+    stale.write_text("old")
+
+    mod._copy_plugin(src, dest)
+    assert not stale.exists()
+    assert (dest / "codex" / "install.py").read_text() == "def run_install(ctx): pass\n"
+
+
+def test_copy_into_empty_dest_allowed(tmp_path):
+    mod = _load()
+    src = tmp_path / "src"
+    dest = tmp_path / "dest"
+    src.mkdir()
+    (src / "codex").mkdir()
+    (src / "codex" / "install.py").write_text("def run_install(ctx): pass\n")
+    dest.mkdir()  # exists but empty
+
+    mod._copy_plugin(src, dest)
+    assert (dest / "codex" / "install.py").exists()
+
+
+def test_copy_refuses_nonempty_foreign_dir(tmp_path):
+    """A non-empty dest WITHOUT the codex/install.py sentinel must be refused, untouched."""
     mod = _load()
     src = tmp_path / "src"
     dest = tmp_path / "dest"
@@ -82,12 +116,17 @@ def test_copy_clears_stale_dest(tmp_path):
     (src / "codex" / "install.py").write_text("def run_install(ctx): pass\n")
 
     dest.mkdir()
-    stale = dest / "stale.txt"
-    stale.write_text("old")
+    precious = dest / "precious.txt"
+    precious.write_text("do not delete")
+    (dest / ".git").mkdir()
+    (dest / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
 
-    mod._copy_plugin(src, dest)
-    assert not stale.exists()
-    assert (dest / "codex" / "install.py").exists()
+    with pytest.raises(SystemExit):
+        mod._copy_plugin(src, dest)
+
+    # nothing was deleted
+    assert precious.read_text() == "do not delete"
+    assert (dest / ".git" / "HEAD").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +217,62 @@ def test_run_interactive_default_dir_uses_codex_home(tmp_path):
     assert len(result["installed"]) == 1
     expected = codex_home / "plugins" / "myplugin"
     assert result["installed"][0][1] == expected
+
+
+def test_run_interactive_dot_dir_rejected(tmp_path, monkeypatch):
+    """Regression: answering '.' for the install directory (the exact input that
+    once wiped a repo checkout) must be refused and leave the cwd untouched."""
+    mod = _load()
+    src = tmp_path / "src"
+    _make_plugin(src, "myplugin")
+    _fake_loader(mod)
+
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    keep = workdir / "keep.txt"
+    keep.write_text("still here")
+    (workdir / ".git").mkdir()
+    (workdir / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    monkeypatch.chdir(workdir)
+
+    responses = iter(["y", "."])
+    with pytest.raises(SystemExit):
+        mod.run_interactive(
+            src, tmp_path / "codex",
+            prompt_fn=lambda msg, default="": next(responses),
+        )
+
+    # cwd is intact — nothing was deleted
+    assert keep.read_text() == "still here"
+    assert (workdir / ".git" / "HEAD").exists()
+
+
+def test_run_interactive_empty_answer_falls_back_to_default(tmp_path, monkeypatch):
+    """Regression: a prompt function that returns a literal empty string for the
+    install directory must fall back to the default dir — never Path('')/Path('.')."""
+    mod = _load()
+    src = tmp_path / "src"
+    _make_plugin(src, "myplugin")
+    _fake_loader(mod)
+
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    keep = workdir / "keep.txt"
+    keep.write_text("still here")
+    monkeypatch.chdir(workdir)
+
+    codex_home = tmp_path / "codex"
+    # deliberately NO or-default fallback in this fake prompt
+    result = mod.run_interactive(
+        src, codex_home,
+        prompt_fn=lambda msg, default="": "",
+    )
+
+    assert len(result["installed"]) == 1
+    assert result["installed"][0][1] == codex_home / "plugins" / "myplugin"
+    assert (codex_home / "plugins" / "myplugin" / "codex" / "install.py").exists()
+    # cwd untouched
+    assert keep.read_text() == "still here"
 
 
 def test_run_interactive_multiple_plugins(tmp_path):
