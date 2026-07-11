@@ -5,6 +5,12 @@ WS PR1 integration tests.
 Starts an isolated daemon on port 8799 with a temp DB, runs 6 test cases,
 then tears everything down. Never touches the live daemon on 8765.
 
+Schema/API note: the daemon's identity model is (project, name) composite
+key (see meeting-daemon docstring "DEPLOY NOTE"). All test identities here
+share a single fixed TEST_PROJECT — these tests exercise WS mechanics
+(backlog, races, ping/pong, group fanout), not cross-project isolation
+(covered separately by test_identity_regression.py).
+
 Usage:
     python3 agent-meeting/tests/test_ws.py
 """
@@ -27,13 +33,16 @@ import urllib.error
 
 TEST_PORT = 8799
 HOST = "127.0.0.1"
+TEST_PROJECT = "ws1proj"
 
 # ---------- minimal WS client ----------
 
 class WSClient:
-    def __init__(self, name: str, cursor: int = 0, token: str | None = None, proto: str = "1"):
+    def __init__(self, name: str, cursor: int = 0, token: str | None = None,
+                 proto: str = "1", project: str = TEST_PROJECT):
         self.name = name
         self.cursor = cursor
+        self.project = project
         self.sock = socket.create_connection((HOST, TEST_PORT), timeout=5)
         self.sock.settimeout(5)
         self.rfile = self.sock.makefile("rb")
@@ -51,6 +60,7 @@ class WSClient:
             f"Sec-WebSocket-Key: {key}",
             "Sec-WebSocket-Version: 13",
             f"X-Meeting-Name: {self.name}",
+            f"X-Meeting-Project: {self.project}",
             f"X-Meeting-Cursor: {self.cursor}",
             f"X-Meeting-Proto: {proto}",
         ]
@@ -235,7 +245,7 @@ def start_daemon(db_dir: str) -> subprocess.Popen:
 
 
 def init_test_db(db_dir: str):
-    """Create minimal DB structure for tests."""
+    """Create minimal DB structure for tests (composite (project, name) key schema)."""
     import sqlite3
     db_path = os.path.join(db_dir, "db", "rooms.db")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -244,45 +254,68 @@ def init_test_db(db_dir: str):
         PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
         CREATE TABLE IF NOT EXISTS sessions (
-            name TEXT PRIMARY KEY,
+            project TEXT NOT NULL,
+            name TEXT NOT NULL,
             cwd TEXT,
             host TEXT,
             os TEXT,
             registered_at TEXT,
             last_seen REAL,
-            role TEXT NOT NULL DEFAULT 'worker'
+            role TEXT NOT NULL DEFAULT 'worker',
+            PRIMARY KEY (project, name)
         );
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_project TEXT NOT NULL,
             sender TEXT NOT NULL,
+            recipient_project TEXT NOT NULL,
             recipient TEXT NOT NULL,
             kind TEXT NOT NULL,
             body TEXT NOT NULL,
             ask TEXT,
             created_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
-        CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
+        CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_project, recipient, id);
+        CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender_project, sender, recipient_project, recipient, id);
         CREATE TABLE IF NOT EXISTS read_cursors (
-            member_name TEXT PRIMARY KEY,
+            project     TEXT NOT NULL,
+            member_name TEXT NOT NULL,
             cursor      INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL
+            updated_at  INTEGER NOT NULL,
+            PRIMARY KEY (project, member_name)
         );
         CREATE TABLE IF NOT EXISTS groups (
-            name       TEXT PRIMARY KEY,
+            project    TEXT NOT NULL,
+            name       TEXT NOT NULL,
             created_at INTEGER NOT NULL,
-            creator    TEXT
+            creator    TEXT,
+            PRIMARY KEY (project, name)
         );
         CREATE TABLE IF NOT EXISTS group_members (
-            group_name  TEXT NOT NULL,
-            member_name TEXT NOT NULL,
-            added_at    INTEGER NOT NULL,
-            PRIMARY KEY (group_name, member_name),
-            FOREIGN KEY (group_name) REFERENCES groups(name) ON DELETE CASCADE
+            group_project  TEXT NOT NULL,
+            group_name     TEXT NOT NULL,
+            member_project TEXT NOT NULL,
+            member_name    TEXT NOT NULL,
+            added_at       INTEGER NOT NULL,
+            PRIMARY KEY (group_project, group_name, member_project, member_name),
+            FOREIGN KEY (group_project, group_name) REFERENCES groups(project, name) ON DELETE CASCADE
         );
-        CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_name);
+        CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_project, member_name);
     """)
     conn.close()
+
+
+def _register(name: str):
+    _http("/register", "POST", {"project": TEST_PROJECT, "name": name})
+
+
+def _send(self_name: str, peer_name: str, body: str, kind: str = "消息", ask=None):
+    payload = {"self_project": TEST_PROJECT, "self": self_name,
+               "peer_project": TEST_PROJECT, "peer": peer_name,
+               "body": body, "kind": kind}
+    if ask is not None:
+        payload["ask"] = ask
+    return _http("/send", "POST", payload)
 
 
 # ---------- test cases ----------
@@ -317,12 +350,12 @@ def test_backlog(db_dir: str):
     """TC2: 补发 id>DB_cursor"""
     print("\n[TC2] 补发 id>DB_cursor")
     # Send 3 messages to bob before bob connects.
-    _http("/register", "POST", {"name": "alice_sender"})
-    _http("/register", "POST", {"name": "bob_recv"})
+    _register("alice_sender")
+    _register("bob_recv")
 
-    r1 = _http("/send", "POST", {"self": "alice_sender", "peer": "bob_recv", "body": "msg1", "kind": "消息"})
-    r2 = _http("/send", "POST", {"self": "alice_sender", "peer": "bob_recv", "body": "msg2", "kind": "消息"})
-    r3 = _http("/send", "POST", {"self": "alice_sender", "peer": "bob_recv", "body": "msg3", "kind": "消息"})
+    r1 = _send("alice_sender", "bob_recv", "msg1")
+    r2 = _send("alice_sender", "bob_recv", "msg2")
+    r3 = _send("alice_sender", "bob_recv", "msg3")
 
     # Pre-set read_cursors to r1 so daemon delivers only r2 and r3.
     # Small sleep to ensure WAL is visible to daemon's next connection.
@@ -350,11 +383,11 @@ def test_backlog(db_dir: str):
 def test_realtime_push():
     """TC3: 实时推送"""
     print("\n[TC3] 实时推送")
-    _http("/register", "POST", {"name": "carol"})
-    _http("/register", "POST", {"name": "dave"})
+    _register("carol")
+    _register("dave")
 
     # Seed one msg so we know the current max id, then connect with that cursor
-    seed = _http("/send", "POST", {"self": "dave", "peer": "carol", "body": "seed", "kind": "消息"})
+    seed = _send("dave", "carol", "seed")
     latest_id = seed["msg_id"]
 
     # Connect carol with cursor=latest_id so backlog is empty (seed already seen)
@@ -364,7 +397,7 @@ def test_realtime_push():
     # Now send a message to carol in a thread
     def send_later():
         time.sleep(0.2)
-        _http("/send", "POST", {"self": "dave", "peer": "carol", "body": "live-msg", "kind": "消息"})
+        _send("dave", "carol", "live-msg")
 
     t = threading.Thread(target=send_later)
     t.start()
@@ -382,7 +415,7 @@ def test_realtime_push():
 def test_ping_pong():
     """TC4: ping/pong 心跳"""
     print("\n[TC4] ping/pong 心跳")
-    _http("/register", "POST", {"name": "eve"})
+    _register("eve")
     c = WSClient("eve", cursor=0)
     _ = c.read_until_caught_up(timeout=3)
 
@@ -406,11 +439,11 @@ def test_ping_pong():
 def test_reconnect_with_cursor():
     """TC5: 断开重连带新游标只补未读"""
     print("\n[TC5] 断开重连补未读")
-    _http("/register", "POST", {"name": "frank"})
-    _http("/register", "POST", {"name": "grace"})
+    _register("frank")
+    _register("grace")
 
-    r1 = _http("/send", "POST", {"self": "grace", "peer": "frank", "body": "first", "kind": "消息"})
-    r2 = _http("/send", "POST", {"self": "grace", "peer": "frank", "body": "second", "kind": "消息"})
+    r1 = _send("grace", "frank", "first")
+    r2 = _send("grace", "frank", "second")
 
     # Connect, read backlog, disconnect
     c = WSClient("frank", cursor=0)
@@ -419,7 +452,7 @@ def test_reconnect_with_cursor():
     c.close()
 
     # New message arrives while disconnected
-    r3 = _http("/send", "POST", {"self": "grace", "peer": "frank", "body": "third", "kind": "消息"})
+    r3 = _send("grace", "frank", "third")
 
     # Reconnect with cursor = last seen
     c2 = WSClient("frank", cursor=cursor_after)
@@ -435,13 +468,13 @@ def test_concurrent_dedup(db_dir: str):
     """TC6: 补发进行中途插入 /send — msg_ids 严格单调不重不漏（原 20 条小规模版本）"""
     print("\n[TC6] 补发/实时并发去重（小规模）")
 
-    _http("/register", "POST", {"name": "heidi"})
-    _http("/register", "POST", {"name": "ivan"})
+    _register("heidi")
+    _register("ivan")
 
     # Pre-seed 20 backlog messages
     pre_ids = []
     for i in range(20):
-        r = _http("/send", "POST", {"self": "ivan", "peer": "heidi", "body": f"pre-{i}", "kind": "消息"})
+        r = _send("ivan", "heidi", f"pre-{i}")
         pre_ids.append(r["msg_id"])
 
     # Pre-set cursor=0 so daemon delivers all 20 as backlog (not seeded-to-MAX on first connect).
@@ -456,7 +489,7 @@ def test_concurrent_dedup(db_dir: str):
     def inject():
         time.sleep(0.05)  # tiny delay so backlog has started
         for i in range(5):
-            r = _http("/send", "POST", {"self": "ivan", "peer": "heidi", "body": f"inject-{i}", "kind": "消息"})
+            r = _send("ivan", "heidi", f"inject-{i}")
             injected_ids.append(r["msg_id"])
 
     t = threading.Thread(target=inject)
@@ -496,19 +529,19 @@ def test_concurrent_dedup(db_dir: str):
     c.close()
 
 
-def _read_db_cursor(db_dir: str, member_name: str) -> int | None:
+def _read_db_cursor(db_dir: str, member_name: str, project: str = TEST_PROJECT) -> int | None:
     """Read cursor value from read_cursors table. Returns None if no row."""
     db_path = os.path.join(db_dir, "db", "rooms.db")
     conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
     conn.executescript("PRAGMA journal_mode = WAL;")
     row = conn.execute(
-        "SELECT cursor FROM read_cursors WHERE member_name=?", (member_name,)
+        "SELECT cursor FROM read_cursors WHERE project=? AND member_name=?", (project, member_name)
     ).fetchone()
     conn.close()
     return row[0] if row else None
 
 
-def _db_upsert_cursor(db_dir: str, member_name: str, cursor: int):
+def _db_upsert_cursor(db_dir: str, member_name: str, cursor: int, project: str = TEST_PROJECT):
     """Insert or update a read_cursors row directly (test setup helper).
 
     Uses WAL mode and isolation_level=None (autocommit) to match daemon's
@@ -518,9 +551,9 @@ def _db_upsert_cursor(db_dir: str, member_name: str, cursor: int):
     conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
     conn.executescript("PRAGMA journal_mode = WAL;")
     conn.execute(
-        "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
-        " ON CONFLICT(member_name) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at",
-        (member_name, cursor, int(time.time())),
+        "INSERT INTO read_cursors (project, member_name, cursor, updated_at) VALUES (?, ?, ?, ?)"
+        " ON CONFLICT(project, member_name) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at",
+        (project, member_name, cursor, int(time.time())),
     )
     conn.close()
 
@@ -530,13 +563,13 @@ def test_first_seed_zero_replay(db_dir: str):
     seed 到 MAX(id)，零 backlog，caught_up 游标正确，read_cursors 落行。"""
     print("\n[TC8] 首次 seed 零回放")
 
-    _http("/register", "POST", {"name": "seed_sender"})
-    _http("/register", "POST", {"name": "seed_newmember"})
+    _register("seed_sender")
+    _register("seed_newmember")
 
     # Insert 3 history messages
-    r1 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_newmember", "body": "h1", "kind": "消息"})
-    r2 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_newmember", "body": "h2", "kind": "消息"})
-    r3 = _http("/send", "POST", {"self": "seed_sender", "peer": "seed_newmember", "body": "h3", "kind": "消息"})
+    r1 = _send("seed_sender", "seed_newmember", "h1")
+    r2 = _send("seed_sender", "seed_newmember", "h2")
+    r3 = _send("seed_sender", "seed_newmember", "h3")
     max_id = r3["msg_id"]
 
     # First connect — no read_cursors row yet; daemon should seed to MAX and return zero backlog.
@@ -584,13 +617,13 @@ def test_cursor_survives_restart(db_dir: str):
     reconnect 不带 cursor header，daemon 从 read_cursors 续，只补断开后的新消息。"""
     print("\n[TC-PRA1] 游标活过重启")
 
-    _http("/register", "POST", {"name": "pra1_sender"})
-    _http("/register", "POST", {"name": "pra1_recv"})
+    _register("pra1_sender")
+    _register("pra1_recv")
 
     # Send 3 messages.
-    r1 = _http("/send", "POST", {"self": "pra1_sender", "peer": "pra1_recv", "body": "m1", "kind": "消息"})
-    r2 = _http("/send", "POST", {"self": "pra1_sender", "peer": "pra1_recv", "body": "m2", "kind": "消息"})
-    r3 = _http("/send", "POST", {"self": "pra1_sender", "peer": "pra1_recv", "body": "m3", "kind": "消息"})
+    r1 = _send("pra1_sender", "pra1_recv", "m1")
+    r2 = _send("pra1_sender", "pra1_recv", "m2")
+    r3 = _send("pra1_sender", "pra1_recv", "m3")
 
     # Pre-set cursor to 0 so daemon delivers all 3 as backlog on first connect.
     _db_upsert_cursor(db_dir, "pra1_recv", 0)
@@ -611,7 +644,7 @@ def test_cursor_survives_restart(db_dir: str):
           f"db_cursor={db_cursor_after_drain}, expected={r3['msg_id']}")
 
     # Send one more message (arrives while "disconnected").
-    r4 = _http("/send", "POST", {"self": "pra1_sender", "peer": "pra1_recv", "body": "m4", "kind": "消息"})
+    r4 = _send("pra1_sender", "pra1_recv", "m4")
 
     # Reconnect — daemon resumes from read_cursors (=r3), should only replay r4.
     c2 = WSClient("pra1_recv", cursor=0)
@@ -624,7 +657,7 @@ def test_cursor_survives_restart(db_dir: str):
 
 
 def test_monitor_no_tmp_file(db_dir: str):
-    """TC-PRA2: monitor 纯通知器 — 收消息打 📬 行，不写任何 TMP 文件。
+    """TC-PRA2: monitor 纯通知器 — 收消息打通知行，不写任何 TMP 文件。
     验证 send 后 monitor 有输出，且无 meeting-*.last_msg_id 文件存在。"""
     print("\n[TC-PRA2] monitor 纯通知器（无 TMP 文件）")
     import tempfile as _tempfile
@@ -682,7 +715,8 @@ def _collect_all_msgs(c: WSClient, expect_count: int, timeout: float = 15.0) -> 
     return msgs
 
 
-def _db_seed_messages(db_dir: str, sender: str, recv: str, count: int) -> list[int]:
+def _db_seed_messages(db_dir: str, sender: str, recv: str, count: int,
+                       project: str = TEST_PROJECT) -> list[int]:
     """Insert `count` messages directly into the DB and return their ids.
 
     Bypasses HTTP so we can seed large backlogs quickly without hammering
@@ -695,8 +729,9 @@ def _db_seed_messages(db_dir: str, sender: str, recv: str, count: int) -> list[i
     ids = []
     for i in range(count):
         cur = conn.execute(
-            "INSERT INTO messages (sender, recipient, kind, body, ask, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
-            (sender, recv, "消息", f"pre-{i}", now),
+            "INSERT INTO messages (sender_project, sender, recipient_project, recipient, kind, body, ask, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+            (project, sender, project, recv, "消息", f"pre-{i}", now),
         )
         ids.append(cur.lastrowid)
     conn.commit()
@@ -732,8 +767,8 @@ def test_mid_drain_inject_race(db_dir: str, rounds: int = 20):
         suffix = f"tc7r{rnd}"
         sender = f"ivan7_{suffix}"
         recv = f"heidi7_{suffix}"
-        _http("/register", "POST", {"name": sender})
-        _http("/register", "POST", {"name": recv})
+        _register(sender)
+        _register(recv)
 
         # Pre-seed 200 messages directly into DB (fast, no HTTP overhead)
         pre_ids = _db_seed_messages(db_dir, sender, recv, 200)
@@ -750,7 +785,7 @@ def test_mid_drain_inject_race(db_dir: str, rounds: int = 20):
         def inject(s=sender, rc=recv, ids=injected_ids):
             time.sleep(0.02)  # let backlog drain start (200 rows takes >20ms)
             for i in range(10):
-                r = _http("/send", "POST", {"self": s, "peer": rc, "body": f"live-{i}", "kind": "消息"})
+                r = _send(s, rc, f"live-{i}")
                 ids.append(r["msg_id"])
 
         t = threading.Thread(target=inject, daemon=True)
@@ -782,38 +817,21 @@ def test_mid_drain_inject_race(db_dir: str, rounds: int = 20):
         print(f"    all {rounds} rounds passed")
 
 
-def _db_create_group(db_dir: str, group_name: str, members: list[str]):
-    """Insert group + members directly into DB (test setup helper)."""
-    db_path = os.path.join(db_dir, "db", "rooms.db")
-    conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
-    conn.executescript("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
-    now = int(time.time())
-    conn.execute(
-        "INSERT OR IGNORE INTO groups (name, created_at, creator) VALUES (?, ?, NULL)",
-        (group_name, now),
-    )
-    for m in members:
-        conn.execute(
-            "INSERT OR IGNORE INTO group_members (group_name, member_name, added_at) VALUES (?, ?, ?)",
-            (group_name, m, now),
-        )
-    conn.close()
-
-
 def test_g1_group_and_private_unified_stream(db_dir: str):
     """TC-G1: 成员收到群消息+私聊消息在同一 WS 流，group 字段正确。"""
     print("\n[TC-G1] 群+私聊一条流 group 字段")
 
-    _http("/register", "POST", {"name": "g1_alice"})
-    _http("/register", "POST", {"name": "g1_bob"})
-    _http("/register", "POST", {"name": "g1_carol"})
+    _register("g1_alice")
+    _register("g1_bob")
+    _register("g1_carol")
 
     # Create group via daemon
-    r = _http("/group/create", "POST", {"name": "g1-team", "members": ["g1_bob", "g1_carol"], "creator": "g1_alice"})
+    r = _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g1-team",
+                                         "members": ["g1_bob", "g1_carol"], "creator": "g1_alice"})
     check("TC-G1: group created", r.get("ok") is True, str(r))
 
     # Pre-set cursor for g1_bob so no seed backlog
-    max_r = _http("/send", "POST", {"self": "g1_alice", "peer": "g1_alice", "body": "seed", "kind": "消息"})
+    max_r = _send("g1_alice", "g1_alice", "seed")
     _db_upsert_cursor(db_dir, "g1_bob", max_r["msg_id"])
     time.sleep(0.05)
 
@@ -821,9 +839,9 @@ def test_g1_group_and_private_unified_stream(db_dir: str):
     _ = c.read_until_caught_up(timeout=3)
 
     # Send group message
-    rg = _http("/send", "POST", {"self": "g1_alice", "peer": "g1-team", "body": "hello group", "kind": "消息"})
+    rg = _send("g1_alice", "g1-team", "hello group")
     # Send 1:1 message
-    r1 = _http("/send", "POST", {"self": "g1_alice", "peer": "g1_bob", "body": "hello direct", "kind": "消息"})
+    r1 = _send("g1_alice", "g1_bob", "hello direct")
 
     msgs = c.read_msgs(2, timeout=5)
     c.close()
@@ -844,13 +862,14 @@ def test_g2_group_turn_less(db_dir: str):
     """TC-G2: 群消息 turn=None，多人发不冲突。"""
     print("\n[TC-G2] 群 turn-less")
 
-    _http("/register", "POST", {"name": "g2_alice"})
-    _http("/register", "POST", {"name": "g2_bob"})
+    _register("g2_alice")
+    _register("g2_bob")
 
-    _http("/group/create", "POST", {"name": "g2-room", "members": ["g2_alice", "g2_bob"]})
+    _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g2-room",
+                                     "members": ["g2_alice", "g2_bob"]})
 
-    r1 = _http("/send", "POST", {"self": "g2_alice", "peer": "g2-room", "body": "hi", "kind": "消息"})
-    r2 = _http("/send", "POST", {"self": "g2_bob", "peer": "g2-room", "body": "hey", "kind": "消息"})
+    r1 = _send("g2_alice", "g2-room", "hi")
+    r2 = _send("g2_bob", "g2-room", "hey")
 
     check("TC-G2: send1 turn=None", r1.get("turn") is None, str(r1))
     check("TC-G2: send2 turn=None", r2.get("turn") is None, str(r2))
@@ -860,13 +879,14 @@ def test_g3_group_cursor_via_db(db_dir: str):
     """TC-G3: 群消息也走 DB 游标（重连只补未读）。"""
     print("\n[TC-G3] 群消息走 DB 游标")
 
-    _http("/register", "POST", {"name": "g3_sender"})
-    _http("/register", "POST", {"name": "g3_recv"})
+    _register("g3_sender")
+    _register("g3_recv")
 
-    _http("/group/create", "POST", {"name": "g3-chan", "members": ["g3_recv"], "creator": "g3_sender"})
+    _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g3-chan",
+                                     "members": ["g3_recv"], "creator": "g3_sender"})
 
     # Pre-set cursor=0 so backlog delivers group msg
-    rg = _http("/send", "POST", {"self": "g3_sender", "peer": "g3-chan", "body": "grp1", "kind": "消息"})
+    rg = _send("g3_sender", "g3-chan", "grp1")
     _db_upsert_cursor(db_dir, "g3_recv", 0)
     time.sleep(0.05)
 
@@ -890,16 +910,18 @@ def test_g4_add_member_seed_zero_replay(db_dir: str):
     """TC-G4: add 新成员首次 seed 不回放入群前消息。"""
     print("\n[TC-G4] add 新成员首次 seed 零回放")
 
-    _http("/register", "POST", {"name": "g4_alice"})
-    _http("/register", "POST", {"name": "g4_bob"})
+    _register("g4_alice")
+    _register("g4_bob")
 
-    _http("/group/create", "POST", {"name": "g4-grp", "members": ["g4_alice"]})
+    _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g4-grp",
+                                     "members": ["g4_alice"]})
 
     # Some history in the group before bob joins
-    _http("/send", "POST", {"self": "g4_alice", "peer": "g4-grp", "body": "old msg", "kind": "消息"})
+    _send("g4_alice", "g4-grp", "old msg")
 
     # Add bob — daemon should seed read_cursors to MAX
-    r = _http("/group/add", "POST", {"group": "g4-grp", "member": "g4_bob"})
+    r = _http("/group/add", "POST", {"group_project": TEST_PROJECT, "group": "g4-grp",
+                                      "member_project": TEST_PROJECT, "member": "g4_bob"})
     check("TC-G4: add returned ok", r.get("ok") is True, str(r))
 
     # bob connects — should see zero backlog (seeded past old msg)
@@ -918,30 +940,34 @@ def test_g5_delete_group_purge(db_dir: str):
     """TC-G5: 删群 purge — messages 清零，CASCADE 清成员，名可重建。"""
     print("\n[TC-G5] 删群 purge")
 
-    _http("/register", "POST", {"name": "g5_alice"})
-    _http("/group/create", "POST", {"name": "g5-del", "members": ["g5_alice"]})
-    _http("/send", "POST", {"self": "g5_alice", "peer": "g5-del", "body": "msg1", "kind": "消息"})
-    _http("/send", "POST", {"self": "g5_alice", "peer": "g5-del", "body": "msg2", "kind": "消息"})
+    _register("g5_alice")
+    _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g5-del", "members": ["g5_alice"]})
+    _send("g5_alice", "g5-del", "msg1")
+    _send("g5_alice", "g5-del", "msg2")
 
-    r = _http("/group", method_="DELETE", params_={"name": "g5-del"})
+    r = _http("/group", method_="DELETE", params_={"project": TEST_PROJECT, "name": "g5-del"})
     check("TC-G5: purge returned ok", r.get("ok") is True, str(r))
     check("TC-G5: purged 2 messages", r.get("purged") == 2, f"purged={r.get('purged')}")
 
     # Verify messages gone
     db_path = os.path.join(db_dir, "db", "rooms.db")
     conn = sqlite3.connect(db_path)
-    cnt = conn.execute("SELECT COUNT(*) FROM messages WHERE recipient='g5-del'").fetchone()[0]
+    cnt = conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE recipient_project=? AND recipient='g5-del'", (TEST_PROJECT,)
+    ).fetchone()[0]
     conn.close()
     check("TC-G5: recipient=group messages=0", cnt == 0, f"cnt={cnt}")
 
     # Verify group_members gone (CASCADE)
     conn = sqlite3.connect(db_path)
-    mem_cnt = conn.execute("SELECT COUNT(*) FROM group_members WHERE group_name='g5-del'").fetchone()[0]
+    mem_cnt = conn.execute(
+        "SELECT COUNT(*) FROM group_members WHERE group_project=? AND group_name='g5-del'", (TEST_PROJECT,)
+    ).fetchone()[0]
     conn.close()
     check("TC-G5: group_members cascade deleted", mem_cnt == 0, f"mem_cnt={mem_cnt}")
 
     # Name can be reused
-    r2 = _http("/group/create", "POST", {"name": "g5-del", "members": ["g5_alice"]})
+    r2 = _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g5-del", "members": ["g5_alice"]})
     check("TC-G5: group name reusable after purge", r2.get("ok") is True, str(r2))
 
 
@@ -950,20 +976,22 @@ def test_g6_reject_name(db_dir: str):
     print("\n[TC-G6] 拒名三条校验")
 
     # (a) active session name
-    _http("/register", "POST", {"name": "g6-active"})
-    r = _http("/group/create", "POST", {"name": "g6-active", "members": []}, allow_error=True)
+    _register("g6-active")
+    r = _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g6-active", "members": []},
+              allow_error=True)
     check("TC-G6a: reject active session name", "error" in r, str(r))
 
     # (b) existing group name
-    _http("/group/create", "POST", {"name": "g6-existing-grp", "members": []})
-    r = _http("/group/create", "POST", {"name": "g6-existing-grp", "members": []}, allow_error=True)
+    _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g6-existing-grp", "members": []})
+    r = _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g6-existing-grp", "members": []},
+              allow_error=True)
     check("TC-G6b: reject existing group name", "error" in r, str(r))
 
     # (c) name with historical messages
-    _http("/register", "POST", {"name": "g6-hist-sender"})
-    _http("/send", "POST", {"self": "g6-hist-sender", "peer": "g6-hist-target",
-                             "body": "hi", "kind": "消息"})
-    r = _http("/group/create", "POST", {"name": "g6-hist-target", "members": []}, allow_error=True)
+    _register("g6-hist-sender")
+    _send("g6-hist-sender", "g6-hist-target", "hi")
+    r = _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g6-hist-target", "members": []},
+              allow_error=True)
     check("TC-G6c: reject name with historical messages", "error" in r, str(r))
 
 
@@ -971,41 +999,42 @@ def test_g6_add_active_member_succeeds():
     """TC-G6-add: 把有消息历史的活成员 add 进群应成功（强制更正验证）。"""
     print("\n[TC-G6-add] add 活成员不被条件(3)拒掉")
 
-    _http("/register", "POST", {"name": "g6add-sender"})
-    _http("/register", "POST", {"name": "g6add-member"})
-    _http("/group/create", "POST", {"name": "g6add-grp", "members": ["g6add-sender"]})
+    _register("g6add-sender")
+    _register("g6add-member")
+    _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g6add-grp", "members": ["g6add-sender"]})
 
     # Give g6add-member a message history
-    _http("/send", "POST", {"self": "g6add-sender", "peer": "g6add-member",
-                             "body": "history msg", "kind": "消息"})
+    _send("g6add-sender", "g6add-member", "history msg")
 
     # Adding the member with history should succeed
-    r = _http("/group/add", "POST", {"group": "g6add-grp", "member": "g6add-member"})
+    r = _http("/group/add", "POST", {"group_project": TEST_PROJECT, "group": "g6add-grp",
+                                      "member_project": TEST_PROJECT, "member": "g6add-member"})
     check("TC-G6-add: add member with history succeeds", r.get("ok") is True, str(r))
 
-    # Verify member is in the group
-    members = _http("/group/members", params_={"group": "g6add-grp"})
-    check("TC-G6-add: member appears in group", "g6add-member" in members, str(members))
+    # Verify member is in the group. _fmt_id appends "@project" for non-global projects.
+    members = _http("/group/members", params_={"group_project": TEST_PROJECT, "group": "g6add-grp"})
+    check("TC-G6-add: member appears in group", f"g6add-member@{TEST_PROJECT}" in members, str(members))
 
 
 def test_g7_add_old_member_no_replay(db_dir: str):
     """TC-G7: add 老成员不回放入群前消息。"""
     print("\n[TC-G7] add 老成员不回放历史")
 
-    _http("/register", "POST", {"name": "g7_alice"})
-    _http("/register", "POST", {"name": "g7_bob"})
+    _register("g7_alice")
+    _register("g7_bob")
 
-    _http("/group/create", "POST", {"name": "g7-grp", "members": ["g7_alice"]})
+    _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g7-grp", "members": ["g7_alice"]})
 
     # Messages before bob joins
-    _http("/send", "POST", {"self": "g7_alice", "peer": "g7-grp", "body": "before", "kind": "消息"})
+    _send("g7_alice", "g7-grp", "before")
 
     # Ensure g7_bob has a read_cursors row already (simulating existing member)
-    seed_r = _http("/send", "POST", {"self": "g7_alice", "peer": "g7_bob", "body": "seed", "kind": "消息"})
+    seed_r = _send("g7_alice", "g7_bob", "seed")
     _db_upsert_cursor(db_dir, "g7_bob", seed_r["msg_id"])
 
     # Add bob
-    _http("/group/add", "POST", {"group": "g7-grp", "member": "g7_bob"})
+    _http("/group/add", "POST", {"group_project": TEST_PROJECT, "group": "g7-grp",
+                                  "member_project": TEST_PROJECT, "member": "g7_bob"})
 
     # Bob connects — should not get the pre-join group message
     c = WSClient("g7_bob", cursor=0)
@@ -1022,11 +1051,11 @@ def test_g_concurrent_dedup_group(db_dir: str):
     """TC-G-concurrent: 群扇出 + 补发并发 — 多成员不重不漏。"""
     print("\n[TC-G-concurrent] 群扇出并发去重")
 
-    _http("/register", "POST", {"name": "gc_sender"})
-    _http("/register", "POST", {"name": "gc_recv1"})
-    _http("/register", "POST", {"name": "gc_recv2"})
+    _register("gc_sender")
+    _register("gc_recv1")
+    _register("gc_recv2")
 
-    _http("/group/create", "POST", {"name": "gc-grp",
+    _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "gc-grp",
                                      "members": ["gc_recv1", "gc_recv2"],
                                      "creator": "gc_sender"})
 
@@ -1037,8 +1066,9 @@ def test_g_concurrent_dedup_group(db_dir: str):
     pre_ids = []
     for i in range(20):
         cur = conn.execute(
-            "INSERT INTO messages (sender, recipient, kind, body, ask, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
-            ("gc_sender", "gc-grp", "消息", f"pre-{i}", now),
+            "INSERT INTO messages (sender_project, sender, recipient_project, recipient, kind, body, ask, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+            (TEST_PROJECT, "gc_sender", TEST_PROJECT, "gc-grp", "消息", f"pre-{i}", now),
         )
         pre_ids.append(cur.lastrowid)
     conn.commit()
@@ -1057,8 +1087,7 @@ def test_g_concurrent_dedup_group(db_dir: str):
     def inject():
         time.sleep(0.05)
         for i in range(5):
-            r = _http("/send", "POST", {"self": "gc_sender", "peer": "gc-grp",
-                                         "body": f"live-{i}", "kind": "消息"})
+            r = _send("gc_sender", "gc-grp", f"live-{i}")
             injected_ids.append(r["msg_id"])
 
     t = threading.Thread(target=inject)

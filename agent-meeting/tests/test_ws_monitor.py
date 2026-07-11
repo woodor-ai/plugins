@@ -5,8 +5,15 @@ WS PR3 integration tests — monitor.py WS client.
 Tests the monitor's full WS behavior including cursor=-1 sentinel seeding
 introduced in PR3. Never touches the live daemon on 8765.
 
+Schema/API note: the daemon's identity model is (project, name) composite
+key (see meeting-daemon docstring "DEPLOY NOTE"). monitor.py derives its own
+project from cwd via meeting_common.derive_project() when it registers
+(`meeting online --cwd ...`) — this test computes the same value up front
+(TEST_PROJECT) and uses it for every identity so monitor's real registration
+and the test's direct HTTP calls land in the same project bucket.
+
 Test cases:
-  TC-M1: monitor 连上后能收到实时消息并打出正确的 📬 stdout 行
+  TC-M1: monitor 连上后能收到实时消息并打出正确的通知 stdout 行
   TC-M2: 带游标连入能补未读（backlog replay）
   TC-M3: server ping → monitor 回 masked pong（daemon 不报协议错、连接不掉）
   TC-M4: 杀掉测试 daemon → monitor 退避重连 → 重启 daemon → monitor 重连并按游标补发
@@ -38,16 +45,26 @@ TEST_PORT = 8798          # different from PR1 tests (8799) to allow parallel ru
 HOST = "127.0.0.1"
 LOG_PATH = "/tmp/ws-pr2-test.log"
 
-MONITOR_PATH = os.path.join(os.path.dirname(__file__), "..", "bin", "monitor.py")
-DAEMON_PATH = os.path.join(os.path.dirname(__file__), "..", "bin", "meeting-daemon")
+BIN_DIR = os.path.join(os.path.dirname(__file__), "..", "bin")
+MONITOR_PATH = os.path.join(BIN_DIR, "monitor.py")
+DAEMON_PATH = os.path.join(BIN_DIR, "meeting-daemon")
+
+sys.path.insert(0, BIN_DIR)
+import meeting_common  # noqa: E402 -- project derivation must match monitor.py's own
+
+# Same project monitor.py will derive from this process's cwd when it calls
+# `meeting online --cwd <cwd>` (subprocess.Popen inherits our cwd unmodified).
+TEST_PROJECT = meeting_common.derive_project(os.getcwd())
 
 
 # ---------- minimal WS client (mirrors test_ws.py) ----------
 
 class WSClient:
-    def __init__(self, name: str, cursor: int = 0, host: str = HOST, port: int = TEST_PORT):
+    def __init__(self, name: str, cursor: int = 0, host: str = HOST, port: int = TEST_PORT,
+                 project: str = TEST_PROJECT):
         self.name = name
         self.cursor = cursor
+        self.project = project
         self.sock = socket.create_connection((host, port), timeout=5)
         self.sock.settimeout(5)
         self._handshake(host, port)
@@ -62,6 +79,7 @@ class WSClient:
             f"Sec-WebSocket-Key: {key}\r\n"
             "Sec-WebSocket-Version: 13\r\n"
             f"X-Meeting-Name: {self.name}\r\n"
+            f"X-Meeting-Project: {self.project}\r\n"
             f"X-Meeting-Cursor: {self.cursor}\r\n"
             "X-Meeting-Proto: 1\r\n"
             "\r\n"
@@ -161,6 +179,19 @@ def _http(path: str, method="GET", body=None, port: int = TEST_PORT) -> dict:
         return json.loads(r.read())
 
 
+def _register(name: str):
+    _http("/register", "POST", {"project": TEST_PROJECT, "name": name})
+
+
+def _send(self_name: str, peer_name: str, body: str, kind: str = "消息", ask=None):
+    payload = {"self_project": TEST_PROJECT, "self": self_name,
+               "peer_project": TEST_PROJECT, "peer": peer_name,
+               "body": body, "kind": kind}
+    if ask is not None:
+        payload["ask"] = ask
+    return _http("/send", "POST", payload)
+
+
 def init_test_db(db_dir: str):
     db_path = os.path.join(db_dir, "db", "rooms.db")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -169,60 +200,70 @@ def init_test_db(db_dir: str):
         PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
         CREATE TABLE IF NOT EXISTS sessions (
-            name TEXT PRIMARY KEY,
+            project TEXT NOT NULL,
+            name TEXT NOT NULL,
             cwd TEXT,
             host TEXT,
             os TEXT,
             registered_at TEXT,
             last_seen REAL,
-            role TEXT NOT NULL DEFAULT 'worker'
+            role TEXT NOT NULL DEFAULT 'worker',
+            PRIMARY KEY (project, name)
         );
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_project TEXT NOT NULL,
             sender TEXT NOT NULL,
+            recipient_project TEXT NOT NULL,
             recipient TEXT NOT NULL,
             kind TEXT NOT NULL,
             body TEXT NOT NULL,
             ask TEXT,
             created_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient, id);
-        CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender, recipient, id);
+        CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_project, recipient, id);
+        CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient ON messages(sender_project, sender, recipient_project, recipient, id);
         CREATE TABLE IF NOT EXISTS read_cursors (
-            member_name TEXT PRIMARY KEY,
+            project     TEXT NOT NULL,
+            member_name TEXT NOT NULL,
             cursor      INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL
+            updated_at  INTEGER NOT NULL,
+            PRIMARY KEY (project, member_name)
         );
         CREATE TABLE IF NOT EXISTS groups (
-            name       TEXT PRIMARY KEY,
+            project    TEXT NOT NULL,
+            name       TEXT NOT NULL,
             created_at INTEGER NOT NULL,
-            creator    TEXT
+            creator    TEXT,
+            PRIMARY KEY (project, name)
         );
         CREATE TABLE IF NOT EXISTS group_members (
-            group_name  TEXT NOT NULL,
-            member_name TEXT NOT NULL,
-            added_at    INTEGER NOT NULL,
-            PRIMARY KEY (group_name, member_name),
-            FOREIGN KEY (group_name) REFERENCES groups(name) ON DELETE CASCADE
+            group_project  TEXT NOT NULL,
+            group_name     TEXT NOT NULL,
+            member_project TEXT NOT NULL,
+            member_name    TEXT NOT NULL,
+            added_at       INTEGER NOT NULL,
+            PRIMARY KEY (group_project, group_name, member_project, member_name),
+            FOREIGN KEY (group_project, group_name) REFERENCES groups(project, name) ON DELETE CASCADE
         );
-        CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_name);
+        CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_project, member_name);
     """)
     conn.close()
 
 
-def _read_db_cursor(db_dir: str, member_name: str) -> int | None:
+def _read_db_cursor(db_dir: str, member_name: str, project: str = TEST_PROJECT) -> int | None:
     """Read cursor from read_cursors table. Returns None if no row."""
     db_path = os.path.join(db_dir, "db", "rooms.db")
     conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
     conn.executescript("PRAGMA journal_mode = WAL;")
     row = conn.execute(
-        "SELECT cursor FROM read_cursors WHERE member_name=?", (member_name,)
+        "SELECT cursor FROM read_cursors WHERE project=? AND member_name=?", (project, member_name)
     ).fetchone()
     conn.close()
     return row[0] if row else None
 
 
-def _set_db_cursor(db_dir: str, member_name: str, cursor: int):
+def _set_db_cursor(db_dir: str, member_name: str, cursor: int, project: str = TEST_PROJECT):
     """Insert/update a read_cursors row directly (test setup helper).
 
     Uses WAL mode and isolation_level=None to match daemon connection settings.
@@ -231,9 +272,9 @@ def _set_db_cursor(db_dir: str, member_name: str, cursor: int):
     conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
     conn.executescript("PRAGMA journal_mode = WAL;")
     conn.execute(
-        "INSERT INTO read_cursors (member_name, cursor, updated_at) VALUES (?, ?, ?)"
-        " ON CONFLICT(member_name) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at",
-        (member_name, cursor, int(time.time())),
+        "INSERT INTO read_cursors (project, member_name, cursor, updated_at) VALUES (?, ?, ?, ?)"
+        " ON CONFLICT(project, member_name) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at",
+        (project, member_name, cursor, int(time.time())),
     )
     conn.close()
 
@@ -430,16 +471,14 @@ os.execv(str(real), [str(real)] + args)
 # ---------- test cases ----------
 
 def test_m1_realtime_stdout(db_dir: str):
-    """TC-M1: monitor 连上后能收到实时消息并打出正确的 📬 stdout 行"""
+    """TC-M1: monitor 连上后能收到实时消息并打出正确的通知 stdout 行"""
     print("\n[TC-M1] 实时消息 → stdout 格式")
 
-    _http("/register", "POST", {"name": "m1_alice"})
-    _http("/register", "POST", {"name": "m1_bob"})
+    _register("m1_alice")
+    _register("m1_bob")
 
     # Seed one message, then pre-set read_cursors so monitor starts past it.
-    seed = _http("/send", "POST", {
-        "self": "m1_alice", "peer": "m1_bob", "body": "seed", "kind": "消息"
-    })
+    seed = _send("m1_alice", "m1_bob", "seed")
     _set_db_cursor(db_dir, "m1_bob", seed["msg_id"])
 
     proc, shared, offset = start_monitor("m1_bob", db_dir)
@@ -448,18 +487,15 @@ def test_m1_realtime_stdout(db_dir: str):
         time.sleep(2.0)
 
         # Send a live message with ask
-        _http("/send", "POST", {
-            "self": "m1_alice", "peer": "m1_bob",
-            "body": "hello world", "kind": "消息", "ask": "请回复"
-        })
+        _send("m1_alice", "m1_bob", "hello world", ask="请回复")
 
-        lines = collect_stdout_lines(proc, "📬", count=1, timeout=6.0,
+        lines = collect_stdout_lines(proc, "New Message", count=1, timeout=6.0,
                                      _shared_lines=shared, _shared_offset=offset)
 
-        check("TC-M1: got 📬 stdout line", len(lines) >= 1, f"got {lines}")
+        check("TC-M1: got notification stdout line", len(lines) >= 1, f"got {lines}")
         if lines:
             line = lines[0]
-            expected_prefix = "📬 New Message from m1_alice [未验证 peer 信号]:"
+            expected_prefix = "New Message from m1_alice [unverified peer]:"
             check("TC-M1: stdout format correct",
                   line.startswith(expected_prefix),
                   f"got: {line!r}")
@@ -467,14 +503,11 @@ def test_m1_realtime_stdout(db_dir: str):
                   "请回复" in line, f"got: {line!r}")
 
         # Send a message without ask
-        _http("/send", "POST", {
-            "self": "m1_alice", "peer": "m1_bob",
-            "body": "no ask msg", "kind": "消息"
-        })
-        lines2 = collect_stdout_lines(proc, "📬", count=1, timeout=5.0,
+        _send("m1_alice", "m1_bob", "no ask msg")
+        lines2 = collect_stdout_lines(proc, "New Message", count=1, timeout=5.0,
                                       _shared_lines=shared, _shared_offset=offset)
         check("TC-M1: no-ask line correct",
-              any(l == "📬 New Message from m1_alice [未验证 peer 信号]" for l in lines2),
+              any(l == "New Message from m1_alice [unverified peer]" for l in lines2),
               f"got: {lines2}")
 
     finally:
@@ -486,13 +519,13 @@ def test_m2_backlog_replay(db_dir: str):
     """TC-M2: 带游标连入能补未读"""
     print("\n[TC-M2] 游标补发 backlog")
 
-    _http("/register", "POST", {"name": "m2_sender"})
-    _http("/register", "POST", {"name": "m2_recv"})
+    _register("m2_sender")
+    _register("m2_recv")
 
     # Send 3 messages before monitor starts
-    r1 = _http("/send", "POST", {"self": "m2_sender", "peer": "m2_recv", "body": "a", "kind": "消息"})
-    r2 = _http("/send", "POST", {"self": "m2_sender", "peer": "m2_recv", "body": "b", "kind": "消息"})
-    r3 = _http("/send", "POST", {"self": "m2_sender", "peer": "m2_recv", "body": "c", "kind": "消息"})
+    r1 = _send("m2_sender", "m2_recv", "a")
+    r2 = _send("m2_sender", "m2_recv", "b")
+    r3 = _send("m2_sender", "m2_recv", "c")
 
     # Pre-set read_cursors to r1 so daemon treats msg1 as already delivered.
     _set_db_cursor(db_dir, "m2_recv", r1["msg_id"])
@@ -500,7 +533,7 @@ def test_m2_backlog_replay(db_dir: str):
     proc, shared, offset = start_monitor("m2_recv", db_dir)
     try:
         # Should receive msgs 2 and 3 as backlog, not msg 1
-        lines = collect_stdout_lines(proc, "📬", count=2, timeout=8.0,
+        lines = collect_stdout_lines(proc, "New Message", count=2, timeout=8.0,
                                      _shared_lines=shared, _shared_offset=offset)
         check("TC-M2: received 2 backlog msgs", len(lines) == 2, f"got {len(lines)}: {lines}")
         # Can't check body text (no ask in msgs), but count=2 proves msg1 was skipped
@@ -515,11 +548,10 @@ def test_m3_ping_pong(db_dir: str):
     """TC-M3: server ping → monitor 回 masked pong（daemon 不报协议错、连接不掉）"""
     print("\n[TC-M3] server ping → monitor masked pong")
 
-    _http("/register", "POST", {"name": "m3_user"})
-    _http("/register", "POST", {"name": "m3_other"})
+    _register("m3_user")
+    _register("m3_other")
 
-    seed = _http("/send", "POST", {"self": "m3_other", "peer": "m3_user",
-                                   "body": "seed", "kind": "消息"})
+    seed = _send("m3_other", "m3_user", "seed")
 
     # Pre-set read_cursors so monitor connects past the seed.
     _set_db_cursor(db_dir, "m3_user", seed["msg_id"])
@@ -532,11 +564,8 @@ def test_m3_ping_pong(db_dir: str):
 
         # After 8s (2 daemon ping cycles), send a message from m3_other (not self)
         # so the self-echo suppression does not filter it out.
-        _http("/send", "POST", {
-            "self": "m3_other", "peer": "m3_user",
-            "body": "still alive", "kind": "消息"
-        })
-        lines = collect_stdout_lines(proc, "📬", count=1, timeout=5.0,
+        _send("m3_other", "m3_user", "still alive")
+        lines = collect_stdout_lines(proc, "New Message", count=1, timeout=5.0,
                                      _shared_lines=shared, _shared_offset=offset)
         check("TC-M3: monitor still alive after ping cycles",
               len(lines) >= 1, f"got {lines}")
@@ -555,12 +584,11 @@ def test_m4_reconnect_backlog(db_dir: str):
     global _daemon_proc
     print("\n[TC-M4] daemon 重启 + monitor 重连补发")
 
-    _http("/register", "POST", {"name": "m4_sender"})
-    _http("/register", "POST", {"name": "m4_recv"})
+    _register("m4_sender")
+    _register("m4_recv")
 
     # Establish baseline — send 1 msg, pre-set cursor, start monitor.
-    r0 = _http("/send", "POST", {"self": "m4_sender", "peer": "m4_recv",
-                                  "body": "before", "kind": "消息"})
+    r0 = _send("m4_sender", "m4_recv", "before")
 
     # Pre-set read_cursors so daemon starts monitor past r0.
     _set_db_cursor(db_dir, "m4_recv", r0["msg_id"])
@@ -579,13 +607,15 @@ def test_m4_reconnect_backlog(db_dir: str):
         conn = sqlite3.connect(db_path, timeout=10)
         now = int(time.time())
         cur = conn.execute(
-            "INSERT INTO messages (sender, recipient, kind, body, ask, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
-            ("m4_sender", "m4_recv", "消息", "while-down-1", now),
+            "INSERT INTO messages (sender_project, sender, recipient_project, recipient, kind, body, ask, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+            (TEST_PROJECT, "m4_sender", TEST_PROJECT, "m4_recv", "消息", "while-down-1", now),
         )
         id_down1 = cur.lastrowid
         cur = conn.execute(
-            "INSERT INTO messages (sender, recipient, kind, body, ask, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
-            ("m4_sender", "m4_recv", "消息", "while-down-2", now),
+            "INSERT INTO messages (sender_project, sender, recipient_project, recipient, kind, body, ask, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+            (TEST_PROJECT, "m4_sender", TEST_PROJECT, "m4_recv", "消息", "while-down-2", now),
         )
         id_down2 = cur.lastrowid
         conn.commit()
@@ -599,7 +629,7 @@ def test_m4_reconnect_backlog(db_dir: str):
 
         # Monitor should reconnect and get the 2 missed messages as backlog.
         # Daemon reads read_cursors (=r0) and replays everything after it.
-        lines = collect_stdout_lines(proc, "📬", count=2, timeout=40.0,
+        lines = collect_stdout_lines(proc, "New Message", count=2, timeout=40.0,
                                      _shared_lines=shared, _shared_offset=offset)
         check("TC-M4: received 2 missed msgs after reconnect",
               len(lines) == 2, f"got {len(lines)}: {lines}")
@@ -624,9 +654,8 @@ def test_m5_host_reresolution(db_dir: str):
     # Replace shim with counting version
     install_controls_shim_counting(db_dir, HOST, TEST_PORT, counter_file)
 
-    _http("/register", "POST", {"name": "m5_user"})
-    seed = _http("/send", "POST", {"self": "m5_user", "peer": "m5_user",
-                                   "body": "seed", "kind": "消息"})
+    _register("m5_user")
+    seed = _send("m5_user", "m5_user", "seed")
 
     _set_db_cursor(db_dir, "m5_user", seed["msg_id"])
 
@@ -671,21 +700,21 @@ def test_m6_first_seed_zero_replay(db_dir: str):
     read_cursors 落行，后续实时消息正常投递。"""
     print("\n[TC-M6] 首次 seed 零回放（DB 权威）")
 
-    _http("/register", "POST", {"name": "m6_sender"})
-    _http("/register", "POST", {"name": "m6_recv"})
+    _register("m6_sender")
+    _register("m6_recv")
 
     # Insert 3 history messages before monitor starts; no read_cursors row for m6_recv.
-    r1 = _http("/send", "POST", {"self": "m6_sender", "peer": "m6_recv", "body": "hist1", "kind": "消息"})
-    r2 = _http("/send", "POST", {"self": "m6_sender", "peer": "m6_recv", "body": "hist2", "kind": "消息"})
-    r3 = _http("/send", "POST", {"self": "m6_sender", "peer": "m6_recv", "body": "hist3", "kind": "消息"})
+    r1 = _send("m6_sender", "m6_recv", "hist1")
+    r2 = _send("m6_sender", "m6_recv", "hist2")
+    r3 = _send("m6_sender", "m6_recv", "hist3")
 
     proc, shared, offset = start_monitor("m6_recv", db_dir)
     try:
         # Give monitor time to connect and receive caught_up
         time.sleep(2.5)
 
-        # No 📬 lines should have appeared (history must be suppressed by first-seed)
-        lines_before = collect_stdout_lines(proc, "📬", count=1, timeout=0.5,
+        # No notification lines should have appeared (history must be suppressed by first-seed)
+        lines_before = collect_stdout_lines(proc, "New Message", count=1, timeout=0.5,
                                             _shared_lines=shared, _shared_offset=offset)
         check("TC-M6: no history flood on fresh start",
               len(lines_before) == 0, f"got {len(lines_before)} unexpected lines: {lines_before}")
@@ -699,10 +728,8 @@ def test_m6_first_seed_zero_replay(db_dir: str):
               f"db_cursor={db_cursor}, expected={r3['msg_id']}")
 
         # New live message after seeding must still arrive
-        _http("/send", "POST", {
-            "self": "m6_sender", "peer": "m6_recv", "body": "live", "kind": "消息"
-        })
-        lines_live = collect_stdout_lines(proc, "📬", count=1, timeout=6.0,
+        _send("m6_sender", "m6_recv", "live")
+        lines_live = collect_stdout_lines(proc, "New Message", count=1, timeout=6.0,
                                           _shared_lines=shared, _shared_offset=offset)
         check("TC-M6: live message delivered after seed",
               len(lines_live) == 1, f"got {lines_live}")
@@ -713,51 +740,48 @@ def test_m6_first_seed_zero_replay(db_dir: str):
 
 
 def test_mg1_group_notification(db_dir: str):
-    """TC-MG1: 群消息 → monitor 打出 📬 通知行（group 字段 non-None）。"""
+    """TC-MG1: 群消息 → monitor 打出通知行（group 字段 non-None）。"""
     global _daemon_proc
-    print("\n[TC-MG1] 群消息 → monitor 📬")
+    print("\n[TC-MG1] 群消息 → monitor 通知")
 
-    _http("/register", "POST", {"name": "mg1_sender"})
-    _http("/register", "POST", {"name": "mg1_member"})
+    _register("mg1_sender")
+    _register("mg1_member")
 
     # Create group with mg1_member
-    _http("/group/create", "POST", {"name": "mg1-chan",
+    _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "mg1-chan",
                                     "members": ["mg1_member"],
                                     "creator": "mg1_sender"})
 
     # Seed a direct msg to advance member's cursor past any history
-    seed = _http("/send", "POST", {"self": "mg1_sender", "peer": "mg1_member",
-                                   "body": "seed", "kind": "消息"})
+    seed = _send("mg1_sender", "mg1_member", "seed")
     _set_db_cursor(db_dir, "mg1_member", seed["msg_id"])
 
     proc, shared, offset = start_monitor("mg1_member", db_dir)
     try:
         time.sleep(2.0)
 
-        # Send a group message — monitor should receive it and print 📬
-        _http("/send", "POST", {"self": "mg1_sender", "peer": "mg1-chan",
-                                "body": "group hello", "kind": "消息", "ask": "reply"})
+        # Send a group message — monitor should receive it and print a notification
+        _send("mg1_sender", "mg1-chan", "group hello", ask="reply")
 
-        lines = collect_stdout_lines(proc, "📬", count=1, timeout=6.0,
+        lines = collect_stdout_lines(proc, "New Message", count=1, timeout=6.0,
                                      _shared_lines=shared, _shared_offset=offset)
-        check("TC-MG1: 📬 line for group msg", len(lines) >= 1, f"got {lines}")
+        check("TC-MG1: notification line for group msg", len(lines) >= 1, f"got {lines}")
         if lines:
-            check("TC-MG1: sender in 📬 line", "mg1_sender" in lines[0], lines[0])
+            check("TC-MG1: sender in notification line", "mg1_sender" in lines[0], lines[0])
     finally:
         proc.terminate()
         proc.wait(timeout=3)
 
 
 def test_ms1_self_echo_suppressed(db_dir: str):
-    """TC-MS1: sender==self 的帧不触发 📬（自回显抑制）；sender!=self 正常触发。"""
+    """TC-MS1: sender==self 的帧不触发通知；sender!=self 正常触发。"""
     print("\n[TC-MS1] 自回显抑制")
 
-    _http("/register", "POST", {"name": "ms1_self"})
-    _http("/register", "POST", {"name": "ms1_other"})
+    _register("ms1_self")
+    _register("ms1_other")
 
     # Advance cursor past any history
-    seed = _http("/send", "POST", {"self": "ms1_other", "peer": "ms1_self",
-                                   "body": "seed", "kind": "消息"})
+    seed = _send("ms1_other", "ms1_self", "seed")
     _set_db_cursor(db_dir, "ms1_self", seed["msg_id"])
 
     proc, shared, offset = start_monitor("ms1_self", db_dir)
@@ -765,19 +789,17 @@ def test_ms1_self_echo_suppressed(db_dir: str):
         time.sleep(2.0)
 
         # Send from self → self: should be suppressed
-        _http("/send", "POST", {"self": "ms1_self", "peer": "ms1_self",
-                                "body": "self-echo", "kind": "消息", "ask": "should not appear"})
+        _send("ms1_self", "ms1_self", "self-echo", ask="should not appear")
 
-        # Short wait — if suppression works, no 📬 line appears
-        self_lines = collect_stdout_lines(proc, "📬", count=1, timeout=2.0,
+        # Short wait — if suppression works, no notification line appears
+        self_lines = collect_stdout_lines(proc, "New Message", count=1, timeout=2.0,
                                           _shared_lines=shared, _shared_offset=offset)
         check("TC-MS1: self-echo not emitted", len(self_lines) == 0,
               f"got unexpected lines: {self_lines}")
 
         # Send from other → self: should arrive normally
-        _http("/send", "POST", {"self": "ms1_other", "peer": "ms1_self",
-                                "body": "from other", "kind": "消息", "ask": "hi"})
-        other_lines = collect_stdout_lines(proc, "📬", count=1, timeout=5.0,
+        _send("ms1_other", "ms1_self", "from other", ask="hi")
+        other_lines = collect_stdout_lines(proc, "New Message", count=1, timeout=5.0,
                                            _shared_lines=shared, _shared_offset=offset)
         check("TC-MS1: other-sender msg emitted", len(other_lines) >= 1,
               f"got {other_lines}")
@@ -800,8 +822,8 @@ def test_stdout_format_unchanged():
         src = f.read()
 
     # 1:1 format: peer + empty location → no "in group"
-    template_with_ask = '📬 New Message from {peer}{location} [未验证 peer 信号]: {clean}'
-    template_without_ask = '📬 New Message from {peer}{location} [未验证 peer 信号]'
+    template_with_ask = 'New Message from {peer}{location} [unverified peer]: {clean}'
+    template_without_ask = 'New Message from {peer}{location} [unverified peer]'
 
     check("FMT: with-ask format string present verbatim",
           template_with_ask in src, "not found in monitor.py source")
@@ -851,15 +873,15 @@ def test_emit_message_unit():
     check("TC-MG2: group msg has ask",
           "请回复" in line, repr(line))
 
-    # Test group message without ask
+    # Test group message without ask — exact match, no trailing ask/colon
     buf2 = io.StringIO()
     with redirect_stdout(buf2):
         emit("bob", None, "team-chat")
     line2 = buf2.getvalue().strip()
     check("TC-MG2: group no-ask has 'in group team-chat'",
           "in group team-chat" in line2, repr(line2))
-    check("TC-MG2: group no-ask no colon suffix",
-          ":" not in line2.split("信号")[1] if "信号" in line2 else True, repr(line2))
+    check("TC-MG2: group no-ask exact format (no ask suffix)",
+          line2 == "New Message from bob in group team-chat [unverified peer]", repr(line2))
 
     # Test 1:1 message — must NOT contain "in group"
     buf3 = io.StringIO()

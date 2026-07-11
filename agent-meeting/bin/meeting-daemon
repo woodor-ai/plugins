@@ -982,6 +982,12 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT 1 FROM groups WHERE project=? AND name=?", (project, name)
             ).fetchone():
                 return {"error": f"group '{name}' already exists in project '{project}'"}
+            if conn.execute(
+                "SELECT 1 FROM messages WHERE (sender_project=? AND sender=?)"
+                " OR (recipient_project=? AND recipient=?) LIMIT 1",
+                (project, name, project, name),
+            ).fetchone():
+                return {"error": f"name '{name}' has existing message history (cannot reuse as group name)"}
 
             resolved = []
             seen = set()
