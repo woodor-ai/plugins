@@ -2,6 +2,10 @@
 # Bootstrap: clone or update woodor-ai/plugins then run the interactive installer.
 # Usage (one-liner):
 #   curl -fsSL https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.sh | bash
+#
+# Also copied verbatim to ~/.agent-meeting/bin/codex-plugins by install-codex.py
+# after the first install — run `codex-plugins` locally afterwards instead of
+# re-pasting the one-liner. Any extra args are forwarded to install-codex.py.
 set -e
 
 REPO_URL="https://github.com/woodor-ai/plugins"
@@ -33,4 +37,4 @@ fi
 
 echo ""
 echo "Running interactive installer ..."
-"$PY" "$DEST/install-codex.py"
+"$PY" "$DEST/install-codex.py" "$@"

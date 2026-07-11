@@ -37,6 +37,13 @@ def _default_install_dir(codex_home: Path, plugin_name: str) -> Path:
     return codex_home / "plugins" / plugin_name
 
 
+def _default_meeting_home() -> Path:
+    if IS_WINDOWS:
+        base = os.environ.get("USERPROFILE") or str(Path.home())
+        return Path(base) / ".agent-meeting"
+    return Path.home() / ".agent-meeting"
+
+
 def _prompt(msg: str, default: str = "") -> str:
     display = f"{msg} [{default}]: " if default else f"{msg}: "
     try:
@@ -146,6 +153,47 @@ def run_interactive(plugins_src: Path, codex_home: Path, prompt_fn=None) -> dict
     return {"installed": installed, "skipped": skipped}
 
 
+def _generate_codex_plugins_command(plugins_src: Path, bin_dir: Path) -> None:
+    """Install a local `codex-plugins` command into bin_dir (same dir + generation
+    mechanism as `mycodex`): re-running it later pulls (or clones) the canonical
+    ~/.codex/plugins-src checkout and reruns this installer, args passed through.
+
+    Copies the existing bootstrap scripts (install-codex-plugins.sh/.ps1) verbatim
+    instead of reimplementing clone/pull — those scripts already are "clone-or-pull
+    + run the installer", so this stays a single source of truth.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    if IS_WINDOWS:
+        dest_ps1 = bin_dir / "codex-plugins.ps1"
+        shutil.copy2(str(plugins_src / "install-codex-plugins.ps1"), str(dest_ps1))
+        dest_cmd = bin_dir / "codex-plugins.cmd"
+        dest_cmd.write_text(
+            f'@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "{dest_ps1}" %*\r\n'
+        )
+    else:
+        dest_sh = bin_dir / "codex-plugins"
+        shutil.copy2(str(plugins_src / "install-codex-plugins.sh"), str(dest_sh))
+        dest_sh.chmod(0o755)
+
+
+def _ensure_bin_on_path(bin_dir: Path) -> None:
+    """Put bin_dir on PATH so `codex-plugins` is callable by name, even when the
+    agent-meeting plugin itself was not selected for install.
+
+    Reuses agent-meeting's own winreg PATH helper (Windows: idempotent user-PATH
+    edit; POSIX: prints a hint) by importing it straight from plugins_src — no
+    second copy of that logic, and it only ever touches PATH, never agent-meeting's
+    runtime.
+    """
+    am_install = HERE / "agent-meeting" / "codex" / "install.py"
+    if not am_install.exists():
+        return
+    spec = importlib.util.spec_from_file_location("agent_meeting_codex_install_pathhelper", am_install)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod._ensure_path_entry(bin_dir)
+
+
 def main():
     codex_home = Path(os.environ.get("CODEX_HOME") or str(_default_codex_home()))
 
@@ -166,6 +214,13 @@ def main():
         print()
         print("Open a NEW terminal and run: mycodex")
         print("Or:                          mycodex <session-name>")
+
+        bin_dir = Path(os.environ.get("MEETING_HOME") or str(_default_meeting_home())) / "bin"
+        _generate_codex_plugins_command(HERE, bin_dir)
+        _ensure_bin_on_path(bin_dir)
+        print()
+        print(f"codex-plugins command installed -> {bin_dir}")
+        print("Next time you want to install/update plugins, just run: codex-plugins")
 
 
 if __name__ == "__main__":

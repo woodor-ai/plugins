@@ -42,6 +42,19 @@ builds `~/.agent-meeting` (venv + zeroconf + websockets + `meeting` CLI), and
 installs the codex SessionStart hook. On a client machine no daemon/persistence
 is installed — the agent-meeting control stays on the host.
 
+As long as at least one plugin was installed, the installer also drops a
+`codex-plugins` command into `~/.agent-meeting/bin` (added to PATH). **Later,
+to install more plugins or update existing ones, just run:**
+
+```
+codex-plugins
+```
+
+instead of re-pasting the one-liner — it pulls (or clones, if missing) the
+`~/.codex/plugins-src` checkout and reruns the interactive installer. This works
+even if you only installed a different plugin (e.g. `handoff`) and skipped
+agent-meeting.
+
 ## Run a bridged live session
 
 ```

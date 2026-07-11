@@ -1,6 +1,12 @@
 # Bootstrap: clone or update woodor-ai/plugins then run the interactive installer.
 # Usage (one-liner):
 #   iwr -useb https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.ps1 | iex
+#
+# Also copied verbatim to ~/.agent-meeting/bin/codex-plugins.ps1 by install-codex.py
+# after the first install (with a codex-plugins.cmd launcher alongside it) — run
+# `codex-plugins` locally afterwards instead of re-pasting the one-liner. Any
+# extra args (only meaningful when run via -File, not piped through iex) are
+# forwarded to install-codex.py.
 
 $ErrorActionPreference = "Stop"
 
@@ -35,5 +41,5 @@ if (Test-Path (Join-Path $Dest ".git")) {
 
 Write-Host ""
 Write-Host "Running interactive installer ..."
-& $py (Join-Path $Dest "install-codex.py")
+& $py (Join-Path $Dest "install-codex.py") @args
 exit $LASTEXITCODE
