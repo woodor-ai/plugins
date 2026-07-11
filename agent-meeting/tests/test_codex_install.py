@@ -265,3 +265,69 @@ def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
     assert (bin_dir / "mycodex").exists(), (
         "_all_present() incorrectly skipped regen when mycodex was absent"
     )
+
+
+# ---------------------------------------------------------------------------
+# Windows-only extensionless `mycodex` leftover cleanup — a pre-dual-extension
+# install (or an old bootstrap on Windows) could leave a POSIX-shell
+# extensionless `mycodex` sitting in bin/ forever, since Windows only ever
+# regenerates mycodex.ps1/.cmd. IS_WINDOWS is force-patched here since the
+# test host is macOS; all file operations exercised are OS-agnostic.
+# ---------------------------------------------------------------------------
+
+def test_windows_mycodex_leftover_removed_on_regen(tmp_path):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    _make_venv(meeting_home)
+
+    bin_dir = meeting_home / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "mycodex").write_text("#!/bin/sh\necho old posix shim stuck on windows\n")
+
+    mod = _load_bootstrap(meeting_home, plugin_root)
+    mod.IS_WINDOWS = True
+    mod.DATA = meeting_home
+    mod.BIN_LINK = bin_dir
+    mod.VENV = meeting_home / "venv"
+    mod.PLUGIN_ROOT = plugin_root
+
+    mod.ensure_bin_wrappers()
+
+    assert not (bin_dir / "mycodex").exists()
+    assert (bin_dir / "mycodex.cmd").exists()
+    assert (bin_dir / "mycodex.ps1").exists()
+
+
+def test_windows_mycodex_leftover_swept_on_sentinel_match(tmp_path):
+    """Once the sentinel matches and _all_present() is satisfied, the full
+    regen path never runs again — the stale-file sweep must still fire on
+    that early-return path, or a leftover extensionless `mycodex` would
+    persist forever on Windows."""
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    _make_venv(meeting_home)
+
+    bin_dir = meeting_home / "bin"
+
+    mod = _load_bootstrap(meeting_home, plugin_root)
+    mod.IS_WINDOWS = True
+    mod.DATA = meeting_home
+    mod.BIN_LINK = bin_dir
+    mod.VENV = meeting_home / "venv"
+    mod.PLUGIN_ROOT = plugin_root
+
+    mod.ensure_bin_wrappers()  # first call: full regen, settles the sentinel
+    assert (bin_dir / "mycodex.cmd").exists()
+
+    # Simulate a leftover from a pre-dual-extension install reappearing.
+    (bin_dir / "mycodex").write_text("old posix shim stuck on windows\n")
+
+    mod.ensure_bin_wrappers()  # second call: sentinel matches -> early-return path
+
+    assert not (bin_dir / "mycodex").exists(), (
+        "stale extensionless mycodex must be swept even on the early-return path"
+    )
+    assert (bin_dir / "mycodex.cmd").exists()
+    assert (bin_dir / "mycodex.ps1").exists()

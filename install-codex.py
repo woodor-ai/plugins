@@ -180,12 +180,21 @@ def _generate_mycodex_command(plugins_src: Path, bin_dir: Path) -> None:
 
 
 def _cleanup_stale_codex_plugins(meeting_home: Path, bin_dir: Path) -> None:
-    """Delete only the three exact leftover codex-plugins* filenames from a prior
-    install. Refuses to act unless bin_dir resolves to exactly <meeting_home>/bin,
-    and only ever unlinks those three files by name — never recurses."""
+    """Delete only the exact leftover filenames from a prior install. Refuses to
+    act unless bin_dir resolves to exactly <meeting_home>/bin, and only ever
+    unlinks known files by name — never recurses.
+
+    Windows only: an extensionless `mycodex` here is always a leftover from a
+    pre-dual-extension install (this installer only ever writes mycodex.ps1 /
+    mycodex.cmd on Windows — see _generate_mycodex_command). On POSIX that same
+    filename IS the current artifact, so it must never be swept here.
+    """
     if bin_dir.resolve() != (meeting_home / "bin").resolve():
         return
-    for name in _STALE_CODEX_PLUGINS_NAMES:
+    names = _STALE_CODEX_PLUGINS_NAMES
+    if IS_WINDOWS:
+        names = names + ("mycodex",)
+    for name in names:
         p = bin_dir / name
         if p.is_file():
             p.unlink()

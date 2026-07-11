@@ -404,6 +404,41 @@ def test_cleanup_stale_codex_plugins_refuses_wrong_dir(tmp_path):
     assert (other_dir / "codex-plugins").read_text() == "do not delete"
 
 
+def test_cleanup_stale_codex_plugins_removes_windows_mycodex_leftover(tmp_path, monkeypatch):
+    """Windows only: a pre-dual-extension extensionless `mycodex` left in bin/
+    must be swept, since the Windows regen path only ever writes
+    mycodex.ps1 / mycodex.cmd (never an extensionless copy)."""
+    mod = _load()
+    monkeypatch.setattr(mod, "IS_WINDOWS", True)
+    meeting_home = tmp_path / "meeting-home"
+    bin_dir = meeting_home / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "mycodex").write_text("#!/bin/sh\necho old posix shim on windows\n")
+    (bin_dir / "mycodex.cmd").write_text("@echo off\r\n")
+    (bin_dir / "mycodex.ps1").write_text("# current\n")
+
+    mod._cleanup_stale_codex_plugins(meeting_home, bin_dir)
+
+    assert not (bin_dir / "mycodex").exists()
+    assert (bin_dir / "mycodex.cmd").exists()
+    assert (bin_dir / "mycodex.ps1").exists()
+
+
+def test_cleanup_stale_codex_plugins_leaves_posix_mycodex_alone(tmp_path):
+    """POSIX: extensionless `mycodex` IS the current artifact — cleanup must
+    never touch it."""
+    mod = _load()
+    assert mod.IS_WINDOWS is False  # test host is macOS/Linux
+    meeting_home = tmp_path / "meeting-home"
+    bin_dir = meeting_home / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "mycodex").write_text("#!/bin/sh\necho current\n")
+
+    mod._cleanup_stale_codex_plugins(meeting_home, bin_dir)
+
+    assert (bin_dir / "mycodex").read_text() == "#!/bin/sh\necho current\n"
+
+
 def test_run_interactive_multiple_plugins(tmp_path):
     mod = _load()
     src = tmp_path / "src"

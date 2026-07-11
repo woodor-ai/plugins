@@ -223,6 +223,11 @@ def ensure_bin_wrappers():
             and not BIN_LINK.is_symlink()
             and not _is_reparse_point(BIN_LINK)
             and _all_present()):
+        # Even when nothing else needs regenerating, sweep known stale files —
+        # otherwise a leftover Windows extensionless `mycodex` (see
+        # _cleanup_stale_codex_plugins) would never get cleaned once the
+        # sentinel settles, since the full-swap path below never runs again.
+        _cleanup_stale_codex_plugins(BIN_LINK)
         return  # Already up to date for this plugin version
 
     # Build wrappers into a temp dir first — if the copy loop fails/interrupts
@@ -316,13 +321,21 @@ def ensure_bin_wrappers():
 
 
 def _cleanup_stale_codex_plugins(bin_dir: Path) -> None:
-    """Delete only the three exact leftover codex-plugins* filenames from a prior
-    install (superseded by mycodex --update). Refuses to act unless bin_dir
-    resolves to exactly DATA/bin, and only ever unlinks those three files by
-    name — never recurses."""
+    """Delete only exact leftover filenames from a prior install (superseded by
+    mycodex --update). Refuses to act unless bin_dir resolves to exactly
+    DATA/bin, and only ever unlinks known files by name — never recurses.
+
+    Windows only: an extensionless `mycodex` here is always a leftover from a
+    pre-dual-extension install (the regen path above only ever writes
+    mycodex.ps1 / mycodex.cmd on Windows). On POSIX that same filename IS the
+    current artifact, so it must never be swept here.
+    """
     if bin_dir.resolve() != (DATA / "bin").resolve():
         return
-    for name in ("codex-plugins", "codex-plugins.cmd", "codex-plugins.ps1"):
+    names = ("codex-plugins", "codex-plugins.cmd", "codex-plugins.ps1")
+    if IS_WINDOWS:
+        names = names + ("mycodex",)
+    for name in names:
         p = bin_dir / name
         if p.is_file():
             p.unlink()
