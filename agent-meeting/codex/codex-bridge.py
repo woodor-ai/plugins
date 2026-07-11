@@ -460,30 +460,66 @@ def _worker():
     while True:
         room, msg_id, sender, text = _Q.get()
         try:
+            with _room_lock:
+                blocked = room in _peer_blocked
+            if blocked:
+                # Room is frozen after an earlier injection failure: drop this
+                # message rather than inject it out of order. _retry_worker
+                # (or a reconnect) will re-fetch it from the committed cursor
+                # once the room is unblocked, so nothing is lost -- just not
+                # injected via this stale queue entry.
+                _log(f"msg {msg_id} from {sender}: {room} is blocked; dropping "
+                     f"(will be re-fetched once unblocked)")
+                continue
             mapping = _read_json(MAPPING_FILE)
             thread_id = mapping.get("session_id")
             ws_addr = mapping.get("ws_addr")
             if not thread_id or not ws_addr:
                 _log(f"no mapping for msg {msg_id} from {sender}; blocking {room} until reconnect "
                      f"(codex session has not started a turn yet, so no session_id)")
-                _peer_blocked.add(room)
+                with _room_lock:
+                    _peer_blocked.add(room)
                 continue
             _log(f"waking codex with msg {msg_id} from {sender} -> thread {thread_id}")
             delivered = _inject_with_retry(ws_addr, thread_id, msg_id, text)
             if delivered:
-                if room not in _peer_blocked:
+                with _room_lock:
                     _cursors[room] = max(_cursors.get(room, 0), msg_id)
                     _save_cursors(_cursors)
-                _log(f"msg {msg_id} from {sender}: delivered into codex session"
-                     + (" (cursor NOT advanced; earlier failure pending for this room)"
-                        if room in _peer_blocked else ""))
+                    _retry_counts.pop((room, msg_id), None)
+                _log(f"msg {msg_id} from {sender}: delivered into codex session")
             else:
-                _peer_blocked.add(room)
+                with _room_lock:
+                    _peer_blocked.add(room)
+                    _retry_counts[(room, msg_id)] = _retry_counts.get((room, msg_id), 0) + 1
                 _log(f"msg {msg_id} from {sender}: NOT delivered; blocking {room}")
         except Exception as e:
             _log(f"worker error on msg {msg_id} from {sender}: {type(e).__name__}: {e}")
         finally:
             _Q.task_done()
+
+
+# ---------------------------------------------------------------------------
+# Retry: periodically un-freeze blocked rooms. _peer_blocked/_session_cursors
+# are also touched by _on_connect (main WS thread) and _process_room, so every
+# access is guarded by _room_lock -- this is the only extra concurrency this
+# fix introduces (injection itself stays serialized through the single
+# _worker thread / _Q, so no concurrent turn/start calls are added).
+# ---------------------------------------------------------------------------
+_RETRY_INTERVAL_S = 30.0
+
+
+def _retry_worker():
+    while True:
+        time.sleep(_RETRY_INTERVAL_S)
+        with _room_lock:
+            retry_rooms = [(r, _room_groups.get(r)) for r in _peer_blocked]
+            _peer_blocked.difference_update(r for r, _ in retry_rooms)
+            for r, _ in retry_rooms:
+                _session_cursors.pop(r, None)
+        for room, group in retry_rooms:
+            _log(f"retrying blocked room {room}")
+            _process_room(room, group=group)
 
 
 # ---------------------------------------------------------------------------
@@ -493,11 +529,25 @@ def _worker():
 # (that's the P0-1 single-control-endpoint invariant).
 # ---------------------------------------------------------------------------
 
+# _room_lock guards every shared mutable structure below (_cursors,
+# _session_cursors, _known_peers, _peer_blocked, _room_groups, _retry_counts).
+# Two threads touch them concurrently now: the main WS thread (_on_text /
+# _on_connect) and _retry_worker. _process_room holds the lock for its whole
+# body (including the `meeting read` subprocess call) so two threads can never
+# both fetch+enqueue the same room at once -- the only alternative would be a
+# race that double-enqueues (and so double-injects) the same message.
+_room_lock = threading.Lock()
+
 _cursors: dict = {}          # committed cursors (persisted to disk only on success)
 _session_cursors: dict = {}  # in-session fetch horizon (not persisted; dedup within session)
 _known_peers: set = set()
 _peer_blocked: set = set()   # rooms blocked after an injection failure; cursor frozen
 _room_groups: dict = {}      # room name -> group name, or None for DMs
+_retry_counts: dict = {}     # (room, msg_id) -> consecutive failed injection rounds
+
+_MAX_MSG_RETRY_ROUNDS = 5    # after this many failed rounds, stop retrying the
+                             # original body (e.g. oversized message that will
+                             # never inject) and hand out a stand-in notice instead
 
 
 def _process_room(room: str, group: str = None):
@@ -510,28 +560,36 @@ def _process_room(room: str, group: str = None):
     formatting below — they are routed through _handle_control instead, and a
     stale/unknown one is dropped here (log-only, never enqueued).
     """
-    _room_groups[room] = group
-    known = room in _known_peers
-    since = max(_session_cursors.get(room, 0), _cursors.get(room, 0))
-    rows, new_horizon = _fetch_new_messages(room, since, known)
-    _session_cursors[room] = new_horizon
-    _known_peers.add(room)
-    for mid, created, sender, kind, body in rows:
-        if kind.startswith("control:"):
-            text = _handle_control(room, mid, created, sender, kind)
-            if text is None:
-                continue
-            _log(f"queue control msg {mid} ({kind}) from {sender} in {room}")
+    with _room_lock:
+        _room_groups[room] = group
+        known = room in _known_peers
+        since = max(_session_cursors.get(room, 0), _cursors.get(room, 0))
+        rows, new_horizon = _fetch_new_messages(room, since, known)
+        _session_cursors[room] = new_horizon
+        _known_peers.add(room)
+        for mid, created, sender, kind, body in rows:
+            if kind.startswith("control:"):
+                text = _handle_control(room, mid, created, sender, kind)
+                if text is None:
+                    continue
+            elif group:
+                prefix = f"[group={group} peer={sender} msg_id={mid}]"
+                charter = _get_group_charter(group)
+                text = f"{prefix} [group charter] {charter}\n{body}" if charter else f"{prefix} {body}"
+            else:
+                text = f"[peer={sender} msg_id={mid}] {body}"
+
+            retry_count = _retry_counts.get((room, mid), 0)
+            if retry_count >= _MAX_MSG_RETRY_ROUNDS:
+                _log(f"msg {mid} from {sender} in {room}: giving up on the original body "
+                     f"after {retry_count} failed injection rounds (likely too large); "
+                     f"injecting a stand-in notice instead so the room can unblock")
+                text = (f"[peer={sender} msg_id={mid}] bridge notice: this message failed "
+                        f"to inject {retry_count} times in a row and is being skipped -- "
+                        f"run `meeting show {SELF} {sender}` to read the original body directly.")
+
+            _log(f"queue msg {mid} from {sender} in {room}")
             _Q.put((room, mid, sender, text))
-            continue
-        if group:
-            prefix = f"[group={group} peer={sender} msg_id={mid}]"
-            charter = _get_group_charter(group)
-            text = f"{prefix} [group charter] {charter}\n{body}" if charter else f"{prefix} {body}"
-        else:
-            text = f"[peer={sender} msg_id={mid}] {body}"
-        _log(f"queue msg {mid} from {sender} in {room}")
-        _Q.put((room, mid, sender, text))
 
 
 def _on_text(msg: dict) -> None:
@@ -559,12 +617,14 @@ def _on_connect() -> None:
     # On reconnect: unblock rooms that had injection failures so their messages
     # can be retried. Clear session cursors for blocked rooms so _process_room
     # re-fetches from the committed cursor (not the in-session fetch horizon).
-    for r in list(_peer_blocked):
-        _session_cursors.pop(r, None)
-    _peer_blocked.clear()
+    with _room_lock:
+        for r in _peer_blocked:
+            _session_cursors.pop(r, None)
+        _peer_blocked.clear()
+        known_rooms = [(r, _room_groups.get(r)) for r in _known_peers]
     # P1-4: catch up all known rooms for anything sent while disconnected.
-    for room in list(_known_peers):
-        _process_room(room, group=_room_groups.get(room))
+    for room, group in known_rooms:
+        _process_room(room, group=group)
 
 
 def main():
@@ -576,6 +636,8 @@ def main():
     _register()
     t = threading.Thread(target=_worker, name="codex-inject-worker", daemon=True)
     t.start()
+    rt = threading.Thread(target=_retry_worker, name="codex-inject-retry", daemon=True)
+    rt.start()
     ws_client = meeting_common.WSSubscribeClient(
         self_name=SELF, project=PROJECT,
         resolve_addr=lambda: (CTRL_HOST, CTRL_PORT),  # fixed -- resolved once above (P0-1)
