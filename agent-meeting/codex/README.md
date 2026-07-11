@@ -55,6 +55,11 @@ instead of re-pasting the one-liner — it pulls (or clones, if missing) the
 even if you only installed a different plugin (e.g. `handoff`) and skipped
 agent-meeting.
 
+On a **fresh install** (never asked again on `mycodex --update`), the installer
+finishes by asking whether to enable codex's fully-unattended config
+(`approval_policy="never"` + `sandbox_mode="danger-full-access"`) — default is
+no; answer `y` to enable it.
+
 ## Run a bridged live session
 
 ```

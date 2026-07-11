@@ -16,6 +16,9 @@ What run_install does (in order):
   5. Windows: force [windows] sandbox = "unelevated" in config.toml.
   6. Write the agent-meeting usage block into ~/.codex/AGENTS.md.
   7. Put ~/.agent-meeting/bin on the user PATH (Windows: idempotent winreg edit).
+  8. First install only (never on `mycodex --update`): ask whether to enable
+     codex's fully-unattended config (approval_policy="never" +
+     sandbox_mode="danger-full-access") in config.toml.
 
 All paths are resolved from __file__ so when called from the installed copy every
 hook, wrapper, and script path points to the install directory — not plugins-src.
@@ -107,6 +110,87 @@ def _ensure_windows_sandbox(codex_home: Path):
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(text, encoding="utf-8")
     print('  set [windows] sandbox = "unelevated"')
+
+
+def _split_toml_preamble(text: str):
+    """Split config.toml into (top-level preamble, rest-from-first-section).
+
+    TOML requires bare key = value assignments to precede any [section] /
+    [[array-of-tables]] header, so a top-level key can only live before the
+    first line starting with `[`.
+    """
+    m = re.search(r'(?m)^\[', text)
+    return (text, "") if not m else (text[:m.start()], text[m.start():])
+
+
+def _set_top_level_key(text: str, key: str, value: str) -> str:
+    """Set (or insert) a top-level `key = value` line, preserving every other
+    line — including comments and existing sections — as-is."""
+    preamble, rest = _split_toml_preamble(text)
+    pattern = re.compile(rf'(?m)^[ \t]*{re.escape(key)}[ \t]*=.*$')
+    if pattern.search(preamble):
+        preamble = pattern.sub(f'{key} = {value}', preamble, count=1)
+    else:
+        if preamble and not preamble.endswith("\n"):
+            preamble += "\n"
+        preamble += f'{key} = {value}\n'
+    return preamble + rest
+
+
+def _remove_top_level_key(text: str, key: str) -> str:
+    preamble, rest = _split_toml_preamble(text)
+    preamble = re.sub(rf'(?m)^[ \t]*{re.escape(key)}[ \t]*=.*\r?\n?', '', preamble)
+    return preamble + rest
+
+
+def _top_level_key_value(text: str, key: str):
+    preamble, _ = _split_toml_preamble(text)
+    m = re.search(rf'(?m)^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(.+?)[ \t]*$', preamble)
+    return m.group(1).strip() if m else None
+
+
+def _full_auto_enabled(text: str) -> bool:
+    return (_top_level_key_value(text, "approval_policy") == '"never"'
+            and _top_level_key_value(text, "sandbox_mode") == '"danger-full-access"')
+
+
+def _ensure_full_auto(codex_home: Path) -> None:
+    """Set approval_policy="never" + sandbox_mode="danger-full-access" and drop
+    the mutually-exclusive default_permissions key. Preserves everything else,
+    including [windows] and other sections. Idempotent."""
+    cfg = codex_home / "config.toml"
+    text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    text = _set_top_level_key(text, "approval_policy", '"never"')
+    text = _set_top_level_key(text, "sandbox_mode", '"danger-full-access"')
+    text = _remove_top_level_key(text, "default_permissions")
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(text, encoding="utf-8")
+
+
+def _prompt_full_auto(codex_home: Path) -> None:
+    """First-install-only prompt: offer to make codex fully unattended.
+
+    Not asked on `mycodex --update` (see run_install: gated on whether the
+    AGENTS.md marker block already existed before this run). Skips the
+    question (default: not enabled) when stdin has no TTY, so an automated or
+    piped invocation never hangs waiting for input().
+    """
+    cfg = codex_home / "config.toml"
+    text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    if _full_auto_enabled(text):
+        print("  无提示配置已启用")
+        return
+    if not sys.stdin.isatty():
+        print("  非交互环境，跳过无提示配置询问（保持默认：不启用）")
+        return
+    ans = input(
+        '是否启用 codex 完全无提示配置'
+        '（approval_policy="never" + sandbox_mode="danger-full-access"）？[y/N]: '
+    ).strip()
+    if ans.lower() != "y":
+        return
+    _ensure_full_auto(codex_home)
+    print('  已写入 approval_policy = "never"、sandbox_mode = "danger-full-access"')
 
 
 def _ensure_agents_md(codex_home: Path, meeting_home: Path, control: str):
@@ -336,11 +420,23 @@ def run_install(ctx: dict) -> None:
     # 5. Windows sandbox fix + AGENTS.md
     print("\n=== configure codex outbound ===")
     _ensure_windows_sandbox(codex_home)
+    # AGENTS.md carries our marker block once this plugin has ever installed on
+    # this CODEX_HOME; its absence right before we write it is what tells us
+    # "first install" apart from "mycodex --update re-running the installer".
+    agents_before = codex_home / "AGENTS.md"
+    is_first_install = _AGENTS_BEGIN not in (
+        agents_before.read_text(encoding="utf-8") if agents_before.exists() else ""
+    )
     _ensure_agents_md(codex_home, meeting_home, control_url)
 
     # 6. PATH
     print("\n=== PATH ===")
     _ensure_path_entry(meeting_home / "bin")
+
+    # 7. first-install-only: offer codex's fully-unattended config
+    if is_first_install:
+        print("\n=== 无提示配置 ===")
+        _prompt_full_auto(codex_home)
 
     print("\n=== agent-meeting install complete ===")
     print(f"  runtime : {meeting_home}")
