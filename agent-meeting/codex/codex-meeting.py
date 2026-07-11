@@ -412,18 +412,25 @@ def _build_codex_launch_cmd(ws_addr: str, thread_id):
 
 
 # ---------------------------------------------------------------------------
-# Terminal window title (POSIX only): codex's TUI has no programmable status
-# bar (unlike Claude Code's), so the identity cue is the terminal window/tab
-# title instead — set once, right before the foreground codex TUI takes over.
-# ASCII-only (no emoji): old cmd.exe/conhost consoles can render emoji as
-# garbage glyphs and there is no reliable way to detect the host terminal, so
-# plain ASCII is the safe default. On Windows this is set by mycodex-impl.ps1
-# (via $Host.UI.RawUI.WindowTitle) before it invokes this launcher — that
-# script does not have codex-meeting's fully-resolved control_url (mDNS
-# discovery lives here), but has the same name/control_url defaults, which is
-# enough for the cosmetic title.
+# Terminal window title: codex's TUI has no programmable status bar (unlike
+# Claude Code's), so the identity cue is the terminal window/tab title
+# instead. Real-machine finding: codex's own TUI startup writes its own title
+# (the cwd dirname) shortly AFTER launch, silently clobbering a one-shot title
+# set before handoff. Fix: a daemon thread re-asserts our title every few
+# seconds for as long as the foreground codex subprocess is alive, so ours
+# always wins the last write. ASCII-only (no emoji): old cmd.exe/conhost
+# consoles can render emoji as garbage glyphs and there is no reliable way to
+# detect the host terminal, so plain ASCII is the safe default.
+#
+# POSIX: OSC 0 written to /dev/tty (same escape sequence as before, just
+# repeated). Windows: this process shares the console with the foreground
+# `codex` child (subprocess.run with no creation flags inherits it), so
+# ctypes SetConsoleTitleW from here takes effect directly on that shared
+# console — no stdout writes involved, so it can never bleed into the TUI's
+# output stream.
 # ---------------------------------------------------------------------------
 _DEFAULT_TITLE = "codex"
+_TITLE_REFRESH_INTERVAL_S = 5.0
 
 
 def _title_text(name: str, control_url: str) -> str:
@@ -437,6 +444,11 @@ def _title_text(name: str, control_url: str) -> str:
 
 def _set_terminal_title(title: str):
     if IS_WINDOWS:
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleTitleW(title)
+        except Exception:
+            pass
         return
     try:
         with open("/dev/tty", "w", encoding="ascii", errors="replace") as tty:
@@ -444,6 +456,29 @@ def _set_terminal_title(title: str):
             tty.flush()
     except OSError:
         pass
+
+
+class _TitlePinner:
+    """Background daemon thread that re-asserts the terminal title every
+    _TITLE_REFRESH_INTERVAL_S seconds while the foreground codex TUI is
+    alive, so codex's own post-startup title write never wins for long."""
+
+    def __init__(self, title: str):
+        self._title = title
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        _set_terminal_title(self._title)
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop.wait(_TITLE_REFRESH_INTERVAL_S):
+            _set_terminal_title(self._title)
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=2)
 
 
 class Launcher:
@@ -531,12 +566,15 @@ class Launcher:
     def run_codex(self):
         ws_addr = f"ws://127.0.0.1:{self.port}"
         cmd = _build_codex_launch_cmd(ws_addr, self.warm_thread_id)
-        _set_terminal_title(_title_text(self.name, self.control_url))
+        pinner = _TitlePinner(_title_text(self.name, self.control_url))
+        pinner.start()
         _log(f"launching foreground: {' '.join(cmd)}  (Ctrl-C to end + teardown)")
         try:
             subprocess.run(cmd)
         except FileNotFoundError:
             _log("ERROR: `codex` not found on PATH")
+        finally:
+            pinner.stop()
 
     # ---- teardown ----
     def teardown(self):

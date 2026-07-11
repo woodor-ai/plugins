@@ -1,6 +1,6 @@
 {
   "name": "agent-meeting",
-  "version": "0.8.49",
+  "version": "0.8.50",
   "description": "Peer-to-peer messaging for Claude Code agents. SQLite-backed with LAN multi-machine support via mDNS + HTTP daemon. Sessions discover each other automatically across machines.",
   "author": {
     "name": "Woodor",

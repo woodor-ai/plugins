@@ -77,53 +77,8 @@ if (-not (Test-Path $Vpy) -or -not (Test-Path $AmCodexMeeting)) {
 
 # Terminal window title: codex's TUI has no programmable status bar (unlike
 # Claude Code's), so the window/tab title is the only identity cue available.
-# Set it here (not in codex-meeting.py) because on Windows the foreground
-# codex process shares THIS console window -- title must be set before
-# handing off. Mirrors codex-meeting.py's own name/control_url argparse
-# defaults (not its mDNS discovery, which is overkill for a cosmetic title):
-# --name positional, --control-url flag, else launcher.json's saved value.
-# ASCII-only (no emoji) -- legacy conhost can render emoji as garbage glyphs.
-function Get-MyCodexTitle {
-    param([string[]]$ArgList)
-    $name = $null
-    $controlUrl = $null
-    $i = 0
-    while ($i -lt $ArgList.Count) {
-        $a = $ArgList[$i]
-        if ($a -eq "--port") { $i += 2; continue }
-        if ($a -eq "--control-url") { if ($i + 1 -lt $ArgList.Count) { $controlUrl = $ArgList[$i + 1] }; $i += 2; continue }
-        if ($a -eq "--no-codex") { $i += 1; continue }
-        if ($a -notlike "-*" -and -not $name) { $name = $a }
-        $i += 1
-    }
-    if (-not $name) {
-        $h = ($env:COMPUTERNAME -replace '[^A-Za-z0-9-]', '-').Trim('-')
-        if (-not $h) { $h = "host" }
-        $name = ("codex-$h").Substring(0, [Math]::Min(20, ("codex-$h").Length))
-    }
-    if (-not $controlUrl) {
-        $launcherJson = Join-Path $MeetingHome "codex\launcher.json"
-        if (Test-Path $launcherJson) {
-            try { $controlUrl = (Get-Content $launcherJson -Raw | ConvertFrom-Json).control_url } catch {}
-        }
-    }
-    $hostport = ""
-    if ($controlUrl) {
-        try {
-            $u = [Uri]$controlUrl
-            if ($u.Host -and $u.Port -gt 0) { $hostport = "$($u.Host):$($u.Port)" }
-        } catch {}
-    }
-    if ($hostport) { return "[meeting] $name | $hostport" }
-    return "[meeting] $name"
-}
-
-$OrigTitle = $Host.UI.RawUI.WindowTitle
-try {
-    $Host.UI.RawUI.WindowTitle = Get-MyCodexTitle -ArgList $RestArgs
-    & $Vpy $AmCodexMeeting @RestArgs
-    $ExitCode = $LASTEXITCODE
-} finally {
-    $Host.UI.RawUI.WindowTitle = $OrigTitle
-}
-exit $ExitCode
+# codex-meeting.py owns this end-to-end (a background thread in that same
+# shared console process periodically calls SetConsoleTitleW) -- no title
+# logic needed here.
+& $Vpy $AmCodexMeeting @RestArgs
+exit $LASTEXITCODE
