@@ -25,6 +25,7 @@ Honors MEETING_HOME / CODEX_HOME for isolated testing.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +43,35 @@ def _run(cmd, env, label):
     r = subprocess.run(cmd, env=env)
     if r.returncode != 0:
         sys.exit(f"install: {label} failed (rc={r.returncode})")
+
+
+def _summarize_bootstrap_stdout(stdout: str) -> str:
+    """session-bootstrap.py is also a SessionStart hook: its stdout contract is a
+    single JSON line (hookSpecificOutput.additionalContext) meant for the agent
+    runtime to consume, not a terminal. Pull a one-line human summary out of it
+    for the installer; the JSON contract itself is untouched."""
+    try:
+        data = json.loads(stdout.strip().splitlines()[-1])
+        ctx = data["hookSpecificOutput"]["additionalContext"]
+        m = re.search(r"Machine: `([^`]+)` \(role: (\w+), os: (\w+)\)", ctx)
+        if m:
+            host, role, os_label = m.groups()
+            return f"runtime ready (role={role}, machine={host}, os={os_label})"
+    except Exception:
+        pass
+    return "runtime ready"
+
+
+def _run_bootstrap(cmd, env, label):
+    """Like _run, but session-bootstrap.py's stdout is the SessionStart hook JSON
+    contract (not installer-facing output) — capture and summarize it instead of
+    letting it leak to the terminal. stderr and the exit code pass through
+    untouched: failures must stay visible."""
+    print(f"\n=== {label} ===", flush=True)
+    r = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, text=True)
+    if r.returncode != 0:
+        sys.exit(f"install: {label} failed (rc={r.returncode})")
+    print(f"  {_summarize_bootstrap_stdout(r.stdout)}")
 
 
 def _venv_python(meeting_home: Path) -> Path:
@@ -251,7 +281,7 @@ def run_install(ctx: dict) -> None:
     print(f"  codex config: {codex_home}")
 
     # 1. bootstrap runtime (venv + zeroconf + websockets + bin/ wrappers incl. mycodex)
-    _run([sys.executable, str(BOOTSTRAP)], env, "bootstrap ~/.agent-meeting runtime")
+    _run_bootstrap([sys.executable, str(BOOTSTRAP)], env, "bootstrap ~/.agent-meeting runtime")
 
     vpy = _venv_python(meeting_home)
     if not vpy.exists():
