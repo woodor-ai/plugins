@@ -44,7 +44,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 try:
     import websockets  # noqa: F401 — used by the warm-up helper (best-effort; optional)
@@ -140,8 +140,13 @@ def _spawn_detached(cmd, log_path: Path):
     kwargs = dict(stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     if IS_WINDOWS:
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — survive console events,
-        # stay killable by pid.
-        kwargs["creationflags"] = 0x00000008 | 0x00000200
+        # stay killable by pid. CREATE_NO_WINDOW on top: under Windows Terminal /
+        # ConPTY hosts, DETACHED_PROCESS alone has been observed to still pop a
+        # visible console for a python.exe child (real-machine report: a blank
+        # console stayed open running venv/Scripts/python.exe with no output) --
+        # CREATE_NO_WINDOW is the flag every other short-lived subprocess call in
+        # this codebase already relies on for a guaranteed-invisible launch.
+        kwargs["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen(cmd, **kwargs)
@@ -400,6 +405,41 @@ def _build_codex_launch_cmd(ws_addr: str, thread_id):
     return ["codex", "--remote", ws_addr]
 
 
+# ---------------------------------------------------------------------------
+# Terminal window title (POSIX only): codex's TUI has no programmable status
+# bar (unlike Claude Code's), so the identity cue is the terminal window/tab
+# title instead — set once, right before the foreground codex TUI takes over.
+# ASCII-only (no emoji): old cmd.exe/conhost consoles can render emoji as
+# garbage glyphs and there is no reliable way to detect the host terminal, so
+# plain ASCII is the safe default. On Windows this is set by mycodex-impl.ps1
+# (via $Host.UI.RawUI.WindowTitle) before it invokes this launcher — that
+# script does not have codex-meeting's fully-resolved control_url (mDNS
+# discovery lives here), but has the same name/control_url defaults, which is
+# enough for the cosmetic title.
+# ---------------------------------------------------------------------------
+_DEFAULT_TITLE = "codex"
+
+
+def _title_text(name: str, control_url: str) -> str:
+    hostport = ""
+    if control_url:
+        u = urlparse(control_url)
+        if u.hostname and u.port:
+            hostport = f"{u.hostname}:{u.port}"
+    return f"[meeting] {name} | {hostport}" if hostport else f"[meeting] {name}"
+
+
+def _set_terminal_title(title: str):
+    if IS_WINDOWS:
+        return
+    try:
+        with open("/dev/tty", "w", encoding="ascii", errors="replace") as tty:
+            tty.write(f"\033]0;{title}\a")
+            tty.flush()
+    except OSError:
+        pass
+
+
 class Launcher:
     def __init__(self, name, preferred_port, control_url):
         self.name = name
@@ -485,6 +525,7 @@ class Launcher:
     def run_codex(self):
         ws_addr = f"ws://127.0.0.1:{self.port}"
         cmd = _build_codex_launch_cmd(ws_addr, self.warm_thread_id)
+        _set_terminal_title(_title_text(self.name, self.control_url))
         _log(f"launching foreground: {' '.join(cmd)}  (Ctrl-C to end + teardown)")
         try:
             subprocess.run(cmd)
@@ -497,6 +538,9 @@ class Launcher:
             return
         self._torn_down = True
         _log("teardown")
+        # No original title to restore (no portable way to query it back from
+        # the terminal) -- reset to a plain default instead.
+        _set_terminal_title(_DEFAULT_TITLE)
         if self.bridge_proc and self.bridge_proc.poll() is None:
             _terminate(self.bridge_proc)
             _log("stopped bridge")
