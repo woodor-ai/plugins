@@ -1044,6 +1044,33 @@ def test_tc17_split_identity_read_both_halves(home_dir: str):
           and "half-2 body under wda-v3" in show_text, f"snippet={show_text[:400]!r}")
 
 
+# ---------- TC18: rename onto a name with an existing read_cursors row ----------
+
+def test_tc18_rename_cursor_collision(home_dir: str):
+    """Renaming a session to a name that ALREADY has a (historical) read_cursors
+    row must not trip the (project, member_name) UNIQUE constraint (was HTTP 500).
+    The cursor rows merge, keeping MAX(cursor) so the rename never rewinds."""
+    print("\n[TC18] rename 撞历史 read_cursors 行 → 合并取 MAX，不 500")
+
+    reg("collP", "old_cc")
+
+    # old session has read some messages (cursor=5); the TARGET name has a
+    # leftover historical cursor at 10 but no live session row (so the
+    # name-taken guard passes and the rename proceeds into the cursor migration).
+    _set_cursor(home_dir, "collP", "old_cc", 5)
+    _set_cursor(home_dir, "collP", "new_cc", 10)
+    time.sleep(0.05)
+
+    result = _http("/rename", "POST", {"project": "collP", "old": "old_cc", "new": "new_cc"},
+                   allow_error=True)
+    check("TC18: rename did not 500 / errored", result.get("ok") is True, str(result))
+
+    cur_new = _get_cursor(home_dir, "collP", "new_cc")
+    cur_old = _get_cursor(home_dir, "collP", "old_cc")
+    check("TC18: new_cc cursor merged to MAX(5,10)=10", cur_new == 10, f"cur_new={cur_new}")
+    check("TC18: old_cc cursor row gone after merge", cur_old is None, f"cur_old={cur_old}")
+
+
 # ---------- main ----------
 
 home_dir_g: str = ""  # set in main(), used by TC3/TC7 which don't pass it as param
@@ -1079,6 +1106,7 @@ def main():
             test_tc15_send_turn_hides_global_suffix()
             test_tc16_group_create_members_hides_global_suffix()
             test_tc17_split_identity_read_both_halves(home_dir)
+            test_tc18_rename_cursor_collision(home_dir)
         finally:
             proc.terminate()
             try:

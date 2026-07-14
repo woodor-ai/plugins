@@ -148,9 +148,15 @@ def main():
 
     segments = []
 
-    name = meeting_name(cwd, session_id)
+    cache = _read_statusline_cache(cwd, session_id)
+    name = cache.get("name", "")
     if name:
-        badge = f"\U0001F4DE {name}"  # 📞
+        # Show the project identity too (mirrors the `name@project` convention
+        # used everywhere else); a global identity (project='*') or a missing
+        # project renders as a bare name.
+        project = cache.get("project", "")
+        label = name if (not project or project == "*") else f"{name}@{project}"
+        badge = f"\U0001F4DE {label}"  # 📞
         ctrl = _control_label(cwd, session_id)
         if ctrl:
             badge += f" {ctrl}"

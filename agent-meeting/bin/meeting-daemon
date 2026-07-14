@@ -1227,10 +1227,27 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 messages_migrated = r1.rowcount + r2.rowcount
 
-                conn.execute(
-                    "UPDATE read_cursors SET member_name=? WHERE project=? AND member_name=?",
-                    (new, project, old),
-                )
+                # Merge the cursor row instead of a naked UPDATE: renaming to a
+                # name that already has a (historical) read_cursors row would
+                # otherwise trip the (project, member_name) UNIQUE constraint.
+                # Keep MAX(cursor) so a rename never rewinds a cursor (same
+                # semantics as the migration's read_cursors fold).
+                old_cur = conn.execute(
+                    "SELECT cursor, updated_at FROM read_cursors WHERE project=? AND member_name=?",
+                    (project, old),
+                ).fetchone()
+                if old_cur is not None:
+                    conn.execute(
+                        "INSERT INTO read_cursors (project, member_name, cursor, updated_at) VALUES (?, ?, ?, ?)"
+                        " ON CONFLICT(project, member_name) DO UPDATE SET"
+                        "  cursor=MAX(excluded.cursor, read_cursors.cursor),"
+                        "  updated_at=MAX(excluded.updated_at, read_cursors.updated_at)",
+                        (project, new, old_cur["cursor"], old_cur["updated_at"]),
+                    )
+                    conn.execute(
+                        "DELETE FROM read_cursors WHERE project=? AND member_name=?",
+                        (project, old),
+                    )
 
                 conn.execute("COMMIT")
                 return {"ok": True, "project": project, "old": old, "new": new,
