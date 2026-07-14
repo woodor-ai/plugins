@@ -433,13 +433,17 @@ _DEFAULT_TITLE = "codex"
 _TITLE_REFRESH_INTERVAL_S = 5.0
 
 
-def _title_text(name: str, control_url: str) -> str:
+def _title_text(name: str, project: str, control_url: str) -> str:
+    # Show the session identity as name@project (bare name for a global '*'
+    # identity or when project is unknown), the same convention the statusline
+    # and peer displays use. No "[meeting]" prefix.
+    label = name if (not project or project == "*") else f"{name}@{project}"
     hostport = ""
     if control_url:
         u = urlparse(control_url)
         if u.hostname and u.port:
             hostport = f"{u.hostname}:{u.port}"
-    return f"[meeting] {name} | {hostport}" if hostport else f"[meeting] {name}"
+    return f"{label} | {hostport}" if hostport else label
 
 
 def _set_terminal_title(title: str):
@@ -482,10 +486,11 @@ class _TitlePinner:
 
 
 class Launcher:
-    def __init__(self, name, preferred_port, control_url):
+    def __init__(self, name, preferred_port, control_url, project=""):
         self.name = name
         self.preferred_port = preferred_port
         self.control_url = control_url
+        self.project = project
         self.port = None
         self.appserver_proc = None      # our app-server Popen (None if reused)
         self.bridge_proc = None
@@ -566,7 +571,7 @@ class Launcher:
     def run_codex(self):
         ws_addr = f"ws://127.0.0.1:{self.port}"
         cmd = _build_codex_launch_cmd(ws_addr, self.warm_thread_id)
-        pinner = _TitlePinner(_title_text(self.name, self.control_url))
+        pinner = _TitlePinner(_title_text(self.name, self.project, self.control_url))
         pinner.start()
         _log(f"launching foreground: {' '.join(cmd)}  (Ctrl-C to end + teardown)")
         try:
@@ -662,7 +667,16 @@ def main():
             _log(f"--proj: cached project '{proj}' for root {root}")
 
     control_url = args.control_url or _default_control_url()
-    launcher = Launcher(name, args.port, control_url)
+    # Project for the terminal-title label — the same value this session will
+    # register under (derive_project reads the --proj cache just written above,
+    # or falls back to the cwd-based identity).
+    title_project = ""
+    if meeting_common is not None:
+        try:
+            title_project = meeting_common.derive_project(os.getcwd())
+        except Exception:
+            title_project = ""
+    launcher = Launcher(name, args.port, control_url, title_project)
     stop_event = threading.Event()
 
     def _sig(_signum, _frame):
