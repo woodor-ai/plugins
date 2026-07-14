@@ -789,7 +789,24 @@ def cmd_online(args):
         else:
             print("online: --cwd is required (unless --global)", file=sys.stderr)
             sys.exit(2)
-    project = "*" if is_global else _derive_project(cwd)
+
+    explicit_proj = getattr(args, "proj", None)
+    if is_global:
+        project = "*"
+    elif explicit_proj is not None:
+        project = explicit_proj.strip()
+        if not project:
+            print("online: --proj must not be empty", file=sys.stderr)
+            sys.exit(2)
+        if project == "*":
+            print("online: --proj cannot be '*' (reserved for --global)", file=sys.stderr)
+            sys.exit(2)
+        if any(c.isspace() or ord(c) < 0x20 for c in project):
+            print(f"online: --proj {explicit_proj!r} must not contain whitespace or control characters",
+                  file=sys.stderr)
+            sys.exit(2)
+    else:
+        project = _derive_project(cwd)
     host_name = socket.gethostname()
 
     explicit_host = getattr(args, "host", None)
@@ -815,6 +832,12 @@ def cmd_online(args):
     # since that override is transient and shouldn't be persisted.
     if not os.environ.get("MEETING_HOST"):
         _write_control_cache(host)
+
+    # Explicit --proj declarations stick per repo root so future sessions in
+    # this same repo (this machine or a clone elsewhere with the same
+    # home-relative layout) don't have to re-type it.
+    if explicit_proj is not None and not is_global:
+        meeting_common.proj_cache_set(meeting_common._project_root(cwd), project)
 
     display = name if project == "*" else f"{name}@{project}"
     print(f"online: {display} (cwd={cwd}, host={host_name})")
@@ -1467,6 +1490,8 @@ def main():
     s.add_argument("--director", action="store_true")
     s.add_argument("--global", dest="is_global", action="store_true",
                    help="register as global identity (project='*'), skips cwd project derivation")
+    s.add_argument("--proj", default=None,
+                   help="explicit project identity; bypasses folder-based derivation and is cached per repo root")
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_online)
 

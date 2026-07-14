@@ -40,11 +40,14 @@ _parser.add_argument("--director", action="store_true", default=False,
                      help="register this session as director role (default: worker)")
 _parser.add_argument("--global", dest="is_global", action="store_true", default=False,
                      help="register as global identity (project='*'), skips cwd project derivation")
+_parser.add_argument("--proj", default=None,
+                     help="explicit project identity passed through to `meeting online` on every (re)register")
 _args = _parser.parse_args()
 
 SELF = _args.name
 IS_DIRECTOR = _args.director
 IS_GLOBAL = _args.is_global
+IS_PROJ = _args.proj
 HOME = Path.home()
 _MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
 DATA = Path(_MEETING_HOME_ENV) if _MEETING_HOME_ENV else HOME / ".agent-meeting"
@@ -73,8 +76,16 @@ PID_FILE = RUN_DIR / f"{SELF}.pid"
 _derive_project = meeting_common.derive_project
 
 
-# Derive project once at startup from cwd — stored for WS handshake
-_PROJECT = "*" if IS_GLOBAL else _derive_project(_CWD)
+# Derive project once at startup from cwd — stored for WS handshake. An
+# explicit --proj bypasses derivation directly (mirrors `meeting online
+# --proj`) so the very first run picks it up before _register() has had a
+# chance to write the proj cache that derive_project() would otherwise read.
+if IS_GLOBAL:
+    _PROJECT = "*"
+elif IS_PROJ:
+    _PROJECT = IS_PROJ
+else:
+    _PROJECT = _derive_project(_CWD)
 
 
 def _run_meeting(*extra_args):
@@ -93,6 +104,8 @@ def _register():
     extra = ["--director"] if IS_DIRECTOR else []
     if IS_GLOBAL:
         extra.append("--global")
+    if IS_PROJ:
+        extra += ["--proj", IS_PROJ]
     # Best-effort: this runs on EVERY ws reconnect (see the connect loop), and a
     # reconnect often coincides with the control having just restarted — TCP is
     # back up but the daemon is still busy, so `online` can hang the full 15s and

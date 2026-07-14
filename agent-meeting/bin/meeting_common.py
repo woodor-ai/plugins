@@ -38,19 +38,20 @@ import sys
 import time
 
 
+MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
+
+
 # ---------------------------------------------------------------------------
 # Project name derivation
 # ---------------------------------------------------------------------------
 
-def derive_project(cwd: str) -> str:
-    """Derive a stable project name from the main git working tree.
+def _project_root(cwd: str) -> str:
+    """Resolve the stable identity root for cwd: the main git repo's root dir
+    (parent of ``--git-common-dir``, so a worktree converges on its main repo
+    instead of the worktree directory), or the normalized cwd for non-git dirs.
 
-    Uses ``--git-common-dir`` (not ``--show-toplevel``) so a git worktree
-    resolves to its MAIN repo identity instead of the worktree directory name.
-    Otherwise a session running inside a worktree gets a per-command identity
-    that diverges from its registered/online identity, and peer messages land
-    in a room it can never read. Falls back to the cwd basename for non-git
-    directories.
+    Shared by derive_project() and `meeting online`'s explicit --proj cache
+    write, so the two never compute "the root" two different ways.
     """
     try:
         result = subprocess.run(
@@ -60,13 +61,72 @@ def derive_project(cwd: str) -> str:
         if result.returncode == 0:
             common_dir = result.stdout.strip()
             if common_dir:
-                # common_dir is the main repo's .git dir; its parent is the repo root
-                name = os.path.basename(os.path.dirname(os.path.normpath(common_dir)))
-                if name:
-                    return "_" if name == "*" else name
+                return os.path.dirname(os.path.normpath(common_dir))
     except Exception:
         pass
-    name = os.path.basename(os.path.normpath(cwd))
+    return os.path.normpath(cwd)
+
+
+def proj_cache_path(root: str) -> str:
+    """Path to the cached explicit --proj declaration for a given repo root."""
+    key = hashlib.sha1(os.path.normpath(root).encode("utf-8", "replace")).hexdigest()[:16]
+    return os.path.join(MEETING_HOME, "projcache", key)
+
+
+def proj_cache_get(root: str):
+    """Return the cached proj for root, or None if never declared."""
+    try:
+        with open(proj_cache_path(root)) as f:
+            val = f.read().strip()
+            return val or None
+    except Exception:
+        return None
+
+
+def proj_cache_set(root: str, proj: str) -> None:
+    """Cache an explicit --proj declaration for root. Best-effort."""
+    try:
+        path = proj_cache_path(root)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(proj)
+    except Exception:
+        pass
+
+
+def derive_project(cwd: str) -> str:
+    """Derive this session's project identity for cwd.
+
+    1. Resolve the repo root (see _project_root).
+    2. If an explicit --proj was ever declared for that root (`meeting online
+       --proj ...`), return the cached value -- explicit declaration always
+       wins over folder-based guessing.
+    3. Otherwise fall back to the root's home-relative path (e.g.
+       /Users/tommyclaw/AIAgent/wda-v3 -> ~/AIAgent/wda-v3 on macOS/Linux; the
+       full path as-is on Windows). This deliberately erases the username so
+       the same relative repo layout matches across machines, unlike the old
+       basename-only derivation which split identity when the same repo was
+       cloned into differently-named folders.
+
+    Never returns "*" (reserved for --global); maps to "_" instead.
+    """
+    root = _project_root(cwd)
+
+    cached = proj_cache_get(root)
+    if cached:
+        return cached
+
+    if sys.platform.startswith("win"):
+        name = root
+    else:
+        home = os.path.expanduser("~")
+        if root == home:
+            name = "~"
+        elif root.startswith(home + os.sep):
+            name = "~" + root[len(home):]
+        else:
+            name = root
+
     return "_" if name == "*" else name
 
 

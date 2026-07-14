@@ -46,7 +46,7 @@ The first word after `/meeting` decides what to do:
 | `/meeting setup daemon [status\|stop\|restart]` | Manage the LAN-sharing daemon — see "On `/meeting setup daemon`" below. |
 | `/meeting setup token [<value>\|clear]` | Run `~/.agent-meeting/bin/meeting token [<value>\|clear]`. On the **host** machine with no args: generates a token (if none exists) and prints it — distribute this to every client. On a **client** machine with `<value>`: writes the host's token into local config. `clear` removes the token and returns the daemon to open mode. Note: the token is printed to the terminal and may appear in shell history — treat it like a password. After success, output: `✅ Token written to local config. All subsequent communications with other agents this session will carry this token for auth.` |
 | `/meeting setup telemetry on\|off\|status` | Run `~/.agent-meeting/bin/meeting telemetry <action>` and paste the one-line output to the user. |
-| `/meeting <name>` | Register this session as `<name>` (see "On `/meeting <name>`" below) |
+| `/meeting <name> [--proj=<proj>]` | Register this session as `<name>` (see "On `/meeting <name>`" below). Optional `--proj=<proj>` sets an explicit project identity instead of folder-based derivation. |
 
 Reserved words `list`, `delete`, `rename`, `stop`, `setup`, `help`, `controls`, `daemon`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
 
@@ -55,7 +55,7 @@ Reserved words `list`, `delete`, `rename`, `stop`, `setup`, `help`, `controls`, 
 Print the following usage summary verbatim (no CLI calls, no state change):
 
 ```
-/meeting <name>                          — 注册本会话为 <name>，安装 monitor
+/meeting <name> [--proj=<proj>]          — 注册本会话为 <name>，安装 monitor（可选 --proj 指定项目身份）
 /meeting list                            — 列出所有会话状态 + control 节点
 /meeting delete <peer>                   — 删除与 <peer> 的房间（需确认）
 /meeting rename <new>                    — 重命名本会话为 <new>，迁移房间消息并重启 monitor
@@ -95,12 +95,12 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
    - **1 control**: proceed to register against that control automatically. Report one line: `🛰 Connected to agent-meeting-control: <host> (<ip>:<port>)`.
    - **2+ controls**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on the one marked `★ 当前`. Do NOT add any language implying multiple controls is unusual or an error — it is a valid multi-machine office topology.
 
-2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20.
+2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20. If the user wrote `/meeting <name> --proj=<proj>`, parse `<proj>` out of the invocation (it is not part of `<name>`).
 3. **Register**: call the CLI online subcommand. When a specific control was chosen in step 1, pass `--host <url>`. Per the per-OS rule at the top:
-   - macOS/Linux: `~/.agent-meeting/bin/meeting online <name> --cwd <cwd> [--host <url>] [--director]`
-   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" online <name> --cwd <cwd> [--host <url>] [--director]`
+   - macOS/Linux: `~/.agent-meeting/bin/meeting online <name> --cwd <cwd> [--host <url>] [--director] [--proj=<proj>]`
+   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" online <name> --cwd <cwd> [--host <url>] [--director] [--proj=<proj>]`
 
-   Pass `--director` to register this session as a director role (default: worker).
+   Pass `--director` to register this session as a director role (default: worker). Pass `--proj=<proj>` only when the user supplied it — it bypasses folder-based project derivation and is cached per repo root for future registrations there.
 
    The command exits 0 on success. On non-zero exit (name taken, monitor heartbeat still recent) surface the error to the user and abort — do not proceed to monitor install. Use `--force` only if the user explicitly asks to take over.
 4. **Initialize DB** (idempotent): `~/.agent-meeting/bin/meeting init`
@@ -110,6 +110,8 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
    - `command`: **Monitor tool always runs in bash**. macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`. Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name>` — expand `<username>` to the real Windows username, use forward slashes, no `&`, no `%USERPROFILE%` or `$env:` vars. The monitor calls the `meeting` CLI wrapper directly (no interpreter prefix), so the wrapper's venv python handles `zeroconf` for LAN discovery.
 
    **角色透传（用户无感）**：当本次注册（第 3 步）传了 `--director` 时，monitor 命令末尾追加 ` --director`；worker 不加。两种 OS 形式均适用。例：macOS/Linux director: `python3 ~/.agent-meeting/bin/monitor.py <name> --director`。Windows director: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name> --director`。此 flag 由 skill 内部透传，用户不需要、也不应该手动传给 monitor。
+
+   **`--proj` 透传**：当本次注册（第 3 步）传了 `--proj=<proj>` 时，monitor 命令末尾追加 ` --proj=<proj>`（未传则不加）。两种 OS 形式均适用，与 `--director` 透传规则并列、互不影响，可同时出现。例：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name> --proj=<proj>`。Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name> --proj=<proj>`。monitor 在每次 (re)register 时都会重新带上这个 `--proj`，确保 daemon 重启后的自动重连仍然声明同一个项目身份。
 
    The monitor script (cross-platform Python) handles:
    - Calling `meeting online <name> --cwd <cwd>` on startup (writes into central sessions table) and `meeting offline <name>` on exit (atexit + SIGINT/SIGTERM)

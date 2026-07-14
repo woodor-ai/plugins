@@ -782,16 +782,17 @@ def test_tc11_global_priority_over_scoped():
 # ---------- TC12: _derive_project sanitizes basename=='*' ----------
 
 def test_tc12_derive_project_sanitizes_star():
-    """_derive_project must never return '*'; a cwd ending in '/*' must yield '_'.
+    """_derive_project must never return '*'.
 
     Also verifies the --git-common-dir implementation: a git worktree must resolve
-    to the main repo name, not the worktree directory name.
+    to the main repo's home-relative path, not the worktree directory's.
     """
-    print("\n[TC12] _derive_project 清洗 basename=='*' + worktree 收敛到主仓名")
+    print("\n[TC12] _derive_project 清洗 '*' + worktree 收敛到主仓 home-relative 路径")
 
-    # Replicate the current --git-common-dir implementation used by both
-    # codex-bridge.py and monitor.py (v0.8.38+). The old --show-toplevel version
-    # would fail the worktree sub-test below.
+    # Replicate the current --git-common-dir + home-relative-path implementation
+    # used by both codex-bridge.py and monitor.py (v0.8.54+, explicit --proj
+    # cache takes priority when present; this replica has no cache so it always
+    # exercises the fallback derivation).
     def _derive_project_impl(cwd: str) -> str:
         try:
             result = subprocess.run(
@@ -801,15 +802,27 @@ def test_tc12_derive_project_sanitizes_star():
             if result.returncode == 0:
                 common_dir = result.stdout.strip()
                 if common_dir:
-                    name = os.path.basename(os.path.dirname(os.path.normpath(common_dir)))
-                    if name:
-                        return "_" if name == "*" else name
+                    root = os.path.dirname(os.path.normpath(common_dir))
+                else:
+                    root = os.path.normpath(cwd)
+            else:
+                root = os.path.normpath(cwd)
         except Exception:
-            pass
-        name = os.path.basename(os.path.normpath(cwd))
+            root = os.path.normpath(cwd)
+
+        if sys.platform.startswith("win"):
+            name = root
+        else:
+            home = os.path.expanduser("~")
+            if root == home:
+                name = "~"
+            elif root.startswith(home + os.sep):
+                name = "~" + root[len(home):]
+            else:
+                name = root
         return "_" if name == "*" else name
 
-    # Non-git fallback path: cwd whose basename is '*' must yield '_'
+    # Non-git fallback path: a cwd literally named '*' must never resolve to '*'
     star_parent = tempfile.mkdtemp(prefix="tc12-")
     star_dir = os.path.join(star_parent, "*")
     os.makedirs(star_dir, exist_ok=True)
@@ -817,13 +830,11 @@ def test_tc12_derive_project_sanitizes_star():
         result = _derive_project_impl(star_dir)
         check("TC12: _derive_project cwd='<tmp>/*' != '*'", result != "*",
               f"got {result!r}")
-        check("TC12: _derive_project cwd='<tmp>/*' == '_'", result == "_",
-              f"got {result!r}")
     finally:
         shutil.rmtree(star_parent, ignore_errors=True)
 
     # Worktree convergence: _derive_project from a worktree must return the MAIN
-    # repo's basename, not the worktree directory's basename.
+    # repo's home-relative path, not the worktree directory's.
     main_dir = tempfile.mkdtemp(prefix="tc12-main-")
     wt_dir = tempfile.mkdtemp(prefix="tc12-wt-")
     try:
@@ -841,9 +852,14 @@ def test_tc12_derive_project_sanitizes_star():
             capture_output=True,
         )
         if r_wt.returncode == 0:
-            expected = os.path.basename(os.path.normpath(main_dir))
+            # Compare against _derive_project_impl(main_dir) itself rather than
+            # recomputing home-relative-ness from main_dir directly: git resolves
+            # symlinks in --git-common-dir's absolute path (e.g. macOS /tmp ->
+            # /private/tmp), so the expected value must go through the same git
+            # call to match.
+            expected = _derive_project_impl(main_dir)
             got = _derive_project_impl(wt_dir)
-            check("TC12: worktree resolves to main repo name (not worktree dir name)",
+            check("TC12: worktree resolves to main repo home-relative path (not worktree dir)",
                   got == expected, f"got {got!r}, expected {expected!r}")
         else:
             print(f"  [TC12] SKIP worktree sub-test (git worktree add failed: "
@@ -854,7 +870,7 @@ def test_tc12_derive_project_sanitizes_star():
         shutil.rmtree(main_dir, ignore_errors=True)
         shutil.rmtree(wt_dir, ignore_errors=True)
 
-    # Sentinel: _derive_project(non-git-dir) returns cwd basename, never '*'
+    # Sentinel: _derive_project(non-git-dir) returns a home-relative path, never '*'
     check("TC12: sentinel unreachable via _derive_project", True)
 
 
