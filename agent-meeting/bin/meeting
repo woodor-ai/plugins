@@ -890,6 +890,28 @@ def _win_pid_alive(pid: int) -> bool:
     return code.value == 259  # STILL_ACTIVE
 
 
+def _pid_alive(pid: int) -> bool:
+    """Cross-platform liveness probe.
+
+    On POSIX, ``os.kill(pid, 0)`` sends the no-op signal 0 — a pure liveness
+    check. On Windows there is NO signal-0 semantics: ``os.kill`` maps any
+    non-CTRL signal to TerminateProcess, so ``os.kill(pid, 0)`` would HARD-KILL
+    the target and then raise WinError 87. Never use signal 0 as a probe there —
+    query the process via OpenProcess instead.
+    """
+    if sys.platform.startswith("win"):
+        return _win_pid_alive(pid)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    except OSError:
+        return False
+
+
 def _read_pid(path: str) -> int:
     try:
         with open(path) as f:
@@ -1370,9 +1392,7 @@ def cmd_stop(args):
         print(f"could not read pidfile: {e}", file=sys.stderr)
         sys.exit(1)
 
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    if not _pid_alive(pid):
         try:
             os.remove(pid_file)
         except Exception:
@@ -1385,9 +1405,7 @@ def cmd_stop(args):
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
         time.sleep(0.1)
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_alive(pid):
             print(f"stopped monitor: {args.name} (pid {pid})")
             return
 
