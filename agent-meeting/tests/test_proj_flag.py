@@ -8,6 +8,11 @@ Covers meeting_common's proj cache + derive_project fallback, no daemon needed:
   2. With no cache and no git, derive_project() falls back to a home-relative
      path (starts with '~' on posix when cwd is under $HOME) and never '*'.
   3. proj_cache_get() returns None for a root that was never cached.
+  4. validate_proj() accepts a valid value (stripped) and rejects empty,
+     whitespace-only, '*', and whitespace/control-char-containing values.
+  5. The codex-meeting --proj cache write is equivalent to `meeting online
+     --proj`'s: proj_cache_set(_project_root(root), validate_proj(x)) makes
+     derive_project(root) return x.
 
 Usage:
     python3 agent-meeting/tests/test_proj_flag.py
@@ -74,6 +79,27 @@ def main():
             check("(c) proj_cache_get returns None for uncached root", got is None, f"got {got!r}")
         finally:
             shutil.rmtree(root_c, ignore_errors=True)
+
+        # (d) validate_proj: accepts a valid value, rejects invalid ones
+        got = meeting_common.validate_proj("  my-proj  ")
+        check("(d) validate_proj strips a valid value", got == "my-proj", f"got {got!r}")
+        for bad in ("", "   ", "*", "has space", "has\tcontrol"):
+            try:
+                meeting_common.validate_proj(bad)
+                check(f"(d) validate_proj rejects {bad!r}", False, "did not raise")
+            except ValueError:
+                check(f"(d) validate_proj rejects {bad!r}", True)
+
+        # (e) codex-meeting's --proj cache write == meeting online --proj's
+        root_e = tempfile.mkdtemp(prefix="am-proj-root-e-")
+        try:
+            proj = meeting_common.validate_proj("myproj")
+            meeting_common.proj_cache_set(meeting_common._project_root(root_e), proj)
+            got = meeting_common.derive_project(root_e)
+            check("(e) codex-meeting cache write makes derive_project return the declared proj",
+                  got == "myproj", f"got {got!r}")
+        finally:
+            shutil.rmtree(root_e, ignore_errors=True)
     finally:
         shutil.rmtree(meeting_home, ignore_errors=True)
 

@@ -63,7 +63,7 @@ no; answer `y` to enable it.
 ## Run a bridged live session
 
 ```
-mycodex [<name>] [--port N] [--control-url URL]
+mycodex [<name>] [--port N] [--control-url URL] [--proj X]
 ```
 
 This starts the app-server + bridge in the background and drops you into a live
@@ -71,6 +71,10 @@ This starts the app-server + bridge in the background and drops you into a live
 your session and the reply goes back to the peer. Exit the TUI (or Ctrl-C) to
 tear everything down. If agent-meeting is not installed yet, `mycodex` reports
 that clearly and tells you to run `mycodex --update` first.
+
+`--proj X` declares an explicit project identity for this repo root (symmetric
+with `/meeting <name> --proj=<x>` in Claude Code) — it's cached per repo root so
+registration and the bridge both pick it up without re-typing it every session.
 
 ## Known limitations
 

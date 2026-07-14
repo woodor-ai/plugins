@@ -794,16 +794,10 @@ def cmd_online(args):
     if is_global:
         project = "*"
     elif explicit_proj is not None:
-        project = explicit_proj.strip()
-        if not project:
-            print("online: --proj must not be empty", file=sys.stderr)
-            sys.exit(2)
-        if project == "*":
-            print("online: --proj cannot be '*' (reserved for --global)", file=sys.stderr)
-            sys.exit(2)
-        if any(c.isspace() or ord(c) < 0x20 for c in project):
-            print(f"online: --proj {explicit_proj!r} must not contain whitespace or control characters",
-                  file=sys.stderr)
+        try:
+            project = meeting_common.validate_proj(explicit_proj)
+        except ValueError as e:
+            print(f"online: {e}", file=sys.stderr)
             sys.exit(2)
     else:
         project = _derive_project(cwd)

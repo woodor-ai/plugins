@@ -3,7 +3,7 @@
 agent-meeting: codex-meeting launcher — one command to run a bridged, live codex
 interactive session (form-B "live session wake").
 
-    codex-meeting <name> [--port N] [--control-url URL]
+    codex-meeting <name> [--port N] [--control-url URL] [--proj X]
 
 Wires the whole chain and owns its lifecycle:
   1. Pick a port (default 8790). If a codex app-server is already there, reuse it
@@ -632,6 +632,9 @@ def main():
     ap.add_argument("--port", type=int, default=8790, help="app-server port (default 8790)")
     ap.add_argument("--control-url", default="",
                     help="agent-meeting control base url (default: the one saved at install time)")
+    ap.add_argument("--proj", default=None,
+                    help="explicit project identity for this codex session; cached per repo root so "
+                         "registration + bridge pick it up (symmetric with /meeting --proj)")
     ap.add_argument("--no-codex", action="store_true",
                     help="setup + hold + teardown without the foreground codex (testing)")
     args = ap.parse_args()
@@ -644,6 +647,20 @@ def main():
         sys.exit(5)
 
     name = args.name or _default_name()
+
+    if args.proj is not None:
+        if meeting_common is None:
+            _log("--proj given but meeting_common is unavailable; cannot cache project identity")
+        else:
+            try:
+                proj = meeting_common.validate_proj(args.proj)
+            except ValueError as e:
+                _log(str(e))
+                sys.exit(2)
+            root = meeting_common._project_root(os.getcwd())
+            meeting_common.proj_cache_set(root, proj)
+            _log(f"--proj: cached project '{proj}' for root {root}")
+
     control_url = args.control_url or _default_control_url()
     launcher = Launcher(name, args.port, control_url)
     stop_event = threading.Event()

@@ -4,7 +4,7 @@
 #   mycodex --update                     pull (or clone) woodor-ai/plugins and
 #                                         rerun the interactive installer; any
 #                                         extra args are forwarded to it.
-#   mycodex [<name>] [--port N] [--control-url URL] [--no-codex]
+#   mycodex [<name>] [--port N] [--control-url URL] [--proj X] [--no-codex]
 #                                         start (or resume) a bridged codex
 #                                         session — needs agent-meeting installed
 #                                         (run `mycodex --update` first).

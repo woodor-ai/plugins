@@ -94,6 +94,24 @@ def proj_cache_set(root: str, proj: str) -> None:
         pass
 
 
+def validate_proj(proj: str) -> str:
+    """Validate an explicit --proj declaration and return its stripped value.
+
+    Raises ValueError if proj is empty after stripping, is "*" (reserved for
+    --global), or contains whitespace/control characters. Shared by `meeting
+    online`'s --proj handling and codex-meeting.py's --proj cache write, so
+    the two enforce the exact same rule.
+    """
+    stripped = proj.strip()
+    if not stripped:
+        raise ValueError("--proj must not be empty")
+    if stripped == "*":
+        raise ValueError("--proj cannot be '*' (reserved for --global)")
+    if any(c.isspace() or ord(c) < 0x20 for c in stripped):
+        raise ValueError(f"--proj {proj!r} must not contain whitespace or control characters")
+    return stripped
+
+
 def derive_project(cwd: str) -> str:
     """Derive this session's project identity for cwd.
 
