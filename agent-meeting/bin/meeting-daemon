@@ -327,12 +327,22 @@ def db():
         conn.close()
 
 
-def _conversation_clause(a_project: str, a_name: str, b_project: str, b_name: str) -> tuple[str, list]:
+def _conversation_clause(a_name: str, b_name: str) -> tuple[str, list]:
+    """Match a 1:1 conversation by participant NAMES only, project-agnostic.
+
+    Project is a storage/display attribute, NOT part of room identity. A session
+    running inside a git worktree can have its derived project drift (worktree
+    dir name vs main-repo name) across versions/commands; keying the room on
+    (project, name) then splits one conversation into halves that each side
+    cannot read (the body is in the DB but filtered out on the mismatched
+    project). A name is the stable session handle — /resolve enforces uniqueness
+    for a bare name and rename migrates it — so the room is the set of messages
+    between the two names in either direction, whatever project each row carries.
+    """
     clause = (
-        "((sender_project=? AND sender=? AND recipient_project=? AND recipient=?)"
-        " OR (sender_project=? AND sender=? AND recipient_project=? AND recipient=?))"
+        "((sender=? AND recipient=?) OR (sender=? AND recipient=?))"
     )
-    return clause, [a_project, a_name, b_project, b_name, b_project, b_name, a_project, a_name]
+    return clause, [a_name, b_name, b_name, a_name]
 
 
 def _is_group(conn, project: str, name: str) -> bool:
@@ -876,7 +886,7 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "project": project, "name": name}
 
     def _turn(self, self_project: str, self_name: str, peer_project: str, peer_name: str):
-        clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
+        clause, params = _conversation_clause(self_name, peer_name)
         with db() as conn:
             row = conn.execute(
                 f"SELECT recipient, recipient_project FROM messages WHERE {clause} ORDER BY id DESC LIMIT 1",
@@ -906,7 +916,7 @@ class Handler(BaseHTTPRequestHandler):
                     lines.append("")
                 return "\n".join(lines)
 
-        clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
+        clause, params = _conversation_clause(self_name, peer_name)
         turn = self._turn(self_project, self_name, peer_project, peer_name)
         with db() as conn:
             msgs = conn.execute(
@@ -935,7 +945,7 @@ class Handler(BaseHTTPRequestHandler):
             clause = "recipient_project=? AND recipient=?"
             params = [peer_project, peer_name]
         else:
-            clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
+            clause, params = _conversation_clause(self_name, peer_name)
         if since:
             clause += " AND id > ?"
             params.append(since)
@@ -1230,7 +1240,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise
 
     def _delete(self, self_project: str, self_name: str, peer_project: str, peer_name: str):
-        clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
+        clause, params = _conversation_clause(self_name, peer_name)
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:

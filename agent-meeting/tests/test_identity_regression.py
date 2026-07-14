@@ -448,8 +448,10 @@ def test_tc3_explicit_routing():
 # ---------- TC4: delete scoped to project ----------
 
 def test_tc4_delete_scoped():
-    """DELETE /conversation for projA<->projB must not touch projA internal messages."""
-    print("\n[TC4] delete 限定 project pair")
+    """DELETE /conversation is scoped by the participant NAME pair (project-agnostic
+    since the read/delete room is keyed on names only). Deleting the u1<->u1
+    conversation must not touch the u1<->u2 conversation (different recipient name)."""
+    print("\n[TC4] delete 限定 name pair")
 
     reg("dA", "u1")
     reg("dB", "u1")
@@ -962,6 +964,70 @@ def test_tc16_group_create_members_hides_global_suffix():
           f"members={members}")
 
 
+# ---------- TC17: split sender_project — read must return BOTH halves ----------
+
+def test_tc17_split_identity_read_both_halves(home_dir: str):
+    """Regression for the 'send succeeds but peer reads empty' bug.
+
+    A worktree session (wdav3-laptop) had its derived project drift between the
+    worktree dir name (WoodorAudit, --show-toplevel) and the main-repo name
+    (wda-v3, --git-common-dir) across versions, so its messages to wdav3 landed
+    under two different sender_project values. The old project-keyed room clause
+    filtered out whichever half did not match the currently-resolved peer project
+    → recipient reads empty even though the body is in the DB.
+
+    The room is now keyed on names only, so a read must surface BOTH halves
+    regardless of which project value the caller passes for the peer.
+    """
+    print("\n[TC17] sender_project 分裂 → 读侧两半都可读（本 bug 回归）")
+
+    reg("wda-v3", "wdav3")  # recipient, main-repo identity
+
+    now = int(time.time())
+    conn = _db(home_dir)
+    # Half 1: sender resolved to the worktree dir name (old --show-toplevel)
+    conn.execute(
+        "INSERT INTO messages (sender_project, sender, recipient_project, recipient, kind, body, ask, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+        ("WoodorAudit", "wdav3-laptop", "wda-v3", "wdav3", "消息", "half-1 body under WoodorAudit", now - 50),
+    )
+    id_a = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    # Half 2: same session, sender resolved to the main-repo name (new --git-common-dir)
+    conn.execute(
+        "INSERT INTO messages (sender_project, sender, recipient_project, recipient, kind, body, ask, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+        ("wda-v3", "wdav3-laptop", "wda-v3", "wdav3", "消息", "half-2 body under wda-v3", now - 10),
+    )
+    id_b = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.close()
+
+    # Recipient reads the room. Regardless of which project the caller resolved
+    # the peer to, BOTH halves must be returned.
+    for peer_proj in ("WoodorAudit", "wda-v3"):
+        msgs = _http("/read", params={
+            "self_project": "wda-v3", "self": "wdav3",
+            "peer_project": peer_proj, "peer": "wdav3-laptop",
+            "limit": 20, "since": 0,
+        })
+        ids = {m["id"] for m in msgs}
+        check(f"TC17: read (peer_project={peer_proj}) returns half-1", id_a in ids,
+              f"ids={ids}")
+        check(f"TC17: read (peer_project={peer_proj}) returns half-2", id_b in ids,
+              f"ids={ids}")
+        bodies = {m["body"] for m in msgs}
+        check(f"TC17: half bodies present (peer_project={peer_proj})",
+              "half-1 body under WoodorAudit" in bodies and "half-2 body under wda-v3" in bodies,
+              f"bodies={bodies}")
+
+    # /show must also render both halves (project-agnostic room).
+    show_url = (f"http://{HOST}:{TEST_PORT}/show?"
+                "self_project=wda-v3&self=wdav3&peer_project=WoodorAudit&peer=wdav3-laptop&limit=20")
+    with urllib.request.urlopen(show_url, timeout=5) as _r:
+        show_text = _r.read().decode("utf-8")
+    check("TC17: show renders both halves", "half-1 body under WoodorAudit" in show_text
+          and "half-2 body under wda-v3" in show_text, f"snippet={show_text[:400]!r}")
+
+
 # ---------- main ----------
 
 home_dir_g: str = ""  # set in main(), used by TC3/TC7 which don't pass it as param
@@ -996,6 +1062,7 @@ def main():
             test_tc14_group_members_hides_global_suffix()
             test_tc15_send_turn_hides_global_suffix()
             test_tc16_group_create_members_hides_global_suffix()
+            test_tc17_split_identity_read_both_halves(home_dir)
         finally:
             proc.terminate()
             try:
