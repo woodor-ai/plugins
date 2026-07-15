@@ -1,5 +1,5 @@
 {
-  "description": "Cost-control hooks: auto-handoff on Stop, truncate oversized Bash/Read output on PostToolUse, intercept main-agent image reads on PreToolUse.",
+  "description": "Cost-control hooks: auto-handoff on Stop, truncate oversized Bash/Read output on PostToolUse, intercept main-agent image reads and main-agent Edit/Write calls on PreToolUse.",
   "hooks": {
     "Stop": [
       {
@@ -30,6 +30,15 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/image-delegate.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/image-delegate.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/image-delegate.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/edit-delegate.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/edit-delegate.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/edit-delegate.py\""
           }
         ]
       }

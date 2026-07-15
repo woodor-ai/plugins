@@ -27,7 +27,7 @@
       "name": "save-money",
       "displayName": "Woodor: Save Money",
       "source": "./save-money",
-      "description": "Cost-control hooks for Claude Code sessions: auto-handoff when context nears window limit, truncate oversized tool text output, and delegate main-agent image reads to an explore subagent. All gated by ~/.claude/cost-opt.json (written by the AMBridge PWA Save Money page)."
+      "description": "Cost-control hooks for Claude Code sessions: auto-handoff when context nears window limit, truncate oversized tool text output, delegate main-agent image reads to an explore subagent, and delegate main-agent Edit/Write calls to a subagent. All gated by ~/.claude/cost-opt.json (written by the AMBridge PWA Save Money page)."
     },
     {
       "name": "init-proj",
