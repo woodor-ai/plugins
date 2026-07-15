@@ -134,6 +134,24 @@ def git_branch(cwd: str) -> str:
         return ""
 
 
+def _collapse_home(path: str) -> str:
+    """Collapse the user's home-dir prefix to '~' so the path fits the status bar.
+
+    '/Users/tommyclaw/AIAgent/plugins' -> '~/AIAgent/plugins'. Paths outside
+    home are returned unchanged. Never raises — falls back to the input.
+    """
+    try:
+        home = os.path.normpath(str(Path.home()))
+        norm = os.path.normpath(path)
+        if norm == home:
+            return "~"
+        if norm.startswith(home + os.sep):
+            return "~" + norm[len(home):]
+        return path
+    except Exception:
+        return path
+
+
 def main():
     try:
         raw = sys.stdin.read()
@@ -164,7 +182,7 @@ def main():
     if model:
         segments.append(model)
     if cwd:
-        segments.append(cwd)  # full absolute path (not just basename)
+        segments.append(_collapse_home(cwd))  # home-relative path (~/...) to avoid truncation
     branch = git_branch(cwd)
     if branch:
         segments.append(branch)
