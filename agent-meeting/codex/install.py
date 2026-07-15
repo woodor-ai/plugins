@@ -281,11 +281,54 @@ def _path_needs_entry(current_path: str, entry: str) -> bool:
     return norm not in parts
 
 
+_POSIX_PATH_MARKER = "# agent-meeting (mycodex on PATH)"
+
+
+def _shell_rc_file() -> Path:
+    """Pick the shell rc file to edit on POSIX. bash -> ~/.bashrc, everything
+    else (incl. macOS default zsh) -> ~/.zshrc."""
+    shell = os.environ.get("SHELL", "")
+    home = Path.home()
+    if shell.endswith("bash"):
+        return home / ".bashrc"
+    return home / ".zshrc"
+
+
+def _ensure_path_entry_posix(bin_dir: Path) -> None:
+    """Idempotently append an `export PATH` line (guarded by a marker) to the
+    user's shell rc file so a NEW terminal picks up mycodex with no manual step.
+
+    Skips if the bin dir (marker or literal path) is already present — including
+    a manual add — so re-running the installer never duplicates the line. Never
+    edits the currently-running shell: a fresh terminal or `source` is required
+    for it to take effect, which the printed hint states."""
+    entry = str(bin_dir)
+    rc = _shell_rc_file()
+    try:
+        text = rc.read_text(encoding="utf-8") if rc.exists() else ""
+    except Exception as e:
+        print(f"  (could not read {rc}: {e}; add {entry} to your PATH manually)")
+        return
+    if _POSIX_PATH_MARKER in text or entry in text:
+        print(f"  {entry} already on PATH via {rc}")
+        return
+    block = f'{_POSIX_PATH_MARKER}\nexport PATH="{entry}:$PATH"\n'
+    new = (text.rstrip("\n") + "\n\n" if text.strip() else "") + block
+    try:
+        rc.parent.mkdir(parents=True, exist_ok=True)
+        rc.write_text(new, encoding="utf-8")
+        print(f"  added {entry} to PATH via {rc} — open a NEW terminal (or `source {rc}`), then `mycodex`")
+    except Exception as e:
+        print(f"  (could not update {rc} automatically: {e}; add {entry} to your PATH manually)")
+
+
 def _ensure_path_entry(bin_dir: Path):
-    """Put ~/.agent-meeting/bin on the user PATH so `mycodex` is callable by name."""
+    """Put ~/.agent-meeting/bin on the user PATH so `mycodex` is callable by name.
+
+    POSIX: idempotent shell-rc edit. Windows: idempotent winreg user-PATH edit."""
     entry = str(bin_dir)
     if not IS_WINDOWS:
-        print(f"  add to your shell PATH to call mycodex by name: {entry}")
+        _ensure_path_entry_posix(bin_dir)
         return
     try:
         import winreg

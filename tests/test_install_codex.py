@@ -325,13 +325,21 @@ def test_generate_mycodex_command_creates_bin_dir(tmp_path):
     assert (bin_dir / "mycodex").exists()
 
 
-def test_ensure_bin_on_path_posix_no_crash(tmp_path, capsys):
+def test_ensure_bin_on_path_posix_writes_rc(tmp_path, monkeypatch, capsys):
     mod = _load()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SHELL", "/bin/zsh")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    mod._ensure_bin_on_path(bin_dir)  # POSIX branch just prints a hint
-    out = capsys.readouterr().out
-    assert str(bin_dir) in out
+    mod._ensure_bin_on_path(bin_dir)  # POSIX branch now writes the shell rc
+    rc = tmp_path / ".zshrc"
+    assert rc.exists()
+    body = rc.read_text()
+    assert str(bin_dir) in body
+    assert "export PATH=" in body
+    # idempotent: second call must not duplicate
+    mod._ensure_bin_on_path(bin_dir)
+    assert body.count(str(bin_dir)) == rc.read_text().count(str(bin_dir))
 
 
 def test_main_generates_mycodex_command_when_something_installed(tmp_path, monkeypatch):

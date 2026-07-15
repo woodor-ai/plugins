@@ -18,12 +18,7 @@ import sys
 
 CONFIG_PATH = os.path.expanduser("~/.claude/cost-opt.json")
 
-DENY_REASON = (
-    "本任务需派 rd（或 explore）subagent 执行，主 agent 不直接改文件（TDP §3.1）；"
-    "主 agent 是最贵的模型，拿去干一行 Edit 是双重浪费。"
-    "确需主 agent 亲手改，设环境变量 CLAUDE_ALLOW_MAIN_EDIT=1 再改，"
-    "或把 ~/.claude/cost-opt.json 的 edit_delegate.enabled 设为 false 关闭本闸。"
-)
+DENY_REASON = "本任务需派 rd（或 explore）subagent 执行，主 agent 不直接改文件。"
 
 
 def load_enabled():
