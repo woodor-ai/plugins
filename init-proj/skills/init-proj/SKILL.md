@@ -1,6 +1,6 @@
 ---
 name: init-proj
-description: Scaffold a new Tommy-standard project. Creates <parent>/<name>/ with a git repo, the three tiered subagent profiles (explore/rd/planner), a .gitignore that keeps the local API key out of git, an interactively-entered project API key that never touches the transcript, and a launched agent-meeting director session. Rolls back the freshly-created directory on any failure. Use when starting a brand-new project from scratch (not for adding agents to an existing repo — use /init-agents for that).
+description: Scaffold a new Tommy-standard project. Creates <parent>/<name>/ with a git repo, the three tiered subagent profiles (explore/rd/planner), a project-level CLAUDE.md, a .gitignore that keeps the local API key out of git, an interactively-entered project API key that never touches the transcript, and a launched agent-meeting director session. Rolls back the freshly-created directory on any failure. Use when starting a brand-new project from scratch (not for adding agents to an existing repo — use /init-agents for that).
 user-invocable: true
 allowed-tools:
   - Read
@@ -15,8 +15,14 @@ allowed-tools:
 ## 调用
 
 ```
-/init-proj <name>
+/init-proj <name> [--repo=<url>]
 ```
+
+## 三种模式（--repo）
+
+- **无 --repo**：本地新建目录，git init + 首提交（不 push），额外建顶层 `agents/` 并 gitignore 之。
+- **--repo 空仓库**：clone 到位 → 全套脚手架 → commit + push。
+- **--repo 非空仓库**：clone → 逐项 skip-if-exists 补齐（顶层 `agents/`、CLAUDE.md、.gitignore 的 agents/、三 profile、apikey，不覆盖已有）→ commit + push。
 
 ## 执行步骤（主 agent 按序跑）
 
@@ -34,7 +40,7 @@ allowed-tools:
 
    若检测到 amp，继续下一步。
 
-2. **采集参数**：从参数取 `<name>`（正则 `^[a-zA-Z0-9-]{2,40}$`，没给就问一次，不要猜）。父目录默认 `~/AIAgent`，用户指定别的就用别的。总监会话名（`--wic-name`）默认等于项目名；若项目名超过 20 字符或不符合 `^[a-zA-Z0-9-]{2,20}$`，问一次要个符合规范的 ≤20 字符总监名。
+2. **采集参数**：从参数取 `<name>`（正则 `^[a-zA-Z0-9-]{2,40}$`，没给就问一次，不要猜）。父目录默认 `~/AIAgent`，用户指定别的就用别的。总监会话名（`--wic-name`）默认等于项目名；若项目名超过 20 字符或不符合 `^[a-zA-Z0-9-]{2,20}$`，问一次要个符合规范的 ≤20 字符总监名。可选参数 `--repo=<url>`：git 仓 URL。不传走本地全新目录模式；传了则先 clone 到位——空仓库补全脚手架后 push，非空仓库逐项 skip-if-exists 补齐后 push。用户没给就不传。
 
 3. **让用户跑这条命令**（把 `<name>` `<wic>` 替换成真实值；留空回车 = 跳过 key，走订阅登录）：
 
@@ -43,6 +49,8 @@ allowed-tools:
    ```
 
    key 经 `read -rs` 静默读入、管道喂给 CLI stdin、跑完 `unset`，**不经过对话或任何命令行参数**。主 agent 不得用 Bash 帮用户输 key，不得把 key 放进任何参数，不得回读 `settings.local.json`。
+
+   若用户提供了 `--repo`，在 `python3 -m amp.cli.newproject` 调用里追加 `--repo='<url>'`（用户没给就不加，保持原命令原样）。
 
 4. **解读 CLI 输出的单行 JSON**：
    - `{"ok": true, ...}`：一行报告——项目路径（`path`）、key 写了还是跳过（`keyWritten`）、总监 `<wic>` 已起。
