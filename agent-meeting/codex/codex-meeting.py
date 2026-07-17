@@ -11,8 +11,9 @@ Wires the whole chain and owns its lifecycle:
      something else, pick the next free port.
   2. Background-start `codex app-server --listen ws://127.0.0.1:<port>` (detached,
      logs to ~/.agent-meeting/codex/logs/), unless reusing an existing one.
-  3. Write ~/.agent-meeting/codex/runtime.json = {name, ws_addr, control_url} so
-     the SessionStart register hook and the bridge share one endpoint.
+  3. Write ~/.agent-meeting/codex/runtime.json = {name, ws_addr, control_url, instance}
+     so the SessionStart register hook and the bridge share one endpoint and agree
+     on a single "this launch" identity (instance) for registration.
   4. Background-start the bridge daemon `<venv-python> codex-bridge.py <name>`.
   5. FOREGROUND `codex --remote ws://127.0.0.1:<port>` — inherits the real tty, so
      this IS the user's live interactive session. Its startup fires the
@@ -43,6 +44,7 @@ import sys
 import threading
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -495,6 +497,7 @@ class Launcher:
         self.appserver_proc = None      # our app-server Popen (None if reused)
         self.bridge_proc = None
         self.warm_thread_id = None      # set by setup() if auto-warm succeeded
+        self.instance = None            # set by setup(); this launch's uuid (see runtime.json write)
         self.lock = SingleInstanceLock(name)
         self._torn_down = False
 
@@ -527,12 +530,22 @@ class Launcher:
         # _git_main_root, which forced this to the main root and would have
         # pointed a worktree-launched codex session at the wrong checkout.)
         runtime_cwd = os.getcwd()
+        # Process-unique id for THIS launch (fresh every `mycodex <name>` invocation,
+        # never rewritten while it's alive -- see teardown()/rollback()). codex-register.py
+        # (fired possibly many times per launch: warm-up + resume + every /clear or
+        # /compact) and codex-bridge.py (long-running, re-registers on every WS
+        # reconnect) both read it from this same file, so all of THIS launch's
+        # registrations agree on one instance value, while a second, genuinely
+        # independent `mycodex <name>` launch (same-machine already blocked by
+        # SingleInstanceLock; cross-machine is not) gets its own fresh one.
+        self.instance = uuid.uuid4().hex
         CODEX_DIR.mkdir(parents=True, exist_ok=True)
         RUNTIME_JSON.write_text(json.dumps({
             "name": self.name,
             "ws_addr": ws_addr,
             "control_url": self.control_url,
             "cwd": runtime_cwd,
+            "instance": self.instance,
         }, ensure_ascii=False), encoding="utf-8")
         _log(f"wrote runtime.json (ws_addr={ws_addr}, control_url={self.control_url or 'autodiscover'})")
 

@@ -120,6 +120,16 @@ def _read_json(path: Path) -> dict:
 
 _RT = _read_json(RUNTIME_JSON)  # written once by the launcher before this process starts; static
 CONTROL_URL = (_RT.get("control_url") or "").strip()
+# Shared "this mycodex launch" identity, generated once by codex-meeting.py's
+# Launcher.setup() and read here + by codex-register.py from the same file --
+# see meeting-daemon's _register() for how the daemon uses it. Empty/missing
+# (older runtime.json, or launched some other way) falls back to None, which
+# makes _register() below omit --instance entirely -- the daemon then falls
+# back to pure heartbeat gating (its original behavior). Do NOT invent a
+# fallback uuid here: that would give this process its own identity distinct
+# from codex-register.py's, making the daemon see them as two DIFFERENT
+# instances fighting over the same name -- the exact opposite of the point.
+INSTANCE = (_RT.get("instance") or "").strip() or None
 
 # Startup sanity: the meeting CLI must exist (P1-3: fail loudly, not per-call).
 if not MEETING_CLI.exists():
@@ -231,12 +241,34 @@ def _save_cursors(cursors: dict) -> None:
 
 def _register():
     """Ensure the session is registered (idempotent upsert). Heartbeat is kept by
-    the WS /subscribe ping-pong; registration must exist."""
+    the WS /subscribe ping-pong; registration must exist.
+
+    Exit code 3 from `meeting online` is the daemon's stable signal that a
+    DIFFERENT instance is registered under this name with a fresh heartbeat --
+    someone else legitimately holds it (not codex-register.py from this same
+    launch, which shares our INSTANCE and is always allowed through). Running on
+    unregistered while still relaying inbound messages is exactly the
+    silent-displacement bug this instance guard exists to prevent, so this is
+    fatal for the bridge (mirrors monitor.py's hard-exit on the same refusal) --
+    it dies loudly to bridge.log instead of limping along invisibly."""
     cwd, _ = _current_identity()
+    extra = ["--instance", INSTANCE] if INSTANCE else []
     try:
-        _run_meeting("online", SELF, "--cwd", cwd, "--force")
+        r = _run_meeting("online", SELF, "--cwd", cwd, *extra)
     except Exception as e:
         _log(f"re-register failed ({type(e).__name__}); will retry on reconnect")
+        return
+    if r.returncode == 3:
+        _fatal(
+            f"registration for '{SELF}' refused: {(r.stderr or '').strip()} "
+            "-- another live process already holds this name; not relaying "
+            "messages while unregistered. Run `meeting list` to see who holds "
+            "it, then `meeting stop` it or restart this bridge once it clears.",
+            code=7,
+        )
+    elif r.returncode != 0:
+        _log(f"re-register failed (exit {r.returncode}): {(r.stderr or '').strip()}; "
+             "will retry on reconnect")
 
 
 # ---------------------------------------------------------------------------

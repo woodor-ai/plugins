@@ -203,6 +203,20 @@ def _get_cursor(home_dir: str, project: str, member: str):
     return row["cursor"] if row else None
 
 
+def _set_session(home_dir: str, project: str, name: str, instance=None, last_seen=None):
+    """Directly upsert a sessions row with a specific instance/last_seen -- lets tests
+    simulate "a live monitor with instance X registered T seconds ago" without going
+    through /register (which always stamps last_seen=now)."""
+    conn = _db(home_dir)
+    conn.execute(
+        "INSERT INTO sessions (project, name, instance, last_seen, registered_at, role)"
+        " VALUES (?, ?, ?, ?, ?, 'worker')"
+        " ON CONFLICT(project, name) DO UPDATE SET instance=excluded.instance, last_seen=excluded.last_seen",
+        (project, name, instance, last_seen, str(int(time.time()))),
+    )
+    conn.close()
+
+
 def _poll_cursor_ge(home_dir: str, project: str, member: str, target: int,
                     timeout: float = 3.0, interval: float = 0.05) -> int | None:
     """Poll read_cursors until cursor >= target or timeout. Returns final value or None."""
@@ -1071,6 +1085,101 @@ def test_tc18_rename_cursor_collision(home_dir: str):
     check("TC18: old_cc cursor row gone after merge", cur_old is None, f"cur_old={cur_old}")
 
 
+# ---------- TC19: instance-aware /register guard (bug#: --force hardcoded silently displaced a live monitor) ----------
+
+def test_tc19_register_instance_aware(home_dir: str):
+    """TC19: /register 判定改成 instance 感知 —
+    同 instance 重连永远放行(不看心跳) / 不同 instance 心跳新鲜被拒(code=name_taken) /
+    不同 instance 心跳陈旧(>12s)可接管(原行为保留) / --force 仍能强行覆盖全部检查。"""
+    print("\n[TC19] register instance 感知判定")
+
+    now = time.time()
+
+    # (a) 同 instance 重连 → 永远放行，即使心跳刚更新也不受影响 (daemon 重启后
+    # monitor 重连场景，必须保住).
+    _set_session(home_dir, "tc19p", "sess-a", instance="inst-A", last_seen=now)
+    r = _http("/register", "POST",
+              {"project": "tc19p", "name": "sess-a", "instance": "inst-A"},
+              allow_error=True)
+    check("TC19a: same instance reconnect always allowed", r.get("ok") is True, str(r))
+
+    # (b) 不同 instance + 心跳新鲜(<=12s) → 拒绝，带机器可读 code=name_taken。
+    _set_session(home_dir, "tc19p", "sess-b", instance="inst-B", last_seen=now)
+    r = _http("/register", "POST",
+              {"project": "tc19p", "name": "sess-b", "instance": "inst-OTHER"},
+              allow_error=True)
+    check("TC19b: different instance + fresh heartbeat refused",
+          r.get("error") is not None, str(r))
+    check("TC19b: refusal carries stable code=name_taken", r.get("code") == "name_taken", str(r))
+
+    # (c) 不同 instance + 心跳陈旧(>12s=ONLINE_THRESHOLD) → 放行接管(原行为保留)。
+    stale = now - 20
+    _set_session(home_dir, "tc19p", "sess-c", instance="inst-C", last_seen=stale)
+    r = _http("/register", "POST",
+              {"project": "tc19p", "name": "sess-c", "instance": "inst-OTHER"},
+              allow_error=True)
+    check("TC19c: different instance + stale heartbeat allows takeover",
+          r.get("ok") is True, str(r))
+
+    # (d) --force 仍是显式人工逃生口，跳过全部检查（即使心跳新鲜 + 不同 instance）。
+    _set_session(home_dir, "tc19p", "sess-d", instance="inst-D", last_seen=now)
+    r = _http("/register", "POST",
+              {"project": "tc19p", "name": "sess-d", "instance": "inst-OTHER", "force": True},
+              allow_error=True)
+    check("TC19d: --force overrides fresh different-instance guard",
+          r.get("ok") is True, str(r))
+
+
+# ---------- TC20: codex chain instance semantics (same-launch multi-fire vs cross-launch collision vs no-instance fallback) ----------
+
+def test_tc20_codex_instance_semantics(home_dir: str):
+    """TC20: codex 链路的 instance 语义 —— 一次 `mycodex <name>` 启动内 codex-register.py
+    会被 hook 多次拉起(startup/resume/clear/compact)、codex-bridge.py 长驻重连也会重复
+    /register，全部共享同一个 runtime.json 里生成的 instance，必须全部放行；两次真正独立
+    的 Launcher.setup()（各自生成新 instance）抢同一个名字，心跳新鲜时后者必须被拒；
+    runtime.json 缺 instance 字段（instance=None）时退化为纯心跳判定，不崩、不误判成
+    same-instance。"""
+    print("\n[TC20] codex 链路 instance 语义（同启动多次触发 / 跨启动冲突 / 无 instance 退化）")
+
+    now = time.time()
+
+    # (a) 模拟一次 `mycodex codexA` 启动：codex-meeting.py 生成 instance=launch-1，
+    # codex-bridge.py 先注册一次，随后 codex-register.py 被 hook 触发三次
+    # (startup / resume / clear) —— 全部带同一个 instance，全部必须放行。
+    _set_session(home_dir, "tc20p", "codexA", instance="launch-1", last_seen=now)
+    for fire in ("bridge-startup", "hook-startup", "hook-resume", "hook-clear"):
+        r = _http("/register", "POST",
+                  {"project": "tc20p", "name": "codexA", "instance": "launch-1"},
+                  allow_error=True)
+        check(f"TC20a: same-launch re-register ({fire}) allowed", r.get("ok") is True, str(r))
+
+    # (b) 一次真正独立的第二个 `mycodex codexA` 启动（比如另一台机器）—— 自己的
+    # Launcher.setup() 生成了不同的 instance=launch-2，撞上第一个仍在线(心跳新鲜)的
+    # 注册 —— 必须被拒，不能静默顶替（这正是本轮改动要堵上的跨机器敞口）。
+    r = _http("/register", "POST",
+              {"project": "tc20p", "name": "codexA", "instance": "launch-2"},
+              allow_error=True)
+    check("TC20b: independent second launch (different instance, fresh heartbeat) refused",
+          r.get("error") is not None, str(r))
+    check("TC20b: refusal carries code=name_taken", r.get("code") == "name_taken", str(r))
+
+    # (c) runtime.json 没有 instance 字段（老会话/非 mycodex 启动路径）—— instance=None
+    # 退化为纯心跳判定（此特性上线前的原行为）：心跳新鲜就拒，不因为两次都是 None 就
+    # 误判成 same-instance，也不能崩/抛异常。
+    _set_session(home_dir, "tc20p", "codexB", instance=None, last_seen=now)
+    r = _http("/register", "POST", {"project": "tc20p", "name": "codexB"}, allow_error=True)
+    check("TC20c: no-instance re-register on fresh heartbeat refused (heartbeat-only fallback)",
+          r.get("error") is not None, str(r))
+    check("TC20c: no-instance refusal still valid JSON with stable code (no crash)",
+          r.get("code") == "name_taken", str(r))
+
+    stale_c = now - 20
+    _set_session(home_dir, "tc20p", "codexC", instance=None, last_seen=stale_c)
+    r = _http("/register", "POST", {"project": "tc20p", "name": "codexC"}, allow_error=True)
+    check("TC20c: no-instance re-register on stale heartbeat still allowed (fallback preserved)",
+          r.get("ok") is True, str(r))
+
+
 # ---------- main ----------
 
 home_dir_g: str = ""  # set in main(), used by TC3/TC7 which don't pass it as param
@@ -1107,6 +1216,8 @@ def main():
             test_tc16_group_create_members_hides_global_suffix()
             test_tc17_split_identity_read_both_halves(home_dir)
             test_tc18_rename_cursor_collision(home_dir)
+            test_tc19_register_instance_aware(home_dir)
+            test_tc20_codex_instance_semantics(home_dir)
         finally:
             proc.terminate()
             try:

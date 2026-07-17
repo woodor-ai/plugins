@@ -23,6 +23,7 @@ import os
 import signal
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import meeting_common
@@ -48,6 +49,11 @@ SELF = _args.name
 IS_DIRECTOR = _args.director
 IS_GLOBAL = _args.is_global
 IS_PROJ = _args.proj
+# Process-unique id sent as `meeting online --instance`. Lets the daemon tell
+# "this same monitor process reconnecting after a daemon restart" (always
+# allowed) apart from "a DIFFERENT live process claiming the same name"
+# (refused unless --force) -- see meeting-daemon's _register().
+INSTANCE = uuid.uuid4().hex
 HOME = Path.home()
 _MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
 DATA = Path(_MEETING_HOME_ENV) if _MEETING_HOME_ENV else HOME / ".agent-meeting"
@@ -100,7 +106,11 @@ def _discover_control_info() -> dict:
     return meeting_common.discover_control(_run_meeting)
 
 
+_registered = False  # sticky: True once `meeting online` has actually succeeded
+
+
 def _register():
+    global _registered
     extra = ["--director"] if IS_DIRECTOR else []
     if IS_GLOBAL:
         extra.append("--global")
@@ -111,14 +121,35 @@ def _register():
     # back up but the daemon is still busy, so `online` can hang the full 15s and
     # raise TimeoutExpired. That must NOT kill the monitor (it would drop the
     # session to historical until a human restarts it — exactly the daemon-restart
-    # case this re-register exists to cover). Swallow any failure; the next
-    # reconnect cycle retries.
+    # case this re-register exists to cover). Swallow non-refusal failures; the
+    # next reconnect cycle retries.
+    #
+    # Exit code 3 is different: the daemon is telling us, by a stable code (not
+    # string-matched), that a DIFFERENT live process is already registered under
+    # this name (different --instance, heartbeat still fresh). That is not a
+    # transient hiccup to retry -- someone else legitimately holds this name, so
+    # we must not silently take over. Exit immediately via os._exit(), which
+    # skips atexit (this file's _unregister included), so we never delete the
+    # winner's registration row.
     try:
-        _run_meeting("online", SELF, "--cwd", _CWD, "--force", *extra)
+        r = _run_meeting("online", SELF, "--cwd", _CWD, "--instance", INSTANCE, *extra)
     except Exception as e:
         ts = time.strftime("%Y-%m-%dT%H:%M:%S")
         sys.stderr.write(f"[meeting {_display_id}] {ts} re-register failed ({type(e).__name__}); "
                          f"will retry on next reconnect\n")
+        sys.stderr.flush()
+        r = None
+    if r is not None and r.returncode == 3:
+        sys.stderr.write(f"[meeting {_display_id}] registration refused, exiting: "
+                         f"{r.stderr.strip()}\n")
+        sys.stderr.flush()
+        os._exit(1)
+    if r is not None and r.returncode == 0:
+        _registered = True
+    elif r is not None:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        sys.stderr.write(f"[meeting {_display_id}] {ts} re-register failed (exit {r.returncode}): "
+                         f"{r.stderr.strip()}; will retry on next reconnect\n")
         sys.stderr.flush()
     try:
         RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -147,10 +178,16 @@ def _register():
 
 
 def _unregister():
-    try:
-        _run_meeting("offline", SELF)
-    except Exception:
-        pass
+    # Only call `offline` (deletes the daemon-side sessions row) if we ever
+    # actually won registration -- if every attempt was refused or swallowed,
+    # the row may belong to a different live process and offline-ing it here
+    # would kick that process's monitor off. Local pidfile/statusline cleanup
+    # below is unconditional since those files are ours regardless.
+    if _registered:
+        try:
+            _run_meeting("offline", SELF)
+        except Exception:
+            pass
     try:
         PID_FILE.unlink()
     except Exception:
@@ -174,9 +211,13 @@ for sig in (signal.SIGINT, signal.SIGTERM):
     except (ValueError, OSError):
         pass
 
+# Computed before the first _register() call: its error-handling branches log
+# using _display_id, and a register failure (network hiccup, stale peer CLI,
+# refusal) can happen on this very first call, not just later reconnects.
+_display_id = SELF if _PROJECT == "*" else f"{SELF}@{_PROJECT}"
+
 _register()
 
-_display_id = SELF if _PROJECT == "*" else f"{SELF}@{_PROJECT}"
 print(f"[meeting {_display_id}] monitor started (pid={os.getpid()})", flush=True)
 
 

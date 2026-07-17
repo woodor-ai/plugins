@@ -815,11 +815,15 @@ def cmd_online(args):
         # impossible. "director"/"worker" lets the monitor's --director flag win.
         "role": "director" if args.director else "worker",
         "host": host_name, "os": _OS_LABEL,
+        "instance": getattr(args, "instance", None),
     }
     r = http("POST", host, "/register", body=payload)
     if r.get("error"):
         print(r["error"], file=sys.stderr)
-        sys.exit(1)
+        # Exit code 3 is a distinct, machine-checkable signal for "name is taken
+        # by another live registration" (daemon-supplied code, not string-matched)
+        # so callers like monitor.py can tell it apart from generic failures.
+        sys.exit(3 if r.get("code") == "name_taken" else 1)
     # Any host we just registered against is a good last-known-good — seed the
     # auto cache so a later mDNS blackout (Wi-Fi multicast isolation, etc.) still
     # has a reachable fallback. Skipped when env MEETING_HOST drove the resolve,
@@ -1504,6 +1508,10 @@ def main():
                    help="register as global identity (project='*'), skips cwd project derivation")
     s.add_argument("--proj", default=None,
                    help="explicit project identity; bypasses folder-based derivation and is cached per repo root")
+    s.add_argument("--instance", default=None,
+                   help="process-unique id (e.g. a monitor's own uuid) so daemon-restart reconnects "
+                        "of the SAME process are always allowed, while a DIFFERENT live process "
+                        "registering the same name is refused instead of silently taking over")
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_online)
 

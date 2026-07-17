@@ -12,11 +12,14 @@ a codex session starts on an app-server thread. It:
      `session_id` == the thread id (thread.sessionId == thread.id), i.e. the id
      the bridge daemon uses to `thread/resume`.
   2. Reads runtime config `~/.agent-meeting/codex/runtime.json`, written ahead
-     of time by the launcher shell (module 4). Shape:
+     of time by the launcher (codex-meeting.py's Launcher.setup()). Shape:
        {"name": "<meeting-name>", "ws_addr": "ws://127.0.0.1:<port>",
-        "control_url": "<optional http url of the agent-meeting control>"}
+        "control_url": "<optional http url of the agent-meeting control>",
+        "instance": "<uuid, unique per `mycodex <name>` launch>"}
   3. Registers this session into agent-meeting: `meeting online <name> --cwd
-     <cwd> [--host <control_url>]` (worker role; --host omitted → LAN autodiscover).
+     <cwd> [--instance <instance>] [--host <control_url>]` (worker role;
+     --host omitted → LAN autodiscover; --instance ties every hook firing of
+     THIS launch together so the daemon never refuses them, see below).
   4. Atomically writes the mapping file
        ~/.agent-meeting/codex/sessions/<name>.json
          = {name, session_id, ws_addr, cwd, source, ts}
@@ -100,21 +103,37 @@ def main() -> None:
     #    lifecycle event fires exactly ONE matching matcher — verified: every
     #    app-server session start emits a single hook/started/hook/completed with
     #    source=startup, never all four — so there is no concurrent-matcher race
-    #    to guard against, and no claim/lock is needed.
-    # --force so a re-register is authoritative and never returns rc=1
-    # "already registered" (the bridge daemon may have registered this name first,
-    # which would otherwise surface as an error-ish additionalContext to the user).
-    cmd = [sys.executable, str(MEETING_BIN), "online", name, "--cwd", cwd, "--force"]
+    #    to guard against, and no claim/lock is needed. This hook fires multiple
+    #    times across a single `mycodex <name>` launch though (warm-up=startup,
+    #    the real foreground session=resume, plus every /clear or /compact), each
+    #    a fresh process.
+    # --instance ties every one of THOSE re-registrations, and codex-bridge.py's
+    # (the same launch's long-running bridge daemon), to codex-meeting.py's
+    # Launcher.setup() uuid via the shared runtime.json — the daemon always lets
+    # a same-instance re-register through regardless of heartbeat, so this
+    # never returns rc=1 "already registered" for anything belonging to THIS
+    # launch. A DIFFERENT live process (a genuinely separate `mycodex <name>`
+    # launch, e.g. from another machine) registering the same name has a
+    # different instance and, if its heartbeat is fresh, gets refused (rc=3)
+    # instead of silently displacing this one — see the rc==3 branch below.
+    instance = (rt.get("instance") or "").strip() or None
+    cmd = [sys.executable, str(MEETING_BIN), "online", name, "--cwd", cwd]
+    if instance:
+        cmd += ["--instance", instance]
     if control_url:
         cmd += ["--host", control_url]
     reg_status = "?"
+    name_taken = False
     kw = {"creationflags": 0x08000000} if sys.platform.startswith("win") else {}  # CREATE_NO_WINDOW
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, **kw)
         if r.returncode == 0:
             reg_status = "online"
+        elif r.returncode == 3:
+            name_taken = True
+            reg_status = f"refused: {(r.stderr or r.stdout).strip()[:200]}"
         else:
-            # e.g. name already registered — non-fatal, keep session alive
+            # some other registration failure — non-fatal, keep session alive
             reg_status = f"meeting online rc={r.returncode}: {(r.stderr or r.stdout).strip()[:160]}"
     except (subprocess.TimeoutExpired, OSError) as e:
         reg_status = f"meeting online 调用失败：{e}"
@@ -134,10 +153,20 @@ def main() -> None:
     except OSError as e:
         map_status = f"落映射失败：{e}"
 
-    emit(
-        f"[meeting] 已注册为 {name}（{reg_status}），"
-        f"session_id={session_id or '?'}，映射={map_status}，桥接就绪。"
-    )
+    if name_taken:
+        # Unmistakable refusal message -- do NOT reuse the "已注册为...桥接就绪"
+        # success wording here (TDP: don't silently fail, don't dress it up as ok).
+        emit(
+            f"[meeting] 未注册为 {name}：名字已被另一台机器/进程上一个仍存活的会话占用"
+            f"（{reg_status}）。本会话未桥接，收不到 live-wake 消息。"
+            f"跑 `meeting list` 看谁占着，`meeting stop {name}` 停掉它后重开，"
+            "或用别的名字重新启动 mycodex。"
+        )
+    else:
+        emit(
+            f"[meeting] 已注册为 {name}（{reg_status}），"
+            f"session_id={session_id or '?'}，映射={map_status}，桥接就绪。"
+        )
 
 
 if __name__ == "__main__":

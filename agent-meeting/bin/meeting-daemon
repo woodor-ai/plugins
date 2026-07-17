@@ -697,7 +697,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self._register(
                     body["project"], body["name"],
                     body.get("cwd"), body.get("force", False), body.get("role"),
-                    body.get("host"), body.get("os")
+                    body.get("host"), body.get("os"), body.get("instance")
                 ))
             if path == "/unregister":
                 return self._json(200, self._unregister(body["project"], body["name"]))
@@ -853,30 +853,43 @@ class Handler(BaseHTTPRequestHandler):
         return rows
 
     def _register(self, project: str, name: str, cwd, force: bool,
-                  role=None, host=None, os_label=None):
+                  role=None, host=None, os_label=None, instance=None):
+        # Normalize "" to None (the single choke point -- callers may send either
+        # for "no instance"; treating them as distinct would make two callers that
+        # both omit --instance collide as "same instance" via "" == "").
+        instance = instance or None
         now = time.time()
         with db() as conn:
             existing = conn.execute(
-                "SELECT last_seen FROM sessions WHERE project=? AND name=?",
+                "SELECT last_seen, instance, host FROM sessions WHERE project=? AND name=?",
                 (project, name),
             ).fetchone()
             if existing and not force:
                 last_seen = existing["last_seen"] or 0
-                if now - last_seen <= ONLINE_THRESHOLD:
+                fresh = (now - last_seen) <= ONLINE_THRESHOLD
+                existing_instance = existing["instance"] or None
+                same_instance = (
+                    instance is not None and existing_instance is not None
+                    and instance == existing_instance
+                )
+                if fresh and not same_instance:
                     return {
                         "error": (
-                            f"'{name}@{project}' is already registered and its monitor is still running. "
-                            "Use --force to override."
-                        )
+                            f"'{name}@{project}' is already registered by a live monitor on "
+                            f"{existing['host'] or 'unknown host'} (instance {existing_instance or 'unknown'}). "
+                            "Refusing to take over silently. Stop it first (`meeting stop <name>`), "
+                            "or pass --force to override."
+                        ),
+                        "code": "name_taken",
                     }
             conn.execute(
-                "INSERT INTO sessions (project, name, cwd, host, os, registered_at, last_seen, role)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'worker'))"
+                "INSERT INTO sessions (project, name, cwd, host, os, instance, registered_at, last_seen, role)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'worker'))"
                 " ON CONFLICT(project, name) DO UPDATE SET"
-                "  cwd=excluded.cwd, host=excluded.host, os=excluded.os,"
+                "  cwd=excluded.cwd, host=excluded.host, os=excluded.os, instance=excluded.instance,"
                 "  registered_at=excluded.registered_at, last_seen=excluded.last_seen,"
                 "  role=COALESCE(?, role)",
-                (project, name, cwd, host, os_label, str(int(now)), now, role, role),
+                (project, name, cwd, host, os_label, instance, str(int(now)), now, role, role),
             )
         return {"ok": True, "project": project, "name": name}
 
@@ -1364,6 +1377,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   cwd           TEXT,
   host          TEXT,
   os            TEXT,
+  instance      TEXT,
   registered_at TEXT,
   last_seen     REAL,
   role          TEXT NOT NULL DEFAULT 'worker',
@@ -1440,6 +1454,12 @@ def main():
         cols = {row[1] for row in conn.execute("PRAGMA table_info(groups)").fetchall()}
         if "charter" not in cols:
             conn.execute("ALTER TABLE groups ADD COLUMN charter TEXT")
+
+    # Idempotent migration: add instance column to sessions if missing (existing deployments).
+    with db() as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "instance" not in cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN instance TEXT")
 
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
