@@ -43,12 +43,22 @@ _parser.add_argument("--global", dest="is_global", action="store_true", default=
                      help="register as global identity (project='*'), skips cwd project derivation")
 _parser.add_argument("--proj", default=None,
                      help="explicit project identity passed through to `meeting online` on every (re)register")
+_parser.add_argument("--host", default=None,
+                     help="explicit control URL (http://<ip-or-name>:<port>) passed through to "
+                          "`meeting online` on every (re)register; set when the skill's control-"
+                          "discovery step resolved a specific control instead of LAN autodiscover")
+_parser.add_argument("--force", action="store_true", default=False,
+                     help="override an existing live registration under this name (user explicitly "
+                          "asked to take over). Only applies to the FIRST register call -- once this "
+                          "process holds the name, later reconnects race no one and never need it.")
 _args = _parser.parse_args()
 
 SELF = _args.name
 IS_DIRECTOR = _args.director
 IS_GLOBAL = _args.is_global
 IS_PROJ = _args.proj
+IS_HOST = _args.host
+_force_next = _args.force
 # Process-unique id sent as `meeting online --instance`. Lets the daemon tell
 # "this same monitor process reconnecting after a daemon restart" (always
 # allowed) apart from "a DIFFERENT live process claiming the same name"
@@ -110,12 +120,22 @@ _registered = False  # sticky: True once `meeting online` has actually succeeded
 
 
 def _register():
-    global _registered
+    global _registered, _force_next
     extra = ["--director"] if IS_DIRECTOR else []
     if IS_GLOBAL:
         extra.append("--global")
     if IS_PROJ:
         extra += ["--proj", IS_PROJ]
+    if IS_HOST:
+        extra += ["--host", IS_HOST]
+    if _force_next:
+        extra.append("--force")
+        # One-shot: this call is the takeover the user asked for. Later
+        # reconnects (daemon restart, WS drop) must NOT keep forcing --
+        # a name that moved to a different live process after we forced our
+        # way in once should refuse us like anyone else, not be steamrolled
+        # again on every reconnect.
+        _force_next = False
     # Best-effort: this runs on EVERY ws reconnect (see the connect loop), and a
     # reconnect often coincides with the control having just restarted — TCP is
     # back up but the daemon is still busy, so `online` can hang the full 15s and

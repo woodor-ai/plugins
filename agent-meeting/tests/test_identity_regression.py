@@ -1180,6 +1180,40 @@ def test_tc20_codex_instance_semantics(home_dir: str):
           r.get("ok") is True, str(r))
 
 
+# ---------- TC21: two-step registration self-rejects (0.9.0 regression pin) ----------
+
+def test_tc21_two_step_registration_self_rejects(home_dir: str):
+    """TC21: locks down the 0.9.0 `/meeting <name>` regression this fix removes the cause
+    of. The old skill flow did a standalone `meeting online` (no --instance) as its own
+    step, then installed the monitor which immediately re-registered with its own freshly-
+    generated `--instance` uuid. The daemon sees that as a DIFFERENT live process (existing
+    instance=None != incoming uuid, heartbeat still fresh) and refuses it — the session
+    rejected its own registration. This test proves that shape still self-rejects at the
+    daemon level (so nobody reintroduces the two-step flow believing it's harmless), and
+    proves the fixed shape — monitor is the SOLE registrant, one call with its own instance,
+    no prior bare `online` — succeeds cleanly on a free name."""
+    print("\n[TC21] 两步注册自拒回归钉子 + monitor 独立注册验证")
+
+    # (a) The step-3-that-no-longer-exists: a bare `meeting online` with no --instance.
+    r = _http("/register", "POST", {"project": "tc21p", "name": "sess-x"}, allow_error=True)
+    check("TC21a: bare online (no instance) succeeds", r.get("ok") is True, str(r))
+
+    # (b) Immediately after, the monitor's own registration with its freshly-generated
+    # instance uuid — this is exactly the call that used to get refused.
+    r = _http("/register", "POST",
+              {"project": "tc21p", "name": "sess-x", "instance": "monitor-uuid-1"},
+              allow_error=True)
+    check("TC21b: two-step registration self-rejects (locks the bug down)",
+          r.get("error") is not None and r.get("code") == "name_taken", str(r))
+
+    # (c) Fixed shape: monitor-only registration (single call carrying its own instance,
+    # no prior bare `online`) on a free name succeeds.
+    r = _http("/register", "POST",
+              {"project": "tc21p", "name": "sess-y", "instance": "monitor-uuid-2"},
+              allow_error=True)
+    check("TC21c: monitor-only registration on a free name succeeds", r.get("ok") is True, str(r))
+
+
 # ---------- main ----------
 
 home_dir_g: str = ""  # set in main(), used by TC3/TC7 which don't pass it as param
@@ -1218,6 +1252,7 @@ def main():
             test_tc18_rename_cursor_collision(home_dir)
             test_tc19_register_instance_aware(home_dir)
             test_tc20_codex_instance_semantics(home_dir)
+            test_tc21_two_step_registration_self_rejects(home_dir)
         finally:
             proc.terminate()
             try:

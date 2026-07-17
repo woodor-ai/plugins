@@ -96,36 +96,33 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
    - **2+ controls**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on the one marked `★ 当前`. Do NOT add any language implying multiple controls is unusual or an error — it is a valid multi-machine office topology.
 
 2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20. If the user wrote `/meeting <name> --proj=<proj>`, parse `<proj>` out of the invocation (it is not part of `<name>`).
-3. **Register**: call the CLI online subcommand. When a specific control was chosen in step 1, pass `--host <url>`. Per the per-OS rule at the top:
-   - macOS/Linux: `~/.agent-meeting/bin/meeting online <name> --cwd <cwd> [--host <url>] [--director] [--proj=<proj>]`
-   - Windows: `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" online <name> --cwd <cwd> [--host <url>] [--director] [--proj=<proj>]`
-
-   Pass `--director` to register this session as a director role (default: worker). Pass `--proj=<proj>` only when the user supplied it — it bypasses folder-based project derivation and is cached per repo root for future registrations there.
-
-   The command exits 0 on success. On non-zero exit (name taken, monitor heartbeat still recent) surface the error to the user and abort — do not proceed to monitor install. Use `--force` only if the user explicitly asks to take over.
-4. **Initialize DB** (idempotent): `~/.agent-meeting/bin/meeting init`
-5. **Install monitor**: invoke Monitor tool with:
+3. **Initialize DB** (idempotent): `~/.agent-meeting/bin/meeting init`
+4. **Install monitor** — this is the ONLY registration action (there is no separate `meeting online` call). The monitor process registers itself on startup (and re-registers on every reconnect) via its own `--instance` uuid; a prior standalone `online` call would hand the daemon a different `--instance` than the monitor's, which the daemon then treats as a different live process and refuses — that was the root cause of the 0.9.0 regression where a session rejected its own registration. Invoke the Monitor tool with:
    - `description`: `📞 agent-meeting: incoming call` (static, TUI banner can't be dynamic)
    - `persistent`: `true`
    - `command`: **Monitor tool always runs in bash**. macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`. Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name>` — expand `<username>` to the real Windows username, use forward slashes, no `&`, no `%USERPROFILE%` or `$env:` vars. The monitor calls the `meeting` CLI wrapper directly (no interpreter prefix), so the wrapper's venv python handles `zeroconf` for LAN discovery.
 
-   **角色透传（用户无感）**：当本次注册（第 3 步）传了 `--director` 时，monitor 命令末尾追加 ` --director`；worker 不加。两种 OS 形式均适用。例：macOS/Linux director: `python3 ~/.agent-meeting/bin/monitor.py <name> --director`。Windows director: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name> --director`。此 flag 由 skill 内部透传，用户不需要、也不应该手动传给 monitor。
+   Append these flags to the monitor command, each independently, based on what step 1/2 resolved (all can combine):
+   - **`--director`** — when this session should register as director role (default: worker). 例：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name> --director`。Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name> --director`。
+   - **`--proj=<proj>`** — only when the user supplied `--proj=<proj>` on the `/meeting <name> --proj=<proj>` invocation; bypasses folder-based project derivation and is cached per repo root for future registrations there. Monitor re-sends this `--proj` on every (re)register, so a daemon-restart reconnect still declares the same project identity. 例：`python3 ~/.agent-meeting/bin/monitor.py <name> --proj=<proj>`。
+   - **`--host <url>`** — only when step 1 found 2+ controls and the user picked a specific one (or confirmed setting this machine as control). Omit when there's exactly one control on the LAN (autodiscover handles it). 例：`python3 ~/.agent-meeting/bin/monitor.py <name> --host <url>`。
+   - **`--force`** — only if the user explicitly asks to take over an existing registration under this name (see failure handling below). Never add this proactively.
 
-   **`--proj` 透传**：当本次注册（第 3 步）传了 `--proj=<proj>` 时，monitor 命令末尾追加 ` --proj=<proj>`（未传则不加）。两种 OS 形式均适用，与 `--director` 透传规则并列、互不影响，可同时出现。例：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name> --proj=<proj>`。Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name> --proj=<proj>`。monitor 在每次 (re)register 时都会重新带上这个 `--proj`，确保 daemon 重启后的自动重连仍然声明同一个项目身份。
-
-   The monitor script (cross-platform Python) handles:
-   - Calling `meeting online <name> --cwd <cwd>` on startup (writes into central sessions table) and `meeting offline <name>` on exit (atexit + SIGINT/SIGTERM)
+   The monitor script (cross-platform Python) handles all of registration + liveness + polling:
+   - Calling `meeting online <name> --cwd <cwd> --instance <uuid> [--director] [--proj=<proj>] [--host <url>] [--force]` on startup (writes into central sessions table, seeds the `--host` as last-known-good on success) and `meeting offline <name>` on exit (atexit + SIGINT/SIGTERM)
    - Liveness heartbeat: monitor polls `/ring` every 3s; the daemon updates `sessions.last_seen` on each /ring call. No pid files are written.
    - Seeding cursor on first launch to current MAX(msg_id) so a new registration doesn't replay history
    - Polling `meeting ring <name> --since <cursor>` every 3s and emitting `📬 New Message from <peer>(: <ask>)?` lines
    - All subcommands (`list`, `send`, `show`, `read`, `turn`, `ring`, `delete`) require a reachable control. When no control is found, they exit 1 with a clear error — there is no silent local-SQLite fallback.
 
-6. **Update terminal tab title (best-effort)**: `{ printf '\033]0;%s\a' "<name>" > /dev/tty; } 2>/dev/null || true`
-7. **Confirm to user**: "Meeting registered as `<name>`. You can now /talkto <peer> or receive calls."
+   **Failure handling**: if the Monitor tool reports the script failed / exited non-zero, do NOT retry and do NOT proactively add `--force`. Read the monitor's output (stderr) and surface the reason to the user verbatim, then abort — do not proceed to later steps. Registration refusal (name already live under a different process) shows as `registration refused, exiting: <daemon message>`, which names the current holder (host/instance) — show that to the user and let them decide whether to retry the same Monitor install with `--force` appended (takeover) or pick a different name.
+
+5. **Update terminal tab title (best-effort)**: `{ printf '\033]0;%s\a' "<name>" > /dev/tty; } 2>/dev/null || true`
+6. **Confirm to user**: "Meeting registered as `<name>`. You can now /talkto <peer> or receive calls."
 
    The TUI status line shows `📞 <name>  |  <model>  |  <dir>  |  <branch>` automatically — no action needed here. `monitor.py` writes the room name to a local cache (`~/.agent-meeting/statusline/<cwd-hash>`) on register and removes it on exit; `bin/statusline.py` (registered as the `statusLine` command in `~/.claude/settings.json` by the SessionStart hook) reads that file. It is purely local — no SQLite query, no daemon/mDNS — so it stays fast and works on client machines too. The badge appears right after registration and disappears when the session ends. If the user had a custom `statusLine` already, the bootstrap leaves it untouched (it only installs/refreshes when statusLine is absent or already ours).
 
-8. **接手在途交接（若有）**：注册成功后，检查当前工作区有没有在途交接卡，有就直接接手，不要空 idle 等指示。判定顺序：
+7. **接手在途交接（若有）**：注册成功后，检查当前工作区有没有在途交接卡，有就直接接手，不要空 idle 等指示。判定顺序：
    - **优先看本 session 已注入的交接 context**：handoff plugin 的 SessionStart hook 会把 `<cwd>/.claude/handoff-pending.md` 注入为「上 session 交接（auto-loaded…）」段并归档。若本 session context 里已有这一段，直接按它的「## 3. 新会话接手第一步」开始执行。
    - **兜底查 pending 文件**（hook 未触发，如本会话非全新启动）：`test -f <cwd>/.claude/handoff-pending.md && wc -l <cwd>/.claude/handoff-pending.md`。存在且非空 → Read 它，按第 3 段接手；接手后由 handoff plugin 的下次 SessionStart 归档，本步不要自己删/移文件。
    - **两者都无** → 正常按 §2.3 输出 `主 agent idle，等用户指派任务或 peer 来信。`，不要凭空找 `docs/handoff/archive/` 里的历史卡（那些已被接手过，不是在途任务）。
@@ -147,7 +144,7 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
 
 4. **停旧 monitor**：跑 `~/.agent-meeting/bin/meeting stop <old>`（SIGTERM 旧 monitor 进程，它自己清理 + 删 pidfile；此时 unregister `<old>` 已是 no-op，因为已被 rename 走）。
 
-5. **起新 monitor**：照 `## On /meeting <name>` 第 5 步的方式，用 Monitor 工具装 `<new>` 的 monitor（`persistent: true`，command 走 per-OS 形式：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <new>`；Windows: 绝对路径 venv Python 形式）。**角色透传**：rename（第 3 步）已把会话迁到 `<new>`，role 列随之迁移；用 `~/.agent-meeting/bin/meeting list` 查 `<new>` 的 role 列；若 role=`director`，command 末尾追加 ` --director`；worker 不加。逻辑与 `/meeting <name>` 第 5 步相同。
+5. **起新 monitor**：照 `## On /meeting <name>` 第 4 步的方式，用 Monitor 工具装 `<new>` 的 monitor（`persistent: true`，command 走 per-OS 形式：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <new>`；Windows: 绝对路径 venv Python 形式）。**角色透传**：rename（第 3 步）已把会话迁到 `<new>`，role 列随之迁移；用 `~/.agent-meeting/bin/meeting list` 查 `<new>` 的 role 列；若 role=`director`，command 末尾追加 ` --director`；worker 不加。逻辑与 `/meeting <name>` 第 4 步相同。
 
 6. **更新终端 tab title**：`{ printf '\033]0;%s\a' "<new>" > /dev/tty; } 2>/dev/null || true`
 
