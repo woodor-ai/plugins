@@ -312,9 +312,21 @@ def start_monitor(name: str, db_dir: str) -> "tuple[subprocess.Popen, list[str],
     """
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
+    # Hard pin: no `meeting` subcommand this monitor's subprocess runs may
+    # fall back to mDNS/LAN discovery -- see the install_meeting_cli module
+    # comment for why this is load-bearing, not defensive.
+    env["MEETING_HOST"] = f"http://{HOST}:{TEST_PORT}"
 
+    # --force: every test case here pre-registers `name` via a direct HTTP
+    # /register call (to seed messages/read_cursors before the monitor
+    # connects) and then starts the monitor under that same name. Now that
+    # `meeting online` and the WS connection both target the same local test
+    # daemon (see install_meeting_cli), that pre-registration is a genuine
+    # still-fresh live session as far as the daemon is concerned -- without
+    # --force the daemon refuses (name_taken) and the monitor exits before
+    # ever reaching the WS loop.
     proc = subprocess.Popen(
-        [sys.executable, MONITOR_PATH, name, "--proj", TEST_PROJECT],
+        [sys.executable, MONITOR_PATH, name, "--proj", TEST_PROJECT, "--force"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -403,68 +415,62 @@ def check(name: str, cond: bool, detail: str = ""):
         FAIL_COUNT += 1
 
 
-# ---------- controls shim ----------
-# monitor.py calls `meeting controls --json` to discover daemon ip:port.
-# In tests, MEETING_HOME points to our test db_dir. We install a fake
-# `meeting` binary there that returns the test daemon's address.
-# All other meeting subcommands (online, offline) fall through to the real binary.
+# ---------- meeting CLI install ----------
+# monitor.py invokes `<MEETING_HOME>/bin/meeting online|offline|controls` as a
+# subprocess. That real CLI resolves which daemon to talk to via its own
+# `_resolve_host()` -- env MEETING_HOST first, then user-pinned config, then
+# LIVE mDNS/LAN DISCOVERY as a fallback. MEETING_HOME only redirects local
+# file paths (db, config.json, pidfiles); it does nothing to stop that mDNS
+# fallback from finding a real daemon elsewhere on the LAN and registering
+# this test's throwaway session names against it (see docs/contracts/
+# 0.10.0-composite-key-identity.md 阶段 3, incident 2026-07-22). So every subprocess
+# that runs this installed CLI MUST also get MEETING_HOST set in its env
+# (start_monitor does) -- that env check short-circuits `_resolve_host()`
+# before it ever reaches the mDNS branch, for every subcommand, no shim
+# logic required.
+#
+# We install the SOURCE TREE's real `bin/meeting` (+ meeting_common.py), not
+# a hand-rolled stand-in that forwards unhandled subcommands to whatever is
+# installed at ~/.agent-meeting/bin/meeting on this machine -- that forward
+# is exactly the mechanism that produced the incident (it ran a real
+# `meeting online` with no MEETING_HOST override, which fell through to
+# mDNS). Running the actual CLI under test, with MEETING_HOST pinned, is
+# both safer and more faithful.
 
-def install_controls_shim(db_dir: str, ip: str, port: int) -> str:
-    """Write a fake `meeting` CLI stub that answers `controls --json`."""
+def install_meeting_cli(db_dir: str, counter_file: str | None = None) -> str:
+    """Install the real `meeting` CLI (+ meeting_common.py) under db_dir/bin.
+
+    counter_file: if given, `meeting` becomes a thin wrapper that increments
+    counter_file on every `controls --json` call before delegating to the
+    real copy (installed alongside as `meeting-real`) -- lets TC-M5 prove
+    monitor re-resolves the control on every reconnect, not just at startup.
+    """
     bin_dir = os.path.join(db_dir, "bin")
     os.makedirs(bin_dir, exist_ok=True)
+    real_path = os.path.join(bin_dir, "meeting-real")
+    shutil.copy2(os.path.join(BIN_DIR, "meeting"), real_path)
+    shutil.copy2(os.path.join(BIN_DIR, "meeting_common.py"), os.path.join(bin_dir, "meeting_common.py"))
+    os.chmod(real_path, 0o755)
+
     stub_path = os.path.join(bin_dir, "meeting")
-    payload = json.dumps([{"ip": ip, "port": port, "host": "test-host", "is_current": True}])
-
-    script = f"""#!/usr/bin/env python3
-import sys, json, subprocess, os
-
-# When called as: meeting controls --json → return test daemon coords
-args = sys.argv[1:]
-if args == ["controls", "--json"]:
-    print({payload!r})
-    sys.exit(0)
-
-# For all other calls (online, offline) fall through to the real binary
-# which is at the default location (~/.agent-meeting/bin/meeting).
-import pathlib
-real = pathlib.Path.home() / ".agent-meeting" / "bin" / "meeting"
-os.execv(str(real), [str(real)] + args)
-"""
-    with open(stub_path, "w") as f:
-        f.write(script)
-    os.chmod(stub_path, 0o755)
-    return stub_path
-
-
-def install_controls_shim_counting(db_dir: str, ip: str, port: int,
-                                   counter_file: str) -> str:
-    """Like install_controls_shim but increments counter_file on each controls call."""
-    bin_dir = os.path.join(db_dir, "bin")
-    os.makedirs(bin_dir, exist_ok=True)
-    stub_path = os.path.join(bin_dir, "meeting")
-    payload = json.dumps([{"ip": ip, "port": port, "host": "test-host", "is_current": True}])
-
-    script = f"""#!/usr/bin/env python3
-import sys, json, os, pathlib
+    if counter_file:
+        script = f"""#!/usr/bin/env python3
+import os, sys
 
 args = sys.argv[1:]
 if args == ["controls", "--json"]:
-    # Increment counter
     cf = {counter_file!r}
     try:
         n = int(open(cf).read().strip()) + 1
     except Exception:
         n = 1
     open(cf, "w").write(str(n))
-    print({payload!r})
-    sys.exit(0)
-
-real = pathlib.Path.home() / ".agent-meeting" / "bin" / "meeting"
-os.execv(str(real), [str(real)] + args)
+os.execv({real_path!r}, [{real_path!r}] + args)
 """
-    with open(stub_path, "w") as f:
-        f.write(script)
+        with open(stub_path, "w") as f:
+            f.write(script)
+    else:
+        shutil.copy2(real_path, stub_path)
     os.chmod(stub_path, 0o755)
     return stub_path
 
@@ -652,8 +658,8 @@ def test_m5_host_reresolution(db_dir: str):
     except FileNotFoundError:
         pass
 
-    # Replace shim with counting version
-    install_controls_shim_counting(db_dir, HOST, TEST_PORT, counter_file)
+    # Replace with counting version
+    install_meeting_cli(db_dir, counter_file=counter_file)
 
     _register("m5_user")
     seed = _send("m5_user", "m5_user", "seed")
@@ -692,8 +698,8 @@ def test_m5_host_reresolution(db_dir: str):
     finally:
         proc.terminate()
         proc.wait(timeout=3)
-        # Restore plain shim for any subsequent tests
-        install_controls_shim(db_dir, HOST, TEST_PORT)
+        # Restore plain (non-counting) install for any subsequent tests
+        install_meeting_cli(db_dir)
 
 
 def test_m6_first_seed_zero_replay(db_dir: str):
@@ -920,7 +926,7 @@ def main():
         init_test_db(tmp)
         print(f"[setup] test DB: {tmp}")
 
-        install_controls_shim(tmp, HOST, TEST_PORT)
+        install_meeting_cli(tmp)
         _daemon_proc = start_daemon(tmp, TEST_PORT)
         print(f"[setup] daemon pid={_daemon_proc.pid} port={TEST_PORT}")
 
