@@ -895,7 +895,10 @@ def online_peers_str() -> str:
 
     Displayed as name@project (the composite key), not bare name — two
     live sessions can share a name across different projects, and the CLI's
-    send/read/show/turn already accept name@project to disambiguate."""
+    send/read/show/turn already accept name@project to disambiguate. Global
+    identities (project "*") drop the suffix, matching the display convention
+    used everywhere else in this codebase (monitor.py's _display_id, meeting's
+    _fmt_id, meeting-daemon's _fmt_id)."""
     if not DB.exists():
         return "(none online)"
     try:
@@ -909,7 +912,7 @@ def online_peers_str() -> str:
             ).fetchall()
         finally:
             con.close()
-        peers = [f"{r[0]}@{r[1]}" for r in rows]
+        peers = [r[0] if r[1] == "*" else f"{r[0]}@{r[1]}" for r in rows]
         return ", ".join(peers) if peers else "(none online)"
     except Exception:
         return "(none online)"

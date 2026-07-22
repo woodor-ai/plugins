@@ -296,17 +296,26 @@ def _resolve_ws_addr():
         return None
 
 
-def _emit_message(peer: str, ask, group=None, mentioned: bool = False):
-    """Print the harness-facing notification line. Format is frozen -- do not change."""
+def _emit_message(peer: str, peer_project: str, ask, group=None, mentioned: bool = False):
+    """Print the harness-facing notification line. Format is frozen -- do not change.
+
+    peer is rendered as peer@peer_project (bare peer only for the global
+    project "*", matching the display convention used everywhere else in this
+    codebase -- e.g. monitor.py's own _display_id, meeting's _fmt_id) so two
+    same-named senders in different projects produce distinguishable lines
+    (phase 2 target #9). SKILL.md's peer-extraction instructions must stay in
+    sync with this format.
+    """
+    peer_id = peer if peer_project == "*" else f"{peer}@{peer_project}"
     at_tag = " @you" if (group and mentioned) else ""
     location = f" in group {group}{at_tag}" if group else ""
     if ask:
         clean = ask.replace("\r", " ").replace("\n", " ")
         if len(clean) > 100:
             clean = clean[:100] + "..."
-        print(f"New Message from {peer}{location} [unverified peer]: {clean}", flush=True)
+        print(f"New Message from {peer_id}{location} [unverified peer]: {clean}", flush=True)
     else:
-        print(f"New Message from {peer}{location} [unverified peer]", flush=True)
+        print(f"New Message from {peer_id}{location} [unverified peer]", flush=True)
 
 
 def _on_text(msg: dict) -> None:
@@ -321,9 +330,9 @@ def _on_text(msg: dict) -> None:
         if "mention" in msg:
             if not msg["mention"]:
                 return
-            _emit_message(sender, ask, group, mentioned=True)
+            _emit_message(sender, sender_project, ask, group, mentioned=True)
         else:
-            _emit_message(sender, ask, group)
+            _emit_message(sender, sender_project, ask, group)
 
     elif msg.get("type") == "caught_up":
         _log(f"caught_up cursor={msg.get('cursor')}")

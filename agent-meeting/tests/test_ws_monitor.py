@@ -502,7 +502,7 @@ def test_m1_realtime_stdout(db_dir: str):
         check("TC-M1: got notification stdout line", len(lines) >= 1, f"got {lines}")
         if lines:
             line = lines[0]
-            expected_prefix = "New Message from m1_alice [unverified peer]:"
+            expected_prefix = f"New Message from m1_alice@{TEST_PROJECT} [unverified peer]:"
             check("TC-M1: stdout format correct",
                   line.startswith(expected_prefix),
                   f"got: {line!r}")
@@ -514,7 +514,7 @@ def test_m1_realtime_stdout(db_dir: str):
         lines2 = collect_stdout_lines(proc, "New Message", count=1, timeout=5.0,
                                       _shared_lines=shared, _shared_offset=offset)
         check("TC-M1: no-ask line correct",
-              any(l == "New Message from m1_alice [unverified peer]" for l in lines2),
+              any(l == f"New Message from m1_alice@{TEST_PROJECT} [unverified peer]" for l in lines2),
               f"got: {lines2}")
 
     finally:
@@ -828,9 +828,10 @@ def test_stdout_format_unchanged():
     with open(MONITOR_PATH, encoding="utf-8") as f:
         src = f.read()
 
-    # 1:1 format: peer + empty location → no "in group"
-    template_with_ask = 'New Message from {peer}{location} [unverified peer]: {clean}'
-    template_without_ask = 'New Message from {peer}{location} [unverified peer]'
+    # 1:1 format: peer_id (name@project, or bare name for the global "*"
+    # project) + empty location → no "in group"
+    template_with_ask = 'New Message from {peer_id}{location} [unverified peer]: {clean}'
+    template_without_ask = 'New Message from {peer_id}{location} [unverified peer]'
 
     check("FMT: with-ask format string present verbatim",
           template_with_ask in src, "not found in monitor.py source")
@@ -871,42 +872,52 @@ def test_emit_message_unit():
     # Test group message
     buf = io.StringIO()
     with redirect_stdout(buf):
-        emit("alice", "请回复", "dev-chan")
+        emit("alice", "wsproj", "请回复", "dev-chan")
     line = buf.getvalue().strip()
     check("TC-MG2: group msg has 'in group dev-chan'",
           "in group dev-chan" in line, repr(line))
-    check("TC-MG2: group msg has sender",
-          "alice" in line, repr(line))
+    check("TC-MG2: group msg has sender@project",
+          "alice@wsproj" in line, repr(line))
     check("TC-MG2: group msg has ask",
           "请回复" in line, repr(line))
 
     # Test group message without ask — exact match, no trailing ask/colon
     buf2 = io.StringIO()
     with redirect_stdout(buf2):
-        emit("bob", None, "team-chat")
+        emit("bob", "wsproj", None, "team-chat")
     line2 = buf2.getvalue().strip()
     check("TC-MG2: group no-ask has 'in group team-chat'",
           "in group team-chat" in line2, repr(line2))
     check("TC-MG2: group no-ask exact format (no ask suffix)",
-          line2 == "New Message from bob in group team-chat [unverified peer]", repr(line2))
+          line2 == "New Message from bob@wsproj in group team-chat [unverified peer]", repr(line2))
 
     # Test 1:1 message — must NOT contain "in group"
     buf3 = io.StringIO()
     with redirect_stdout(buf3):
-        emit("carol", "hi", None)
+        emit("carol", "wsproj", "hi", None)
     line3 = buf3.getvalue().strip()
     check("TC-MG2: 1:1 msg no 'in group'",
           "in group" not in line3, repr(line3))
-    check("TC-MG2: 1:1 msg has sender",
-          "carol" in line3, repr(line3))
+    check("TC-MG2: 1:1 msg has sender@project",
+          "carol@wsproj" in line3, repr(line3))
 
     # Test 1:1 message with group omitted (default)
     buf4 = io.StringIO()
     with redirect_stdout(buf4):
-        emit("dave", None)
+        emit("dave", "wsproj", None)
     line4 = buf4.getvalue().strip()
     check("TC-MG2: 1:1 default no 'in group'",
           "in group" not in line4, repr(line4))
+
+    # Test global project ("*") renders as bare name, no "@" — matches the
+    # display convention used elsewhere (monitor.py's _display_id, meeting's
+    # _fmt_id) for the project that means "no project restriction".
+    buf5 = io.StringIO()
+    with redirect_stdout(buf5):
+        emit("erin", "*", "hi", None)
+    line5 = buf5.getvalue().strip()
+    check("TC-MG2: global project renders bare name (no @)",
+          line5 == "New Message from erin [unverified peer]: hi", repr(line5))
 
 
 # ---------- main ----------
