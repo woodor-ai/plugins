@@ -201,7 +201,35 @@ def test_independent_peers_do_not_interfere():
 
 # ---------------------------------------------------------------------------
 # bug#3 — group frames read from group room, not sender's 1:1 room
+#
+# v0.10.0 phase 2 target#2: the DM branch now addresses the room with the
+# (sender, sender_project) composite the frame already carries -- not a bare
+# name -- so two live agents that happen to share a name in different
+# projects land in two distinct rooms instead of being merged/ambiguous. A
+# frame missing either half of that pair is malformed daemon data and must
+# fail loudly (raise) rather than silently address a bogus room.
 # ---------------------------------------------------------------------------
+
+def _handle_frame(msg: dict, self_name: str, self_project: str, process_room):
+    """Inline replica of the fixed codex-bridge._on_text."""
+    sender = msg.get("sender", "")
+    sender_project = msg.get("sender_project", "")
+    group = msg.get("group") or None
+    if sender == self_name and sender_project == self_project:
+        return  # self-sent; skip
+    if group:
+        if "mention" in msg and not msg["mention"]:
+            return  # not @us; skip
+        process_room(group, group=group)
+    else:
+        if not sender or not sender_project:
+            raise RuntimeError(
+                f"inbound msg frame missing sender/sender_project "
+                f"(sender={sender!r}, sender_project={sender_project!r}); "
+                "cannot address a room for it"
+            )
+        process_room(f"{sender}@{sender_project}")
+
 
 def test_group_frame_reads_group_room():
     """The room used for `meeting read` must be the group name, not the sender."""
@@ -210,49 +238,71 @@ def test_group_frame_reads_group_room():
     def fake_process_room(room: str, group: str = None):
         reads_issued.append((room, group))
 
-    # Simulate what _subscribe_loop does when it receives a group msg frame
-    def handle_frame(msg: dict, self_name: str, self_project: str):
-        sender = msg.get("sender", "")
-        sender_project = msg.get("sender_project", "")
-        group = msg.get("group") or None
-        if sender == self_name and sender_project == self_project:
-            return  # self-sent; skip
-        if group:
-            if "mention" in msg and not msg["mention"]:
-                return  # not @us; skip
-            fake_process_room(group, group=group)
-        else:
-            fake_process_room(sender)
-
-    # DM frame: process_room should use sender
+    # DM frame: process_room should use the (sender, project) composite room key
     reads_issued.clear()
-    handle_frame({"type": "msg", "sender": "alice", "sender_project": "proj"}, "cx", "proj")
-    assert reads_issued == [("alice", None)], f"DM should read alice's room, got {reads_issued}"
+    _handle_frame({"type": "msg", "sender": "alice", "sender_project": "proj"}, "cx", "proj",
+                  fake_process_room)
+    assert reads_issued == [("alice@proj", None)], f"DM should read alice@proj's room, got {reads_issued}"
 
     # Group frame (no mention field): process_room should use GROUP NAME
     reads_issued.clear()
-    handle_frame({"type": "msg", "sender": "alice", "sender_project": "proj",
-                  "group": "team"}, "cx", "proj")
+    _handle_frame({"type": "msg", "sender": "alice", "sender_project": "proj",
+                   "group": "team"}, "cx", "proj", fake_process_room)
     assert reads_issued == [("team", "team")], (
         f"group msg should read group room 'team', got {reads_issued}"
     )
 
     # Group frame with mention=True (@ us): should still be processed
     reads_issued.clear()
-    handle_frame({"type": "msg", "sender": "alice", "sender_project": "proj",
-                  "group": "team", "mention": True}, "cx", "proj")
+    _handle_frame({"type": "msg", "sender": "alice", "sender_project": "proj",
+                   "group": "team", "mention": True}, "cx", "proj", fake_process_room)
     assert reads_issued == [("team", "team")]
 
     # Group frame with mention=False (@ someone else): should be skipped
     reads_issued.clear()
-    handle_frame({"type": "msg", "sender": "alice", "sender_project": "proj",
-                  "group": "team", "mention": False}, "cx", "proj")
+    _handle_frame({"type": "msg", "sender": "alice", "sender_project": "proj",
+                   "group": "team", "mention": False}, "cx", "proj", fake_process_room)
     assert reads_issued == [], f"mention=False group msg must be skipped, got {reads_issued}"
 
     # Self-sent: always skip
     reads_issued.clear()
-    handle_frame({"type": "msg", "sender": "cx", "sender_project": "proj"}, "cx", "proj")
+    _handle_frame({"type": "msg", "sender": "cx", "sender_project": "proj"}, "cx", "proj",
+                  fake_process_room)
     assert reads_issued == []
+
+
+def test_same_name_different_project_senders_route_to_separate_rooms():
+    """Two live agents named 'alice' in different projects must never collide
+    into the same room key -- each keeps its own cursor/queue/history."""
+    reads_issued = []
+
+    def fake_process_room(room: str, group: str = None):
+        reads_issued.append((room, group))
+
+    _handle_frame({"type": "msg", "sender": "alice", "sender_project": "projA"}, "cx", "home",
+                  fake_process_room)
+    _handle_frame({"type": "msg", "sender": "alice", "sender_project": "projB"}, "cx", "home",
+                  fake_process_room)
+
+    assert reads_issued == [("alice@projA", None), ("alice@projB", None)], (
+        f"same-name senders in different projects must map to distinct rooms, got {reads_issued}"
+    )
+    assert len(set(reads_issued)) == 2, "the two rooms must not collide into one key"
+
+
+def test_frame_missing_sender_project_fails_loudly():
+    """A DM frame without a usable sender_project must raise, not silently
+    address a bogus room and swallow the message."""
+    def fake_process_room(room: str, group: str = None):
+        raise AssertionError("must not reach process_room with a bogus room key")
+
+    with pytest.raises(RuntimeError, match="missing sender/sender_project"):
+        _handle_frame({"type": "msg", "sender": "alice", "sender_project": ""}, "cx", "home",
+                      fake_process_room)
+
+    with pytest.raises(RuntimeError, match="missing sender/sender_project"):
+        _handle_frame({"type": "msg", "sender": "", "sender_project": "projA"}, "cx", "home",
+                      fake_process_room)
 
 
 def test_group_injection_prefix():

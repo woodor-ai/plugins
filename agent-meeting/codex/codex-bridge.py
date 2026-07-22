@@ -626,9 +626,11 @@ _MAX_MSG_RETRY_ROUNDS = 5    # after this many failed rounds, stop retrying the
 
 
 def _process_room(room: str, group: str = None):
-    """Fetch new inbound from room (peer or group name), enqueue. Does NOT persist cursor.
+    """Fetch new inbound from room (peer@project composite, or group name), enqueue.
+    Does NOT persist cursor.
 
-    group=None: DM room; group=<name>: group room; prefix injected text accordingly.
+    group=None: DM room (room == "sender@sender_project"); group=<name>: group room;
+    prefix injected text accordingly.
     Cursor is only advanced (and persisted) in the worker after successful injection.
 
     control:* messages (kind column) never go through the normal body/charter
@@ -684,7 +686,25 @@ def _on_text(msg: dict) -> None:
             return
         _process_room(group, group=group)
     else:
-        _process_room(sender)
+        # Every "type":"msg" frame carries sender_project straight off the
+        # messages table's NOT NULL column (meeting-daemon's _ws_fanout and
+        # its backlog-catch-up path both set it unconditionally), so the room
+        # key is addressed with the (sender, project) pair the daemon already
+        # gave us. Passing a bare name here would make the downstream
+        # `meeting read` CLI re-resolve it via /resolve, which returns 2+
+        # candidates (and SystemExits) when two projects share the same
+        # sender name -- and that failure used to be swallowed into a single
+        # log line, silently losing the message. If a frame is ever missing
+        # either half, that is malformed daemon data, not a retryable
+        # condition, so fail loudly instead of addressing a room that can
+        # never match a real conversation.
+        if not sender or not sender_project:
+            raise RuntimeError(
+                f"inbound msg frame missing sender/sender_project "
+                f"(sender={sender!r}, sender_project={sender_project!r}); "
+                "cannot address a room for it"
+            )
+        _process_room(f"{sender}@{sender_project}")
 
 
 def _on_connect() -> None:

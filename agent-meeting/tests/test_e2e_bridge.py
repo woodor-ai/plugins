@@ -278,12 +278,18 @@ cmd = args[0]
 if cmd in ("online", "offline"):
     sys.exit(0)
 elif cmd == "read":
+    # args: read <self> <peer/room> --since N --limit M
+    peer = args[2] if len(args) > 2 else ""
     since = 0
     for i, a in enumerate(args):
         if a == "--since":
             since = int(args[i + 1])
     fixture_path = os.environ.get("MOCK_MEETING_READ_FIXTURE")
-    rows = json.loads(open(fixture_path, encoding="utf-8").read()) if fixture_path else []
+    # Fixture is a dict keyed by the exact peer/room arg the bridge passed --
+    # this is what exposes a bare-name room key colliding with (or missing)
+    # the project-qualified fixture key a real daemon would have kept apart.
+    fixtures = json.loads(open(fixture_path, encoding="utf-8").read()) if fixture_path else {}
+    rows = fixtures.get(peer, [])
     lines = []
     for row in rows:
         if row["id"] <= since:
@@ -326,7 +332,10 @@ def _install_meeting_common(bin_dir: Path) -> None:
 # cursor persisted.
 # ---------------------------------------------------------------------------
 
-def test_bridge_inbound_to_injection_to_cursor_advance(tmp_path):
+def _setup_bridge_home(tmp_path: Path, session_name: str, fake_control: "FakeControlServer",
+                       fake_app: "FakeAppServer") -> Path:
+    """Lay out a throwaway MEETING_HOME with the mock `meeting` CLI + session
+    mapping/runtime.json a real codex-bridge.py subprocess needs to start."""
     meeting_home = tmp_path / "meeting_home"
     bin_dir = meeting_home / "bin"
     codex_dir = meeting_home / "codex"
@@ -336,9 +345,6 @@ def test_bridge_inbound_to_injection_to_cursor_advance(tmp_path):
     _write_mock_meeting_cli(bin_dir)
     _install_meeting_common(bin_dir)
 
-    fake_control = FakeControlServer()
-    fake_app = FakeAppServer()
-    session_name = "cx-e2e"
     session_cwd = str(tmp_path / "project")
     Path(session_cwd).mkdir()
 
@@ -354,14 +360,25 @@ def test_bridge_inbound_to_injection_to_cursor_advance(tmp_path):
         "ws_addr": fake_app.ws_addr,
         "cwd": session_cwd,
     }), encoding="utf-8")
+    return meeting_home
+
+
+def test_bridge_inbound_to_injection_to_cursor_advance(tmp_path):
+    fake_control = FakeControlServer()
+    fake_app = FakeAppServer()
+    session_name = "cx-e2e"
+    meeting_home = _setup_bridge_home(tmp_path, session_name, fake_control, fake_app)
+    codex_dir = meeting_home / "codex"
 
     calls_log = tmp_path / "meeting_calls.log"
     read_fixture = tmp_path / "read_fixture.json"
     now = int(time.time())
-    read_fixture.write_text(json.dumps([
-        {"id": 1, "created_at": now, "sender_id": "alice", "kind": "消息",
-         "ask": "", "body": "hello from alice"},
-    ]), encoding="utf-8")
+    read_fixture.write_text(json.dumps({
+        "alice@someproj": [
+            {"id": 1, "created_at": now, "sender_id": "alice", "kind": "消息",
+             "ask": "", "body": "hello from alice"},
+        ],
+    }), encoding="utf-8")
 
     env = os.environ.copy()
     env["MEETING_HOME"] = str(meeting_home)
@@ -387,11 +404,11 @@ def test_bridge_inbound_to_injection_to_cursor_advance(tmp_path):
                     cursors = json.loads(cursor_file.read_text(encoding="utf-8"))
                 except Exception:
                     cursors = {}
-                if cursors.get("alice") == 1:
+                if cursors.get("alice@someproj") == 1:
                     break
             time.sleep(0.3)
 
-        assert cursors.get("alice") == 1, (
+        assert cursors.get("alice@someproj") == 1, (
             f"cursor did not advance to msg 1; got {cursors!r}. "
             f"bridge output:\n{_drain(proc)}"
         )
@@ -401,16 +418,137 @@ def test_bridge_inbound_to_injection_to_cursor_advance(tmp_path):
         injected_text = turn_calls[0]["params"]["input"][0]["text"]
         assert injected_text == "[peer=alice msg_id=1] hello from alice", injected_text
 
-        # `meeting read` was actually invoked (not skipped) with the DM room name.
+        # `meeting read` was invoked with the project-qualified room, not a bare name.
         logged = [json.loads(line) for line in calls_log.read_text(encoding="utf-8").splitlines()]
         read_calls = [c for c in logged if c and c[0] == "read"]
-        assert any("alice" in c for c in read_calls), read_calls
+        assert any("alice@someproj" in c for c in read_calls), read_calls
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=8)
         except subprocess.TimeoutExpired:
             proc.kill()
+        fake_control.close()
+        fake_app.close()
+
+
+# ---------------------------------------------------------------------------
+# v0.10.0 phase 2 target#2: two live agents sharing a name across different
+# projects must not collide into one room, and neither message may be lost.
+# ---------------------------------------------------------------------------
+
+def test_bridge_routes_same_name_different_project_senders_without_loss(tmp_path):
+    fake_control = FakeControlServer()
+    fake_app = FakeAppServer()
+    session_name = "cx-e2e-dup"
+    meeting_home = _setup_bridge_home(tmp_path, session_name, fake_control, fake_app)
+    codex_dir = meeting_home / "codex"
+
+    calls_log = tmp_path / "meeting_calls.log"
+    read_fixture = tmp_path / "read_fixture.json"
+    now = int(time.time())
+    # Keyed by the exact room the bridge must pass to `meeting read` -- a bare
+    # "alice" room key (the pre-fix behavior) matches NEITHER key below, which
+    # is exactly how this test proves messages would otherwise be dropped.
+    read_fixture.write_text(json.dumps({
+        "alice@projA": [
+            {"id": 1, "created_at": now, "sender_id": "alice@projA", "kind": "消息",
+             "ask": "", "body": "hello from A"},
+        ],
+        "alice@projB": [
+            {"id": 1, "created_at": now, "sender_id": "alice@projB", "kind": "消息",
+             "ask": "", "body": "hello from B"},
+        ],
+    }), encoding="utf-8")
+
+    env = os.environ.copy()
+    env["MEETING_HOME"] = str(meeting_home)
+    env["MOCK_MEETING_CALLS_LOG"] = str(calls_log)
+    env["MOCK_MEETING_READ_FIXTURE"] = str(read_fixture)
+
+    proc = subprocess.Popen(
+        [str(VENV_PY), str(BRIDGE_PY), session_name],
+        env=env, cwd=str(tmp_path),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    try:
+        fake_control.wait_connected(timeout=15)
+
+        fake_control.push_msg(sender="alice", sender_project="projA")
+        fake_control.push_msg(sender="alice", sender_project="projB")
+
+        cursor_file = codex_dir / "cursors" / f"{session_name}.json"
+        deadline = time.time() + 30
+        cursors = {}
+        while time.time() < deadline:
+            if cursor_file.exists():
+                try:
+                    cursors = json.loads(cursor_file.read_text(encoding="utf-8"))
+                except Exception:
+                    cursors = {}
+                if cursors.get("alice@projA") == 1 and cursors.get("alice@projB") == 1:
+                    break
+            time.sleep(0.3)
+
+        assert cursors.get("alice@projA") == 1 and cursors.get("alice@projB") == 1, (
+            f"both same-name senders' messages must be delivered, got {cursors!r}. "
+            f"bridge output:\n{_drain(proc)}"
+        )
+
+        turn_calls = [r for r in fake_app.received if r.get("method") == "turn/start"]
+        injected = sorted(c["params"]["input"][0]["text"] for c in turn_calls)
+        assert injected == ["[peer=alice msg_id=1] hello from A", "[peer=alice msg_id=1] hello from B"], (
+            f"expected both peers' distinct bodies to be injected, got {injected}"
+        )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        fake_control.close()
+        fake_app.close()
+
+
+def test_bridge_exits_loudly_on_frame_missing_sender_project(tmp_path):
+    """A malformed inbound frame (no sender_project) must crash the bridge
+    loudly instead of silently dropping the message and continuing."""
+    fake_control = FakeControlServer()
+    fake_app = FakeAppServer()
+    session_name = "cx-e2e-bad-frame"
+    meeting_home = _setup_bridge_home(tmp_path, session_name, fake_control, fake_app)
+
+    env = os.environ.copy()
+    env["MEETING_HOME"] = str(meeting_home)
+
+    proc = subprocess.Popen(
+        [str(VENV_PY), str(BRIDGE_PY), session_name],
+        env=env, cwd=str(tmp_path),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    try:
+        fake_control.wait_connected(timeout=15)
+
+        # Push a frame with sender_project omitted entirely.
+        fake_control.push_msg(sender="alice")
+
+        try:
+            rc = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            out = _drain(proc)
+            raise AssertionError(
+                f"bridge did not exit after a malformed frame; it must fail loudly, "
+                f"not keep running silently.\noutput:\n{out}"
+            )
+        assert rc != 0, f"bridge must exit non-zero on a malformed frame, got {rc}"
+        out = (proc.stdout.read() or b"").decode(errors="replace")
+        assert "missing sender/sender_project" in out, out
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            pass
         fake_control.close()
         fake_app.close()
 
