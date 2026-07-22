@@ -9,7 +9,7 @@ Covers:
   TC4  - delete scoped to project pair
   TC5  - group rename cascades (groups + group_members + messages)
   TC6  - bug#1: cross-project group member backlog delivery
-  TC7  - Gap A: historical-name resolve falls to MAX(id) message project
+  TC7  - Gap A (fixed): historical-name resolve enumerates ALL historical projects
   TC8  - Gap B: rename preserves read cursor (unread not skipped)
   TC9  - read_cursors composite key: same name in different projects is independent
 
@@ -603,14 +603,17 @@ def test_tc6_bug1_crossproject_group_backlog(home_dir: str):
           len(backlog2) == 0, f"got {backlog2}")
 
 
-# ---------- TC7: Gap A — historical name resolve ----------
+# ---------- TC7: Gap A — historical name resolve must enumerate ALL projects ----------
 
 def test_tc7_gap_a_historical_resolve():
-    """projB/alice registered then unregistered (historical only in messages).
-    projA/alice is the only live session.
-    Bare 'alice' resolve must NOT fall back to self_project; it must pick the project
-    of the most recent message containing 'alice'."""
-    print("\n[TC7] Gap A: 历史名 resolve 落到 MAX(id) 消息的 project")
+    """projB/alice and projA/alice both have message history but NO live session
+    (never registered, or unregistered since). Phase 2 target #4: bare 'alice_ga'
+    resolve must enumerate BOTH historical projects, not just the most recent
+    message's project -- picking only MAX(id) silently drops the other project
+    from the candidate list, so the CLI's '2+ candidates require @project' safety
+    net never fires and a caller believes it has unambiguously resolved a name
+    that is actually still split across two live agents' history."""
+    print("\n[TC7] Gap A: 历史名 resolve 枚举全部历史 project，不只挑 MAX(id)")
 
     # Register projA/alice (live session)
     reg("projA", "alice_ga")
@@ -626,7 +629,6 @@ def test_tc7_gap_a_historical_resolve():
         " VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
         ("projB", "alice_ga", "projA", "other_ga", "消息", "old msg from projB/alice_ga", now - 100),
     )
-    last_id_projB = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.close()
 
     # Now send a more recent message involving projA/alice_ga
@@ -649,16 +651,14 @@ def test_tc7_gap_a_historical_resolve():
     # Unregister projA/alice_ga to simulate only historical messages remaining
     _http("/unregister", "POST", {"project": "projA", "name": "alice_ga"})
 
-    # Now both are historical — resolve must pick MAX(id) project
+    # Now both are historical — resolve must enumerate BOTH projects, most-recent
+    # message alone must not shadow the other.
     candidates2 = resolve("alice_ga")
-    # The most recent message has sender_project=projA, so historical resolve should give projA
-    check("TC7: historical resolve returns projA (MAX id message)", len(candidates2) == 1,
-          f"got {candidates2}")
-    if candidates2:
-        check("TC7: historical project is projA", candidates2[0]["project"] == "projA",
-              f"got project={candidates2[0]['project']}")
-        check("TC7: kind is historical", candidates2[0]["kind"] == "historical",
-              str(candidates2[0]))
+    projs2 = {c["project"] for c in candidates2}
+    check("TC7: historical resolve enumerates both projA and projB",
+          projs2 == {"projA", "projB"}, f"got {candidates2}")
+    check("TC7: every historical candidate is kind=historical",
+          all(c["kind"] == "historical" for c in candidates2), f"got {candidates2}")
 
 
 # ---------- TC8: Gap B — rename preserves read cursor ----------

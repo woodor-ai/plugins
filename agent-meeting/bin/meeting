@@ -136,12 +136,16 @@ def _parse_name_arg(raw: str, cwd: str | None = None) -> tuple[str, str]:
     return ("", raw)
 
 
-def _resolve_peer(host_url: str, raw: str, self_project: str) -> tuple[str, str]:
+def _resolve_peer(host_url: str, raw: str) -> tuple[str, str]:
     """Resolve a peer name arg to (project, name).
 
     1. If raw has @project, use it directly.
     2. Otherwise query /resolve on the daemon.
-       - 0 results: return (self_project, raw) as best-effort (may be historical-only).
+       - 0 results: no live session or message history anywhere for this name.
+         Guessing self_project used to be the default here -- if the peer later
+         registers under a different project, the message is filed under a
+         composite key the peer can never read from, permanently and silently
+         (phase 2 target #5). Require an explicit qualifier instead.
        - 1 result: use it.
        - 2+ results: require @project qualifier and raise SystemExit.
     """
@@ -149,14 +153,14 @@ def _resolve_peer(host_url: str, raw: str, self_project: str) -> tuple[str, str]
         name, _, project = raw.partition("@")
         return (project, name)
 
-    try:
-        candidates = http("GET", host_url, "/resolve", params={"name": raw})
-    except Exception:
-        return (self_project, raw)
+    candidates = http("GET", host_url, "/resolve", params={"name": raw})
 
     if not candidates:
-        # Not found in any live session — fall back to same project as self
-        return (self_project, raw)
+        raise SystemExit(
+            f"peer '{raw}' has no live session or message history under any project -- "
+            f"cannot safely guess its project. Pass an explicit qualifier: {raw}@<project> "
+            f"(or {raw}@* if it registers globally)."
+        )
     if len(candidates) == 1:
         return (candidates[0]["project"], raw)
     # Ambiguous
@@ -707,7 +711,7 @@ def cmd_send(args):
     cwd = os.getcwd()
 
     self_project, self_name = _parse_name_arg(args.self_arg, cwd)
-    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+    peer_project, peer_name = _resolve_peer(host, args.peer)
 
     payload = {
         "self_project": self_project, "self": self_name,
@@ -728,7 +732,7 @@ def cmd_read(args):
     host = _resolve_host(getattr(args, "host", None))
     cwd = os.getcwd()
     self_project, self_name = _parse_name_arg(args.self_arg, cwd)
-    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+    peer_project, peer_name = _resolve_peer(host, args.peer)
 
     rows = http("GET", host, "/read",
                 params={"self_project": self_project, "self": self_name,
@@ -746,7 +750,7 @@ def cmd_show(args):
     host = _resolve_host(getattr(args, "host", None))
     cwd = os.getcwd()
     self_project, self_name = _parse_name_arg(args.self_arg, cwd)
-    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+    peer_project, peer_name = _resolve_peer(host, args.peer)
 
     text = http("GET", host, "/show",
                 params={"self_project": self_project, "self": self_name,
@@ -759,7 +763,7 @@ def cmd_turn(args):
     host = _resolve_host(getattr(args, "host", None))
     cwd = os.getcwd()
     self_project, self_name = _parse_name_arg(args.self_arg, cwd)
-    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+    peer_project, peer_name = _resolve_peer(host, args.peer)
 
     r = http("GET", host, "/turn",
              params={"self_project": self_project, "self": self_name,
@@ -771,7 +775,7 @@ def cmd_delete(args):
     host = _resolve_host(getattr(args, "host", None))
     cwd = os.getcwd()
     self_project, self_name = _parse_name_arg(args.self_arg, cwd)
-    peer_project, peer_name = _resolve_peer(host, args.peer, self_project)
+    peer_project, peer_name = _resolve_peer(host, args.peer)
 
     r = http("DELETE", host, "/conversation",
              params={"self_project": self_project, "self": self_name,
@@ -871,11 +875,34 @@ def cmd_offline(args):
 
     host = _resolve_host(getattr(args, "host", None))
     cwd = os.getcwd()
-    project = _derive_project(cwd)
+
+    is_global = getattr(args, "is_global", False)
+    explicit_proj = getattr(args, "proj", None)
+    if is_global:
+        project = "*"
+    elif explicit_proj is not None:
+        try:
+            project = meeting_common.validate_proj(explicit_proj)
+        except ValueError as e:
+            print(f"offline: {e}", file=sys.stderr)
+            sys.exit(2)
+    else:
+        # No escape hatch given -- fall back to the caller's own cwd-derived
+        # project, same as every other bare-name command. A session that
+        # registered with --proj/--global must pass the same flag here or it
+        # will target the wrong composite key (see the `deleted` check below).
+        project = _derive_project(cwd)
 
     r = http("POST", host, "/unregister", body={"project": project, "name": name})
     if r.get("error"):
         print(r["error"], file=sys.stderr)
+        sys.exit(1)
+    if not r.get("deleted"):
+        print(
+            f"offline: no session '{name}@{project}' was registered -- nothing to take offline. "
+            "If it registered under a different project, retry with --proj <project> or --global.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     print(f"offline: {name}@{project}")
 
@@ -1233,21 +1260,33 @@ def cmd_group(args):
     project = _derive_project(cwd)
 
     if args.group_cmd == "create":
-        err = _validate_group_name(args.group_name)
+        # group_name may carry @project (same escape hatch as charter/list
+        # --member below -- previously only those two supported it, forcing
+        # every management subcommand to be re-run from the group's original
+        # cwd with no way to target a group in another project).
+        if "@" in args.group_name:
+            gname, _, gproject = args.group_name.partition("@")
+        else:
+            gname, gproject = args.group_name, project
+        err = _validate_group_name(gname)
         if err:
             print(err, file=sys.stderr)
             sys.exit(1)
         members = [m.strip() for m in args.members.split(",") if m.strip()]
         r = http("POST", host, "/group/create",
-                 body={"project": project, "name": args.group_name,
+                 body={"project": gproject, "name": gname,
                        "members": members, "creator": getattr(args, "creator", None)})
         if r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
-        print(f"group created: {args.group_name}@{project} members={r.get('members', members)}")
+        print(f"group created: {gname}@{gproject} members={r.get('members', members)}")
 
     elif args.group_cmd == "add":
-        err = _validate_group_name(args.group_name)
+        if "@" in args.group_name:
+            gname, _, gproject = args.group_name.partition("@")
+        else:
+            gname, gproject = args.group_name, project
+        err = _validate_group_name(gname)
         if err:
             print(err, file=sys.stderr)
             sys.exit(1)
@@ -1257,33 +1296,43 @@ def cmd_group(args):
         else:
             mname, mproj = args.member, project
         r = http("POST", host, "/group/add",
-                 body={"group_project": project, "group": args.group_name,
+                 body={"group_project": gproject, "group": gname,
                        "member_project": mproj, "member": mname})
         if r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
-        print(f"added {mname}@{mproj} to {args.group_name}@{project}")
+        print(f"added {mname}@{mproj} to {gname}@{gproject}")
 
     elif args.group_cmd == "remove":
+        if "@" in args.group_name:
+            gname, _, gproject = args.group_name.partition("@")
+        else:
+            gname, gproject = args.group_name, project
         if "@" in args.member:
             mname, _, mproj = args.member.partition("@")
         else:
             mname, mproj = args.member, project
         r = http("POST", host, "/group/remove",
-                 body={"group_project": project, "group": args.group_name,
+                 body={"group_project": gproject, "group": gname,
                        "member_project": mproj, "member": mname})
         if r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
-        print(f"removed {mname}@{mproj} from {args.group_name}@{project}")
+        print(f"removed {mname}@{mproj} from {gname}@{gproject}")
 
     elif args.group_cmd == "rename":
+        # old carries the group's project (rename migrates within one project;
+        # new is always a bare name in that same project).
+        if "@" in args.old_name:
+            old_name, _, gproject = args.old_name.partition("@")
+        else:
+            old_name, gproject = args.old_name, project
         r = http("POST", host, "/group/rename",
-                 body={"project": project, "old": args.old_name, "new": args.new_name})
+                 body={"project": gproject, "old": old_name, "new": args.new_name})
         if r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
-        print(f"group renamed: {args.old_name} -> {args.new_name} in project {project} ({r.get('messages_migrated', 0)} messages migrated)")
+        print(f"group renamed: {old_name} -> {args.new_name} in project {gproject} ({r.get('messages_migrated', 0)} messages migrated)")
 
     elif args.group_cmd == "list":
         params = {}
@@ -1299,8 +1348,12 @@ def cmd_group(args):
             print(f"{g['name']}@{g['project']}\t{g.get('member_count', '')}")
 
     elif args.group_cmd == "members":
+        if "@" in args.group_name:
+            gname, _, gproject = args.group_name.partition("@")
+        else:
+            gname, gproject = args.group_name, project
         r = http("GET", host, "/group/members",
-                 params={"group_project": project, "group": args.group_name})
+                 params={"group_project": gproject, "group": gname})
         if isinstance(r, dict) and r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
@@ -1308,12 +1361,16 @@ def cmd_group(args):
             print(m)
 
     elif args.group_cmd == "delete":
+        if "@" in args.group_name:
+            gname, _, gproject = args.group_name.partition("@")
+        else:
+            gname, gproject = args.group_name, project
         r = http("DELETE", host, "/group",
-                 params={"project": project, "name": args.group_name})
+                 params={"project": gproject, "name": gname})
         if r.get("error"):
             print(r["error"], file=sys.stderr)
             sys.exit(1)
-        print(f"group deleted: {args.group_name}@{project} ({r.get('purged', 0)} messages purged)")
+        print(f"group deleted: {gname}@{gproject} ({r.get('purged', 0)} messages purged)")
 
     elif args.group_cmd == "charter":
         # Parse group_name: support bare or name@project
@@ -1390,11 +1447,35 @@ def cmd_controls(args):
         print(f"  version: {c['version'] or '(unknown)'}")
 
 def cmd_stop(args):
+    cwd = os.getcwd()
+    is_global = getattr(args, "is_global", False)
+    explicit_proj = getattr(args, "proj", None)
+    if is_global:
+        project = "*"
+    elif explicit_proj is not None:
+        try:
+            project = meeting_common.validate_proj(explicit_proj)
+        except ValueError as e:
+            print(f"stop: {e}", file=sys.stderr)
+            sys.exit(2)
+    else:
+        # No escape hatch given -- fall back to cwd derivation, same as the
+        # monitor's own registration default. Two projects' same-named
+        # monitors have distinct pidfiles (see meeting_common.pidfile_stem),
+        # so stopping the wrong one now fails loudly instead of silently
+        # killing whichever process happened to win the old shared filename.
+        project = _derive_project(cwd)
+
     run_dir = os.path.join(MEETING_HOME, "run")
-    pid_file = os.path.join(run_dir, f"{args.name}.pid")
+    pid_file = os.path.join(run_dir, f"{meeting_common.pidfile_stem(args.name, project)}.pid")
+    display = args.name if project == "*" else f"{args.name}@{project}"
 
     if not os.path.exists(pid_file):
-        print(f"no running monitor for '{args.name}'", file=sys.stderr)
+        print(
+            f"no running monitor for '{display}' -- if it registered under a different "
+            "project, retry with --proj <project> or --global",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     try:
@@ -1409,7 +1490,7 @@ def cmd_stop(args):
             os.remove(pid_file)
         except Exception:
             pass
-        print(f"no running monitor for '{args.name}' (cleaned stale pidfile)", file=sys.stderr)
+        print(f"no running monitor for '{display}' (cleaned stale pidfile)", file=sys.stderr)
         sys.exit(1)
 
     os.kill(pid, signal.SIGTERM)
@@ -1418,10 +1499,10 @@ def cmd_stop(args):
     while time.monotonic() < deadline:
         time.sleep(0.1)
         if not _pid_alive(pid):
-            print(f"stopped monitor: {args.name} (pid {pid})")
+            print(f"stopped monitor: {display} (pid {pid})")
             return
 
-    print(f"SIGTERM sent to monitor '{args.name}' (pid {pid}), but process has not exited within 3s")
+    print(f"SIGTERM sent to monitor '{display}' (pid {pid}), but process has not exited within 3s")
 
 
 def cmd_list(args):
@@ -1529,12 +1610,20 @@ def main():
     s = sub.add_parser("offline",
                        help="take this session offline")
     s.add_argument("name")
+    s.add_argument("--global", dest="is_global", action="store_true",
+                   help="target the global identity (project='*'), skips cwd project derivation")
+    s.add_argument("--proj", default=None,
+                   help="explicit project identity to target; bypasses folder-based derivation")
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_offline)
 
     sp = sub.add_parser("stop",
                        help="stop the local monitor process for a session")
     sp.add_argument("name")
+    sp.add_argument("--global", dest="is_global", action="store_true",
+                    help="target the global identity (project='*'), skips cwd project derivation")
+    sp.add_argument("--proj", default=None,
+                    help="explicit project identity to target; bypasses folder-based derivation")
     sp.set_defaults(func=cmd_stop)
 
     rp = sub.add_parser("rename",
@@ -1549,30 +1638,30 @@ def main():
     gsub = gp.add_subparsers(dest="group_cmd", required=True)
 
     gc = gsub.add_parser("create", help="create a group")
-    gc.add_argument("group_name")
+    gc.add_argument("group_name", help="group name (bare or name@project)")
     gc.add_argument("--members", required=True, help="comma-separated member names (bare or name@project)")
     gc.add_argument("--creator", default=None)
 
     ga = gsub.add_parser("add", help="add a member to a group")
-    ga.add_argument("group_name")
+    ga.add_argument("group_name", help="group name (bare or name@project)")
     ga.add_argument("member", help="member name (bare or name@project)")
 
     gr = gsub.add_parser("remove", help="remove a member from a group")
-    gr.add_argument("group_name")
+    gr.add_argument("group_name", help="group name (bare or name@project)")
     gr.add_argument("member", help="member name (bare or name@project)")
 
     gnr = gsub.add_parser("rename", help="rename a group (cascades group_members + messages)")
-    gnr.add_argument("old_name")
+    gnr.add_argument("old_name", help="current group name (bare or name@project); new stays in the same project")
     gnr.add_argument("new_name")
 
     gl = gsub.add_parser("list", help="list groups (optionally filter by member)")
     gl.add_argument("--member", default=None, help="filter by member (bare or name@project)")
 
     gm = gsub.add_parser("members", help="list members of a group")
-    gm.add_argument("group_name")
+    gm.add_argument("group_name", help="group name (bare or name@project)")
 
     gd = gsub.add_parser("delete", help="delete a group and purge its messages")
-    gd.add_argument("group_name")
+    gd.add_argument("group_name", help="group name (bare or name@project)")
 
     gch = gsub.add_parser("charter", help="get or set group charter (rule text)")
     gch.add_argument("group_name", help="group name (bare or name@project)")

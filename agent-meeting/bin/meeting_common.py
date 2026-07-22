@@ -36,6 +36,7 @@ import struct
 import subprocess
 import sys
 import time
+import urllib.parse
 
 
 MEETING_HOME = os.environ.get("MEETING_HOME") or os.path.expanduser("~/.agent-meeting")
@@ -179,6 +180,23 @@ def derive_project(cwd: str) -> str:
             name = root
 
     return "_" if name == "*" else name
+
+
+def pidfile_stem(name: str, project: str) -> str:
+    """Filesystem-safe pidfile basename (no extension) for the composite
+    (project, name) identity of a local monitor process.
+
+    project can contain path separators (derive_project()'s home-relative
+    fallback, e.g. "~/AIAgent/wda-v3") or arbitrary characters (an explicit
+    --proj), so it cannot be concatenated into a filename as-is. Two monitors
+    with the same bare name in different projects on the same machine used to
+    share the literal `<name>.pid` path and silently overwrite each other's
+    pidfile (phase 2 target #7); percent-encoding project into one path
+    segment keeps them distinct. "*" (--global) gets the readable "global"
+    token instead of a percent-encoded asterisk (invalid in Windows filenames).
+    """
+    token = "global" if project == "*" else urllib.parse.quote(project, safe="")
+    return f"{name}@{token}"
 
 
 # ---------------------------------------------------------------------------

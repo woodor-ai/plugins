@@ -86,8 +86,6 @@ STATUSLINE_FILE = STATUSLINE_DIR / _badge_key(SESSION_ID, _CWD)
 _CWD_STATUSLINE_FILE = STATUSLINE_DIR / _badge_key(None, _CWD)
 
 RUN_DIR = DATA / "run"
-PID_FILE = RUN_DIR / f"{SELF}.pid"
-
 
 _derive_project = meeting_common.derive_project
 
@@ -116,6 +114,11 @@ elif IS_PROJ:
     _PROJECT = IS_PROJ
 else:
     _PROJECT = _derive_project(_CWD)
+
+# Pidfile keyed on the full (project, name) composite -- a bare `{SELF}.pid`
+# let two different projects' same-named monitors overwrite each other's
+# pidfile on the same machine (phase 2 target #7).
+PID_FILE = RUN_DIR / f"{meeting_common.pidfile_stem(SELF, _PROJECT)}.pid"
 
 
 def _run_meeting(*extra_args):
@@ -225,8 +228,13 @@ def _unregister():
     # would kick that process's monitor off. Local pidfile/statusline cleanup
     # below is unconditional since those files are ours regardless.
     if _registered:
+        # Must target the same composite key `online` registered under, or
+        # the daemon's DELETE matches zero rows and this session's row is
+        # left registered forever (phase 2 target #3's failure mode, hit here
+        # for every --global/--proj monitor since offline had no escape hatch).
+        extra = ["--global"] if IS_GLOBAL else (["--proj", IS_PROJ] if IS_PROJ else [])
         try:
-            _run_meeting("offline", SELF)
+            _run_meeting("offline", SELF, *extra)
         except Exception:
             pass
     try:

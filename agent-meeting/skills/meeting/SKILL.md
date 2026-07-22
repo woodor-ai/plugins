@@ -156,7 +156,7 @@ For `/meeting setup daemon …` / `/meeting setup token …` / `/meeting setup t
 
 **没给 `<name>`**：先按 `## On /meeting rename` 第 2 步的方法确定当前会话名 `<current>`，再跑 `~/.agent-meeting/bin/meeting stop <current>`。提醒用户：这会停掉本会话的 monitor 并让它下线（monitor 退出时自动 unregister）。
 
-**说明**：`meeting stop` 是本地操作——给 `~/.agent-meeting/run/<name>.pid` 记录的 monitor 进程发 SIGTERM，monitor 自己完成 unregister + 清缓存；不走 daemon。pidfile 不存在时命令会报 "no running monitor"。
+**说明**：`meeting stop` 是本地操作——给 `~/.agent-meeting/run/<name>@<project>.pid` 记录的 monitor 进程发 SIGTERM，monitor 自己完成 unregister + 清缓存；不走 daemon。project 默认按当前目录推导，跨项目同名 monitor 用 `--proj <project>` 或 `--global` 指定。pidfile 不存在时命令会报 "no running monitor"。
 
 ## Behavior on incoming new-message event
 

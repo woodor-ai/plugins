@@ -753,9 +753,9 @@ class Handler(BaseHTTPRequestHandler):
                     q["peer_project"][0], q["peer"][0],
                 ))
             if path == "/group":
-                return self._json(200, self._group_purge(
-                    q["project"][0], q["name"][0],
-                ))
+                result = self._group_purge(q["project"][0], q["name"][0])
+                status = 400 if result.get("error") else 200
+                return self._json(status, result)
             return self._err(404, f"no such DELETE route: {path}")
         except KeyError as e:
             return self._err(400, f"missing param: {e}")
@@ -787,18 +787,21 @@ class Handler(BaseHTTPRequestHandler):
             if global_candidates:
                 return [global_candidates[0]]
             if not candidates:
-                hist_row = conn.execute(
-                    "SELECT sender_project, sender, recipient_project, recipient"
-                    " FROM messages WHERE sender=? OR recipient=?"
-                    " ORDER BY id DESC LIMIT 1",
+                # Enumerate EVERY distinct project this name appeared under in
+                # message history, not just the most recent one. Picking only
+                # MAX(id)'s project (the old "Gap A" behaviour) silently drops
+                # any other historical project from the candidate list, so the
+                # CLI's "2+ candidates require @project" safety net never
+                # fires and callers believe they've unambiguously resolved a
+                # name that is actually still split across projects.
+                hist_rows = conn.execute(
+                    "SELECT DISTINCT sender_project AS project FROM messages WHERE sender=?"
+                    " UNION"
+                    " SELECT DISTINCT recipient_project AS project FROM messages WHERE recipient=?",
                     (raw_name, raw_name),
-                ).fetchone()
-                if hist_row:
-                    if hist_row["sender"] == raw_name:
-                        hist_project = hist_row["sender_project"]
-                    else:
-                        hist_project = hist_row["recipient_project"]
-                    candidates = [{"project": hist_project, "name": raw_name, "kind": "historical"}]
+                ).fetchall()
+                candidates = [{"project": r["project"], "name": raw_name, "kind": "historical"}
+                              for r in hist_rows]
         return candidates
 
     def _list(self):
@@ -893,9 +896,15 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "project": project, "name": name}
 
     def _unregister(self, project: str, name: str):
+        # Report whether a row actually existed at this composite key -- an
+        # unconditional {"ok": True} here made `meeting offline <name>` claim
+        # success even when the target was registered under a different
+        # project (phase 2 target #3); the CLI caller uses `deleted` to tell
+        # a real unregister apart from a no-op.
         with db() as conn:
-            conn.execute("DELETE FROM sessions WHERE project=? AND name=?", (project, name))
-        return {"ok": True, "project": project, "name": name}
+            cur = conn.execute("DELETE FROM sessions WHERE project=? AND name=?", (project, name))
+            deleted = cur.rowcount > 0
+        return {"ok": True, "deleted": deleted, "project": project, "name": name}
 
     def _turn(self, self_project: str, self_name: str, peer_project: str, peer_name: str):
         clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
@@ -1192,7 +1201,18 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "project": project, "name": name, "charter": value or ""}
 
     def _group_purge(self, project: str, name: str):
+        # Discovered alongside phase 2 target #6 (same acceptance criterion --
+        # "group *" subcommands must not report success on a no-op): an
+        # unconditional {"ok": True} here made `meeting group delete` claim a
+        # purge even when no group existed at this (project, name), e.g. after
+        # a caller mistyped the project. Check existence first so a mismatch
+        # surfaces as the same kind of loud error every other /group/* route
+        # already gives for an unknown group.
         with db() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM groups WHERE project=? AND name=?", (project, name)
+            ).fetchone():
+                return {"error": f"group '{name}' does not exist in project '{project}'"}
             conn.execute("BEGIN IMMEDIATE")
             try:
                 cnt = conn.execute(
