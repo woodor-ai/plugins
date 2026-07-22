@@ -6,11 +6,14 @@ Tests the monitor's full WS behavior including cursor=-1 sentinel seeding
 introduced in PR3. Never touches the live daemon on 8765.
 
 Schema/API note: the daemon's identity model is (project, name) composite
-key (see meeting-daemon docstring "DEPLOY NOTE"). monitor.py derives its own
-project from cwd via meeting_common.derive_project() when it registers
-(`meeting online --cwd ...`) — this test computes the same value up front
-(TEST_PROJECT) and uses it for every identity so monitor's real registration
-and the test's direct HTTP calls land in the same project bucket.
+key (see meeting-daemon docstring "DEPLOY NOTE"). monitor.py normally derives
+its own project from cwd via meeting_common.derive_project(), but that
+derivation depends on cache state under the real ~/.agent-meeting home (an
+explicit --proj declared for this repo root on the host machine wins over
+folder-based guessing). Like test_ws.py, this test instead pins a fixed
+TEST_PROJECT literal and passes it to monitor.py via --proj, which bypasses
+derive_project() entirely, so identity never depends on the machine running
+the test.
 
 Test cases:
   TC-M1: monitor 连上后能收到实时消息并打出正确的通知 stdout 行
@@ -49,12 +52,10 @@ BIN_DIR = os.path.join(os.path.dirname(__file__), "..", "bin")
 MONITOR_PATH = os.path.join(BIN_DIR, "monitor.py")
 DAEMON_PATH = os.path.join(BIN_DIR, "meeting-daemon")
 
-sys.path.insert(0, BIN_DIR)
-import meeting_common  # noqa: E402 -- project derivation must match monitor.py's own
-
-# Same project monitor.py will derive from this process's cwd when it calls
-# `meeting online --cwd <cwd>` (subprocess.Popen inherits our cwd unmodified).
-TEST_PROJECT = meeting_common.derive_project(os.getcwd())
+# Fixed literal, not derived from cwd (mirrors test_ws.py's TEST_PROJECT).
+# monitor.py is launched with --proj TEST_PROJECT (see start_monitor) so its
+# own registration uses this exact value instead of deriving one itself.
+TEST_PROJECT = "ws2monproj"
 
 
 # ---------- minimal WS client (mirrors test_ws.py) ----------
@@ -313,7 +314,7 @@ def start_monitor(name: str, db_dir: str) -> "tuple[subprocess.Popen, list[str],
     env["MEETING_HOME"] = db_dir
 
     proc = subprocess.Popen(
-        [sys.executable, MONITOR_PATH, name],
+        [sys.executable, MONITOR_PATH, name, "--proj", TEST_PROJECT],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
