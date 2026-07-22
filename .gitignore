@@ -12,3 +12,6 @@ agent-meeting-PUBLISH-需求清单.md
 
 # 内部 session 交接归档,不公开
 docs/handoff/
+
+# git worktrees (TDP: 项目内 worktrees/，不入库)
+worktrees/

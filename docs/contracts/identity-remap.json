@@ -1,0 +1,742 @@
+{
+  "schema": "agent-meeting/identity-remap@1",
+  "generated_at": "2026-07-22 07:54 PDT",
+  "generator": "agent-meeting/migrations/0.10.0-identity-remap.py",
+  "source_db": "/Users/tommyclaw/.agent-meeting/db/rooms.db",
+  "canonical": [
+    {
+      "name": "AMBridge",
+      "project": "AMBridge"
+    },
+    {
+      "name": "Tommy",
+      "project": "*"
+    },
+    {
+      "name": "__e2e_test__",
+      "project": "*"
+    },
+    {
+      "name": "am",
+      "project": "AMBridge"
+    },
+    {
+      "name": "am-admin",
+      "project": "*"
+    },
+    {
+      "name": "amb",
+      "project": "AMBridge"
+    },
+    {
+      "name": "amb-admin",
+      "project": "*"
+    },
+    {
+      "name": "amb-plan",
+      "project": "*"
+    },
+    {
+      "name": "amb-wic",
+      "project": "AMBridge"
+    },
+    {
+      "name": "amp",
+      "project": "*"
+    },
+    {
+      "name": "amp-omi-windev-2",
+      "project": "*"
+    },
+    {
+      "name": "atlas",
+      "project": "Atlas"
+    },
+    {
+      "name": "atlas-admin",
+      "project": "*"
+    },
+    {
+      "name": "atlas-dsa",
+      "project": "Atlas"
+    },
+    {
+      "name": "atlas-relay",
+      "project": "Atlas"
+    },
+    {
+      "name": "atlas-win",
+      "project": "Atlas"
+    },
+    {
+      "name": "auditai-engine",
+      "project": "*"
+    },
+    {
+      "name": "auditai-etl",
+      "project": "*"
+    },
+    {
+      "name": "auditai-wic",
+      "project": "*"
+    },
+    {
+      "name": "codex-omi",
+      "project": "*"
+    },
+    {
+      "name": "costy",
+      "project": "costy"
+    },
+    {
+      "name": "cpxy-wic",
+      "project": "*"
+    },
+    {
+      "name": "cpxy-win",
+      "project": "cpxy"
+    },
+    {
+      "name": "cx-saytest",
+      "project": "plugins"
+    },
+    {
+      "name": "cx-slimtest",
+      "project": "meeting-test"
+    },
+    {
+      "name": "cx-test",
+      "project": "meeting-test"
+    },
+    {
+      "name": "gm",
+      "project": "*"
+    },
+    {
+      "name": "mobile",
+      "project": "*"
+    },
+    {
+      "name": "plugins",
+      "project": "plugins"
+    },
+    {
+      "name": "plugins-mac",
+      "project": "*"
+    },
+    {
+      "name": "plugins-wic",
+      "project": "plugins"
+    },
+    {
+      "name": "plugins-win",
+      "project": "plugins"
+    },
+    {
+      "name": "plugins-win-codex",
+      "project": "plugins"
+    },
+    {
+      "name": "probe-ctl",
+      "project": "meeting-test"
+    },
+    {
+      "name": "ris-agent",
+      "project": "Atlas"
+    },
+    {
+      "name": "testag",
+      "project": "*"
+    },
+    {
+      "name": "vfy-final",
+      "project": "plugins"
+    },
+    {
+      "name": "vfy-nw",
+      "project": "plugins"
+    },
+    {
+      "name": "vfy-warm2",
+      "project": "plugins"
+    },
+    {
+      "name": "wda-admin",
+      "project": "*"
+    },
+    {
+      "name": "wda-gm",
+      "project": "wdaudit"
+    },
+    {
+      "name": "wda-laptop",
+      "project": "wdaudit"
+    },
+    {
+      "name": "wdav3",
+      "project": "wdaudit"
+    },
+    {
+      "name": "wdav3-2",
+      "project": "wdaudit"
+    },
+    {
+      "name": "wdav3-audit",
+      "project": "wdaudit"
+    },
+    {
+      "name": "wdav3-laptop",
+      "project": "wdaudit"
+    },
+    {
+      "name": "wdav3-path",
+      "project": "wdaudit"
+    },
+    {
+      "name": "wdav3-test",
+      "project": "wdaudit"
+    },
+    {
+      "name": "zzz-verify-sink",
+      "project": "AMBridge"
+    }
+  ],
+  "mappings": [
+    {
+      "from": {
+        "name": "AMBridge",
+        "project": "standard"
+      },
+      "to": {
+        "name": "AMBridge",
+        "project": "AMBridge"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "standard 是 ~/AIAgent/standard 目录名派生；该会话是 AMBridge 项目的历史会话，人工判定归入 AMBridge",
+      "affected": {
+        "messages": 1,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "Tommy",
+        "project": ""
+      },
+      "to": {
+        "name": "Tommy",
+        "project": "*"
+      },
+      "basis": "auto",
+      "rule": "empty-value",
+      "note": null,
+      "affected": {
+        "messages": 5,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "Tommy",
+        "project": "AMBridge"
+      },
+      "to": {
+        "name": "Tommy",
+        "project": "*"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "Tommy 是人类用户经 AMBridge 中继，权威身份是全局 *，AMBridge 是中继方的项目名被误写为发件人项目",
+      "affected": {
+        "messages": 25,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "Tommy",
+        "project": "Resources"
+      },
+      "to": {
+        "name": "Tommy",
+        "project": "*"
+      },
+      "basis": "auto",
+      "rule": "path-derived",
+      "note": "来自 AMBridge.app/Contents/Resources 的目录名推导",
+      "affected": {
+        "messages": 5,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "atlas",
+        "project": "OMI"
+      },
+      "to": {
+        "name": "atlas",
+        "project": "Atlas"
+      },
+      "basis": "auto",
+      "rule": "path-derived",
+      "note": "上级目录名 ~/AIAgent/OMI/Atlas",
+      "affected": {
+        "messages": 0,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "atlas",
+        "project": "atlas-p3a"
+      },
+      "to": {
+        "name": "atlas",
+        "project": "Atlas"
+      },
+      "basis": "auto",
+      "rule": "doc-alias",
+      "note": null,
+      "affected": {
+        "messages": 2,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "atlas",
+        "project": "atlas-selfdesc"
+      },
+      "to": {
+        "name": "atlas",
+        "project": "Atlas"
+      },
+      "basis": "auto",
+      "rule": "doc-alias",
+      "note": null,
+      "affected": {
+        "messages": 1,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "atlas-relay",
+        "project": "relay-arch-doc"
+      },
+      "to": {
+        "name": "atlas-relay",
+        "project": "Atlas"
+      },
+      "basis": "auto",
+      "rule": "doc-alias",
+      "note": null,
+      "affected": {
+        "messages": 1,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "atlas-relay",
+        "project": "relay-p3a-doc-fix"
+      },
+      "to": {
+        "name": "atlas-relay",
+        "project": "Atlas"
+      },
+      "basis": "auto",
+      "rule": "doc-alias",
+      "note": null,
+      "affected": {
+        "messages": 1,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "atlas-relay",
+        "project": "relay-p3a-s5-doc"
+      },
+      "to": {
+        "name": "atlas-relay",
+        "project": "Atlas"
+      },
+      "basis": "auto",
+      "rule": "doc-alias",
+      "note": null,
+      "affected": {
+        "messages": 5,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "atlas-relay",
+        "project": "~/.claude/projects/-Users-tommyclaw-AIAgent-OMI-Atlas/memory"
+      },
+      "to": {
+        "name": "atlas-relay",
+        "project": "Atlas"
+      },
+      "basis": "auto",
+      "rule": "path-derived",
+      "note": null,
+      "affected": {
+        "messages": 1,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "codex-omi",
+        "project": "AIAgent"
+      },
+      "to": {
+        "name": "codex-omi",
+        "project": "*"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "AIAgent 是 ~/AIAgent 根目录名派生；该会话在 AIAgent 根目录工作，不隶属任何单一项目，人工判定归入全局身份 *（库中已有多个普通会话使用 *，非 relay 专用）",
+      "affected": {
+        "messages": 13,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "cx-slimtest",
+        "project": "admin"
+      },
+      "to": {
+        "name": "cx-slimtest",
+        "project": "meeting-test"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "agent-meeting 插件的测试会话，原有 project 值分别源自 Windows 用户名目录、来路不明的缩写、以及被借用的真实项目名，均非合格权威身份；人工判定归入专用测试项目 meeting-test，便于方案阶段 4 按项目一次性清理，同时避免测试消息混入真实项目",
+      "affected": {
+        "messages": 2,
+        "sessions": 1,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "cx-test",
+        "project": "admin"
+      },
+      "to": {
+        "name": "cx-test",
+        "project": "meeting-test"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "agent-meeting 插件的测试会话，原有 project 值分别源自 Windows 用户名目录、来路不明的缩写、以及被借用的真实项目名，均非合格权威身份；人工判定归入专用测试项目 meeting-test，便于方案阶段 4 按项目一次性清理，同时避免测试消息混入真实项目",
+      "affected": {
+        "messages": 0,
+        "sessions": 1,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "cx-test",
+        "project": "ft"
+      },
+      "to": {
+        "name": "cx-test",
+        "project": "meeting-test"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "agent-meeting 插件的测试会话，原有 project 值分别源自 Windows 用户名目录、来路不明的缩写、以及被借用的真实项目名，均非合格权威身份；人工判定归入专用测试项目 meeting-test，便于方案阶段 4 按项目一次性清理，同时避免测试消息混入真实项目",
+      "affected": {
+        "messages": 15,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "cx-test",
+        "project": "plugins"
+      },
+      "to": {
+        "name": "cx-test",
+        "project": "meeting-test"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "agent-meeting 插件的测试会话，原有 project 值分别源自 Windows 用户名目录、来路不明的缩写、以及被借用的真实项目名，均非合格权威身份；人工判定归入专用测试项目 meeting-test，便于方案阶段 4 按项目一次性清理，同时避免测试消息混入真实项目",
+      "affected": {
+        "messages": 0,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "plugins",
+        "project": "probeproj"
+      },
+      "to": {
+        "name": "plugins",
+        "project": "plugins"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "探测残留身份，但收过 4 条真实消息，人工确认归入 plugins",
+      "affected": {
+        "messages": 4,
+        "sessions": 1,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "plugins-win-codex",
+        "project": "admin"
+      },
+      "to": {
+        "name": "plugins-win-codex",
+        "project": "plugins"
+      },
+      "basis": "auto",
+      "rule": "path-derived",
+      "note": "Windows 用户名目录 C:\\Users\\admin 派生",
+      "affected": {
+        "messages": 6,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "plugins-win-codex",
+        "project": "codex-plugins-dist"
+      },
+      "to": {
+        "name": "plugins-win-codex",
+        "project": "plugins"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "codex-plugins-dist 是 plugins 的分发仓目录名；该会话是 plugins 项目的 Windows codex 端，权威声明已为 plugins",
+      "affected": {
+        "messages": 28,
+        "sessions": 1,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "probe-ctl",
+        "project": "AIAgent"
+      },
+      "to": {
+        "name": "probe-ctl",
+        "project": "meeting-test"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "同为目录名派生；探测控制身份，属测试残留，归入专用测试项目 meeting-test",
+      "affected": {
+        "messages": 2,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "wda-gm",
+        "project": ""
+      },
+      "to": {
+        "name": "wda-gm",
+        "project": "wdaudit"
+      },
+      "basis": "auto",
+      "rule": "empty-value",
+      "note": null,
+      "affected": {
+        "messages": 0,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "wda-gm",
+        "project": "provisional"
+      },
+      "to": {
+        "name": "wda-gm",
+        "project": "wdaudit"
+      },
+      "basis": "auto",
+      "rule": "probe-residue",
+      "note": null,
+      "affected": {
+        "messages": 1,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "wdav3-laptop",
+        "project": "/private/tmp/claude-501/-Users-tommyclaw-AIAgent-wda-v3-agents-wdav3-laptop/f415cbd4-eec7-4036-9dc7-ae4b8d15d500/scratchpad"
+      },
+      "to": {
+        "name": "wdav3-laptop",
+        "project": "wdaudit"
+      },
+      "basis": "auto",
+      "rule": "path-derived",
+      "note": null,
+      "affected": {
+        "messages": 6,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "wdav3-laptop",
+        "project": "WoodorAudit"
+      },
+      "to": {
+        "name": "wdav3-laptop",
+        "project": "wdaudit"
+      },
+      "basis": "manual",
+      "rule": null,
+      "note": "项目更名前的旧名，非路径派生，人工确认为同一项目",
+      "affected": {
+        "messages": 121,
+        "sessions": 0,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "wdav3-laptop",
+        "project": "wda-v3"
+      },
+      "to": {
+        "name": "wdav3-laptop",
+        "project": "wdaudit"
+      },
+      "basis": "auto",
+      "rule": "path-derived",
+      "note": "仓库目录末级名",
+      "affected": {
+        "messages": 16,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    },
+    {
+      "from": {
+        "name": "wdav3-laptop",
+        "project": "~/AIAgent/wda-v3"
+      },
+      "to": {
+        "name": "wdav3-laptop",
+        "project": "wdaudit"
+      },
+      "basis": "auto",
+      "rule": "path-derived",
+      "note": null,
+      "affected": {
+        "messages": 23,
+        "sessions": 0,
+        "read_cursors": 0,
+        "group_members": 0
+      }
+    }
+  ],
+  "deletions": [
+    {
+      "key": {
+        "name": "codex-Tommys-Laptop",
+        "project": "~"
+      },
+      "note": "无消息承载，会话早已离线，project 值全为路径派生且无法追认真实项目，直接删除而非归并（归并会把三个可能不同的真实项目错误合成一个）",
+      "affected": {
+        "messages": 0,
+        "sessions": 1,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "key": {
+        "name": "codex-Tommys-Laptop",
+        "project": "~/AIAgent/idea-bridge"
+      },
+      "note": "无消息承载，会话早已离线，project 值全为路径派生且无法追认真实项目，直接删除而非归并（归并会把三个可能不同的真实项目错误合成一个）",
+      "affected": {
+        "messages": 0,
+        "sessions": 1,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    },
+    {
+      "key": {
+        "name": "codex-Tommys-Laptop",
+        "project": "~/Documents/Codex/2026-07-15/users-tommy-downloads-yyht-2024-0757"
+      },
+      "note": "无消息承载，会话早已离线，project 值全为路径派生且无法追认真实项目，直接删除而非归并（归并会把三个可能不同的真实项目错误合成一个）",
+      "affected": {
+        "messages": 0,
+        "sessions": 1,
+        "read_cursors": 1,
+        "group_members": 0
+      }
+    }
+  ],
+  "row_overrides": []
+}
