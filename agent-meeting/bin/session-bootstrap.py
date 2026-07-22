@@ -891,7 +891,11 @@ def ensure_statusline():
 def online_peers_str() -> str:
     """Online peers = sessions-table rows with a fresh heartbeat (last_seen
     within 12s). Reads rooms.db read-only. The old directory.json + monitor
-    pid-file scheme was removed — never resurrect it."""
+    pid-file scheme was removed — never resurrect it.
+
+    Displayed as name@project (the composite key), not bare name — two
+    live sessions can share a name across different projects, and the CLI's
+    send/read/show/turn already accept name@project to disambiguate."""
     if not DB.exists():
         return "(none online)"
     try:
@@ -900,13 +904,13 @@ def online_peers_str() -> str:
         try:
             cutoff = time.time() - 12
             rows = con.execute(
-                "SELECT name FROM sessions WHERE last_seen >= ? ORDER BY name",
+                "SELECT name, project FROM sessions WHERE last_seen >= ? ORDER BY name, project",
                 (cutoff,),
             ).fetchall()
         finally:
             con.close()
-        names = [r[0] for r in rows]
-        return ", ".join(names) if names else "(none online)"
+        peers = [f"{r[0]}@{r[1]}" for r in rows]
+        return ", ".join(peers) if peers else "(none online)"
     except Exception:
         return "(none online)"
 
