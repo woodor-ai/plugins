@@ -239,18 +239,30 @@ def _save_cursors(cursors: dict) -> None:
         _log(f"cursor persist failed: {e}")
 
 
+# Exit codes from `meeting online` that mean the daemon/CLI made a considered,
+# stable refusal (not a transient hiccup) -- mirrors monitor.py's
+# _NORETRY_EXIT_CODES. 3 = name_taken (a DIFFERENT instance already holds this
+# name with a fresh heartbeat -- not codex-register.py from this same launch,
+# which shares our INSTANCE and is always allowed through). 4 =
+# missing_project_identity (no explicit --proj on this call and no cached
+# declaration for this repo root -- see resolve_authoritative_project). Both
+# are refused for good, so retrying on the next WS reconnect would just spin
+# silently against the same refusal forever; the reason code is passed through
+# unchanged (not remapped to a bridge-local code) so the exit code alone tells
+# the caller which of the two it was.
+_NORETRY_EXIT_CODES = {3, 4}
+
+
 def _register():
     """Ensure the session is registered (idempotent upsert). Heartbeat is kept by
     the WS /subscribe ping-pong; registration must exist.
 
-    Exit code 3 from `meeting online` is the daemon's stable signal that a
-    DIFFERENT instance is registered under this name with a fresh heartbeat --
-    someone else legitimately holds it (not codex-register.py from this same
-    launch, which shares our INSTANCE and is always allowed through). Running on
-    unregistered while still relaying inbound messages is exactly the
-    silent-displacement bug this instance guard exists to prevent, so this is
-    fatal for the bridge (mirrors monitor.py's hard-exit on the same refusal) --
-    it dies loudly to bridge.log instead of limping along invisibly."""
+    Running unregistered while still relaying inbound messages is exactly the
+    silent-displacement / silent-drift bug the instance guard and the
+    authoritative-identity check exist to prevent, so a refusal in
+    _NORETRY_EXIT_CODES is fatal for the bridge (mirrors monitor.py's hard-exit
+    on the same refusals) -- it dies loudly to bridge.log instead of limping
+    along invisibly or spinning on an unwinnable retry."""
     cwd, _ = _current_identity()
     extra = ["--instance", INSTANCE] if INSTANCE else []
     try:
@@ -258,13 +270,15 @@ def _register():
     except Exception as e:
         _log(f"re-register failed ({type(e).__name__}); will retry on reconnect")
         return
-    if r.returncode == 3:
+    if r.returncode in _NORETRY_EXIT_CODES:
         _fatal(
-            f"registration for '{SELF}' refused: {(r.stderr or '').strip()} "
-            "-- another live process already holds this name; not relaying "
-            "messages while unregistered. Run `meeting list` to see who holds "
-            "it, then `meeting stop` it or restart this bridge once it clears.",
-            code=7,
+            f"registration for '{SELF}' refused (exit {r.returncode}): {(r.stderr or '').strip()} "
+            "-- not relaying messages while unregistered. If exit 3: another live "
+            "process already holds this name -- run `meeting list` to see who, "
+            "then `meeting stop` it or restart this bridge once it clears. If exit "
+            "4: no authoritative project identity for this repo root -- launch "
+            "with `mycodex <name> --proj <value>` once to declare one.",
+            code=r.returncode,
         )
     elif r.returncode != 0:
         _log(f"re-register failed (exit {r.returncode}): {(r.stderr or '').strip()}; "

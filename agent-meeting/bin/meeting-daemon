@@ -697,7 +697,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self._register(
                     body["project"], body["name"],
                     body.get("cwd"), body.get("force", False), body.get("role"),
-                    body.get("host"), body.get("os"), body.get("instance")
+                    body.get("host"), body.get("os"), body.get("instance"),
+                    body.get("client_version"),
                 ))
             if path == "/unregister":
                 return self._json(200, self._unregister(body["project"], body["name"]))
@@ -853,7 +854,7 @@ class Handler(BaseHTTPRequestHandler):
         return rows
 
     def _register(self, project: str, name: str, cwd, force: bool,
-                  role=None, host=None, os_label=None, instance=None):
+                  role=None, host=None, os_label=None, instance=None, client_version=None):
         # Normalize "" to None (the single choke point -- callers may send either
         # for "no instance"; treating them as distinct would make two callers that
         # both omit --instance collide as "same instance" via "" == "").
@@ -883,13 +884,14 @@ class Handler(BaseHTTPRequestHandler):
                         "code": "name_taken",
                     }
             conn.execute(
-                "INSERT INTO sessions (project, name, cwd, host, os, instance, registered_at, last_seen, role)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'worker'))"
+                "INSERT INTO sessions"
+                " (project, name, cwd, host, os, instance, registered_at, last_seen, role, client_version)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'worker'), ?)"
                 " ON CONFLICT(project, name) DO UPDATE SET"
                 "  cwd=excluded.cwd, host=excluded.host, os=excluded.os, instance=excluded.instance,"
                 "  registered_at=excluded.registered_at, last_seen=excluded.last_seen,"
-                "  role=COALESCE(?, role)",
-                (project, name, cwd, host, os_label, instance, str(int(now)), now, role, role),
+                "  role=COALESCE(?, role), client_version=excluded.client_version",
+                (project, name, cwd, host, os_label, instance, str(int(now)), now, role, client_version, role),
             )
         return {"ok": True, "project": project, "name": name}
 
@@ -1381,6 +1383,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   registered_at TEXT,
   last_seen     REAL,
   role          TEXT NOT NULL DEFAULT 'worker',
+  client_version TEXT,
   PRIMARY KEY (project, name)
 );
 
@@ -1460,6 +1463,12 @@ def main():
         cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
         if "instance" not in cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN instance TEXT")
+
+    # Idempotent migration: add client_version column to sessions if missing (existing deployments).
+    with db() as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "client_version" not in cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN client_version TEXT")
 
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((args.bind, args.port), Handler)

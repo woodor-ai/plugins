@@ -83,12 +83,18 @@ def main():
         # (d) validate_proj: accepts a valid value, rejects invalid ones
         got = meeting_common.validate_proj("  my-proj  ")
         check("(d) validate_proj strips a valid value", got == "my-proj", f"got {got!r}")
-        for bad in ("", "   ", "*", "has space", "has\tcontrol"):
+        for bad in ("", "   ", "has space", "has\tcontrol"):
             try:
                 meeting_common.validate_proj(bad)
                 check(f"(d) validate_proj rejects {bad!r}", False, "did not raise")
             except ValueError:
                 check(f"(d) validate_proj rejects {bad!r}", True)
+        # "*" is a valid explicit declaration (composite-key-identity 0.10.0):
+        # --proj=* reaches the same project="*" end state as --global, and
+        # must not be special-cased out of the explicit-identity path.
+        got_star = meeting_common.validate_proj("*")
+        check("(d) validate_proj accepts '*' as an explicit declaration",
+              got_star == "*", f"got {got_star!r}")
 
         # (e) codex-meeting's --proj cache write == meeting online --proj's
         root_e = tempfile.mkdtemp(prefix="am-proj-root-e-")

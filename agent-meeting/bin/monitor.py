@@ -91,6 +91,20 @@ PID_FILE = RUN_DIR / f"{SELF}.pid"
 
 _derive_project = meeting_common.derive_project
 
+# Read once at startup -- reported to the daemon on every (re)register so
+# `meeting list` / sessions rows can tell which plugin build a live session
+# is running. config.json (not plugin.json) is the only version source
+# monitor.py can reliably read: it runs from the copied ~/.agent-meeting/bin
+# runtime, not the plugin source tree, with no CLAUDE_PLUGIN_ROOT guarantee.
+_CLIENT_VERSION = meeting_common.read_plugin_version(DATA)
+
+# Exit codes from `meeting online` that mean the daemon/CLI made a considered,
+# stable refusal (not a transient hiccup) -- retrying would either spin
+# forever against the same refusal (name_taken) or repeatedly fail to send a
+# request that was never even attempted (missing_project_identity). Any other
+# non-zero code is treated as transient and retried on the next reconnect.
+_NORETRY_EXIT_CODES = {3, 4}  # 3=name_taken, 4=missing_project_identity
+
 
 # Derive project once at startup from cwd — stored for WS handshake. An
 # explicit --proj bypasses derivation directly (mirrors `meeting online
@@ -128,6 +142,8 @@ def _register():
         extra += ["--proj", IS_PROJ]
     if IS_HOST:
         extra += ["--host", IS_HOST]
+    if _CLIENT_VERSION:
+        extra += ["--client-version", _CLIENT_VERSION]
     if _force_next:
         extra.append("--force")
         # One-shot: this call is the takeover the user asked for. Later
@@ -144,13 +160,18 @@ def _register():
     # case this re-register exists to cover). Swallow non-refusal failures; the
     # next reconnect cycle retries.
     #
-    # Exit code 3 is different: the daemon is telling us, by a stable code (not
-    # string-matched), that a DIFFERENT live process is already registered under
-    # this name (different --instance, heartbeat still fresh). That is not a
-    # transient hiccup to retry -- someone else legitimately holds this name, so
-    # we must not silently take over. Exit immediately via os._exit(), which
-    # skips atexit (this file's _unregister included), so we never delete the
-    # winner's registration row.
+    # Exit codes in _NORETRY_EXIT_CODES are different: the daemon/CLI is telling
+    # us, by a stable code (not string-matched), that this registration was
+    # considered and refused -- not a transient hiccup to retry. 3 = a DIFFERENT
+    # live process already holds this name (different --instance, heartbeat
+    # still fresh); 4 = no authoritative project identity was resolvable (no
+    # --proj on this call, no cached declaration for this repo root) so the CLI
+    # never even sent the request. Neither should be retried -- 3 because
+    # someone else legitimately holds the name, 4 because retrying an
+    # unchanged cwd/args set produces the identical refusal forever, spinning
+    # silently instead of surfacing the fix (pass --proj). Exit immediately via
+    # os._exit(), which skips atexit (this file's _unregister included), so we
+    # never delete another process's registration row.
     try:
         r = _run_meeting("online", SELF, "--cwd", _CWD, "--instance", INSTANCE, *extra)
     except Exception as e:
@@ -159,9 +180,9 @@ def _register():
                          f"will retry on next reconnect\n")
         sys.stderr.flush()
         r = None
-    if r is not None and r.returncode == 3:
-        sys.stderr.write(f"[meeting {_display_id}] registration refused, exiting: "
-                         f"{r.stderr.strip()}\n")
+    if r is not None and r.returncode in _NORETRY_EXIT_CODES:
+        sys.stderr.write(f"[meeting {_display_id}] registration refused (exit {r.returncode}), "
+                         f"exiting: {r.stderr.strip()}\n")
         sys.stderr.flush()
         os._exit(1)
     if r is not None and r.returncode == 0:

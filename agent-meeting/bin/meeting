@@ -793,14 +793,27 @@ def cmd_online(args):
     explicit_proj = getattr(args, "proj", None)
     if is_global:
         project = "*"
-    elif explicit_proj is not None:
-        try:
-            project = meeting_common.validate_proj(explicit_proj)
-        except ValueError as e:
-            print(f"online: {e}", file=sys.stderr)
-            sys.exit(2)
     else:
-        project = _derive_project(cwd)
+        if explicit_proj is not None:
+            try:
+                explicit_proj = meeting_common.validate_proj(explicit_proj)
+            except ValueError as e:
+                print(f"online: {e}", file=sys.stderr)
+                sys.exit(2)
+        # Authoritative identity only: an explicit --proj (this call or a past
+        # one cached for this repo root). No path-based fallback -- a session
+        # with neither must not silently register under a cwd-derived guess
+        # (see docs/contracts/0.10.0-composite-key-identity.md).
+        project = meeting_common.resolve_authoritative_project(cwd, explicit_proj)
+        if project is None:
+            print(json.dumps({"ok": False, "code": "missing_project_identity"}))
+            print(
+                f"online: no project identity for cwd={cwd} -- pass --proj explicitly "
+                "(no explicit --proj on this call and no cached declaration for this "
+                "repo root); registration was not attempted.",
+                file=sys.stderr,
+            )
+            sys.exit(4)
     host_name = socket.gethostname()
 
     explicit_host = getattr(args, "host", None)
@@ -816,6 +829,7 @@ def cmd_online(args):
         "role": "director" if args.director else "worker",
         "host": host_name, "os": _OS_LABEL,
         "instance": getattr(args, "instance", None),
+        "client_version": getattr(args, "client_version", None),
     }
     r = http("POST", host, "/register", body=payload)
     if r.get("error"):
@@ -830,12 +844,6 @@ def cmd_online(args):
     # since that override is transient and shouldn't be persisted.
     if not os.environ.get("MEETING_HOST"):
         _write_control_cache(host)
-
-    # Explicit --proj declarations stick per repo root so future sessions in
-    # this same repo (this machine or a clone elsewhere with the same
-    # home-relative layout) don't have to re-type it.
-    if explicit_proj is not None and not is_global:
-        meeting_common.proj_cache_set(meeting_common._project_root(cwd), project)
 
     display = name if project == "*" else f"{name}@{project}"
     print(f"online: {display} (cwd={cwd}, host={host_name})")
@@ -1512,6 +1520,9 @@ def main():
                    help="process-unique id (e.g. a monitor's own uuid) so daemon-restart reconnects "
                         "of the SAME process are always allowed, while a DIFFERENT live process "
                         "registering the same name is refused instead of silently taking over")
+    s.add_argument("--client-version", dest="client_version", default=None,
+                   help="reporting client's plugin version (e.g. monitor.py's), stored on the "
+                        "session row for observability; omit for no value")
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_online)
 

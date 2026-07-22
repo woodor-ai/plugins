@@ -42,7 +42,7 @@ import time
 from pathlib import Path
 
 HOME = Path.home()
-AM_HOME = HOME / ".agent-meeting"
+AM_HOME = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
 CODEX_DIR = AM_HOME / "codex"
 RUNTIME_JSON = CODEX_DIR / "runtime.json"
 SESSIONS_DIR = CODEX_DIR / "sessions"
@@ -123,14 +123,21 @@ def main() -> None:
     if control_url:
         cmd += ["--host", control_url]
     reg_status = "?"
-    name_taken = False
+    # 3 = name_taken (a different live process holds this name), 4 =
+    # missing_project_identity (no explicit --proj on this call and no cached
+    # declaration for this repo root -- see resolve_authoritative_project).
+    # Both are stable, considered refusals -- not "registered, some other rc"
+    # -- so both take the "not bridged" reporting branch below instead of the
+    # generic non-fatal one. Mirrors monitor.py's/codex-bridge.py's
+    # _NORETRY_EXIT_CODES = {3, 4}.
+    refusal_code = None
     kw = {"creationflags": 0x08000000} if sys.platform.startswith("win") else {}  # CREATE_NO_WINDOW
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, **kw)
         if r.returncode == 0:
             reg_status = "online"
-        elif r.returncode == 3:
-            name_taken = True
+        elif r.returncode in (3, 4):
+            refusal_code = r.returncode
             reg_status = f"refused: {(r.stderr or r.stdout).strip()[:200]}"
         else:
             # some other registration failure — non-fatal, keep session alive
@@ -153,7 +160,7 @@ def main() -> None:
     except OSError as e:
         map_status = f"落映射失败：{e}"
 
-    if name_taken:
+    if refusal_code == 3:
         # Unmistakable refusal message -- do NOT reuse the "已注册为...桥接就绪"
         # success wording here (TDP: don't silently fail, don't dress it up as ok).
         emit(
@@ -161,6 +168,13 @@ def main() -> None:
             f"（{reg_status}）。本会话未桥接，收不到 live-wake 消息。"
             f"跑 `meeting list` 看谁占着，`meeting stop {name}` 停掉它后重开，"
             "或用别的名字重新启动 mycodex。"
+        )
+    elif refusal_code == 4:
+        emit(
+            f"[meeting] 未注册为 {name}：没有权威项目身份（{reg_status}）。"
+            "本会话未桥接，收不到 live-wake 消息。"
+            f"用 `mycodex {name} --proj <标识>` 为这个仓库根目录声明一次项目身份后重启会话，"
+            "或用 `--global` 声明全局身份。"
         )
     else:
         emit(

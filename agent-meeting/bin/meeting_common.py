@@ -97,19 +97,52 @@ def proj_cache_set(root: str, proj: str) -> None:
 def validate_proj(proj: str) -> str:
     """Validate an explicit --proj declaration and return its stripped value.
 
-    Raises ValueError if proj is empty after stripping, is "*" (reserved for
-    --global), or contains whitespace/control characters. Shared by `meeting
-    online`'s --proj handling and codex-meeting.py's --proj cache write, so
-    the two enforce the exact same rule.
+    Raises ValueError if proj is empty after stripping, or contains
+    whitespace/control characters. "*" IS a valid explicit declaration --
+    --global is the normal spelling for a global identity (project="*") but
+    --proj=* reaches the identical end state through the explicit-identity
+    path, and resolve_authoritative_project() treats any non-None explicit
+    value (including "*") as authoritative with no whitelist of its own; this
+    validator must not special-case it either. Shared by `meeting online`'s
+    --proj handling and codex-meeting.py's --proj cache write, so the two
+    enforce the exact same rule.
     """
     stripped = proj.strip()
     if not stripped:
         raise ValueError("--proj must not be empty")
-    if stripped == "*":
-        raise ValueError("--proj cannot be '*' (reserved for --global)")
     if any(c.isspace() or ord(c) < 0x20 for c in stripped):
         raise ValueError(f"--proj {proj!r} must not contain whitespace or control characters")
     return stripped
+
+
+def resolve_authoritative_project(cwd: str, explicit_proj: "str | None"):
+    """Resolve the authoritative project identity for a REGISTRATION attempt.
+
+    An "authoritative" identity is one of:
+      1. explicit_proj -- a --proj value passed on THIS call (already validated
+         by the caller via validate_proj(), including "*" for --global callers
+         that route around this function's default branch). Wins unconditionally
+         and is cached for this root so a later call with no --proj reuses it
+         (case 2). Any non-None value is accepted as-is -- this function does
+         no format/whitelist check of its own; that is validate_proj()'s job.
+      2. The cached explicit declaration for this root, from a PAST call that
+         passed case 1.
+
+    Unlike derive_project(), this NEVER falls back to path-based derivation --
+    a caller with neither an explicit nor a cached identity gets None back
+    (registration must then refuse, not silently guess from cwd). Only the
+    registration path (`meeting online`) uses this; every other site (message
+    routing, peer resolution, terminal-title labels, ...) keeps using
+    derive_project(), which still has the path-fallback for identities that
+    were established by whatever means before this call.
+
+    Returns the resolved project, or None if neither exists.
+    """
+    root = _project_root(cwd)
+    if explicit_proj is not None:
+        proj_cache_set(root, explicit_proj)
+        return explicit_proj
+    return proj_cache_get(root)
 
 
 def derive_project(cwd: str) -> str:
@@ -220,6 +253,22 @@ def read_auth_token(data_dir):
     try:
         with open(os.path.join(str(data_dir), "config.json")) as f:
             return json.load(f).get("auth_token") or None
+    except Exception:
+        return None
+
+
+def read_plugin_version(data_dir):
+    """Read `plugin_version` from <data_dir>/config.json, or None.
+
+    session-bootstrap.py's load_or_create_config() stamps this field from
+    plugin.json at install/upgrade time. Callers that run copied to
+    ~/.agent-meeting/bin (monitor.py) have no reliable path back to the
+    plugin source tree's plugin.json (no CLAUDE_PLUGIN_ROOT env guarantee),
+    so config.json is the only version source they can read.
+    """
+    try:
+        with open(os.path.join(str(data_dir), "config.json")) as f:
+            return json.load(f).get("plugin_version") or None
     except Exception:
         return None
 
