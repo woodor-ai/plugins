@@ -184,6 +184,58 @@ class TestCostEditDelegate(unittest.TestCase):
         result = run_hook(edit_stdin("Write", agent_id="sub-456"), self.cfg)
         self.assertIsNone(result)
 
+    # Case 13: main agent writes the handoff card (relative path) → allowed
+    def test_main_agent_handoff_card_relative_path_is_allowed(self):
+        result = run_hook(
+            edit_stdin("Write", file_path=".claude/handoff-pending.md"), self.cfg
+        )
+        self.assertIsNone(result)
+
+    # Case 14: main agent writes the handoff card (absolute path) → allowed
+    def test_main_agent_handoff_card_absolute_path_is_allowed(self):
+        result = run_hook(
+            edit_stdin(
+                "Write",
+                file_path="/Users/x/AIAgent/proj/.claude/handoff-pending.md",
+            ),
+            self.cfg,
+        )
+        self.assertIsNone(result)
+
+    # Case 15: main agent writes a memory file (~/.claude/projects/.../memory/foo.md) → allowed
+    def test_main_agent_memory_file_is_allowed(self):
+        path = os.path.expanduser(
+            "~/.claude/projects/-Users-x-proj/memory/foo.md"
+        )
+        result = run_hook(edit_stdin("Write", file_path=path), self.cfg)
+        self.assertIsNone(result)
+
+    # Case 16: main agent writes MEMORY.md index → allowed
+    def test_main_agent_memory_index_is_allowed(self):
+        path = os.path.expanduser(
+            "~/.claude/projects/-Users-x-proj/memory/MEMORY.md"
+        )
+        result = run_hook(edit_stdin("Write", file_path=path), self.cfg)
+        self.assertIsNone(result)
+
+    # Case 17: main agent writes a normal code file → still denied (regression)
+    def test_main_agent_normal_file_still_denied(self):
+        result = run_hook(
+            edit_stdin("Write", file_path="/Users/x/proj/src/main.py"), self.cfg
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    # Case 18: subagent writes a normal code file → still allowed (original exemption unaffected)
+    def test_subagent_normal_file_still_allowed(self):
+        result = run_hook(
+            edit_stdin(
+                "Write", file_path="/Users/x/proj/src/main.py", agent_id="sub-789"
+            ),
+            self.cfg,
+        )
+        self.assertIsNone(result)
+
 
 # ---------------------------------------------------------------------------
 # Entry point

@@ -18,7 +18,32 @@ import sys
 
 CONFIG_PATH = os.path.expanduser("~/.claude/cost-opt.json")
 
-DENY_REASON = "本任务需派 rd（或 explore）subagent 执行，主 agent 不直接改文件。"
+DENY_REASON = (
+    "本任务需派 rd（或 explore）subagent 执行，主 agent 不直接改文件（TDP §3.1）；"
+    "主 agent 是最贵的模型，拿去干一行 Edit 是双重浪费。"
+    "确需主 agent 亲手改，设环境变量 CLAUDE_ALLOW_MAIN_EDIT=1 再改，"
+    "或把 ~/.claude/cost-opt.json 的 edit_delegate.enabled 设为 false 关闭本闸。"
+)
+
+
+def is_exempt(file_path):
+    """
+    Some files are the main agent's own job to write, not a subagent's — a
+    dispatched subagent has no access to the main agent's session state, so
+    delegating these would be structurally wrong, not just wasteful:
+      - the handoff card (handoff plugin's SKILL.md has the main agent write
+        this itself, capturing its own in-flight session state)
+      - persistent memory files under ~/.claude/projects/*/memory/ (the main
+        agent's own memory curation)
+    """
+    if not file_path:
+        return False
+    normalized = file_path.replace("\\", "/")
+    if normalized.endswith(".claude/handoff-pending.md"):
+        return True
+    if "/.claude/projects/" in normalized and "/memory/" in normalized:
+        return True
+    return False
 
 
 def load_enabled():
@@ -53,6 +78,11 @@ def main():
 
         # Escape hatch for a deliberate main-agent edit.
         if os.environ.get("CLAUDE_ALLOW_MAIN_EDIT") == "1":
+            sys.exit(0)
+
+        # Structurally main-agent-only files (handoff card, memory files).
+        file_path = stdin_data.get("tool_input", {}).get("file_path")
+        if is_exempt(file_path):
             sys.exit(0)
 
         # At this point: main agent + Edit/Write.
