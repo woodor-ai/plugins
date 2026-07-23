@@ -699,6 +699,12 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             if path == "/unregister":
                 return self._json(200, self._unregister(body["project"], body["name"]))
+            if path == "/prune":
+                return self._json(200, self._prune(
+                    float(body.get("older_than_days", 7)),
+                    bool(body.get("include_referenced", False)),
+                    bool(body.get("apply", False)),
+                ))
             if path == "/rename":
                 result = self._rename(body["project"], body["old"], body["new"])
                 status = 400 if result.get("error") else 200
@@ -894,6 +900,56 @@ class Handler(BaseHTTPRequestHandler):
                 (project, name, cwd, host, os_label, instance, str(int(now)), now, role, client_version, role),
             )
         return {"ok": True, "project": project, "name": name}
+
+    def _prune(self, older_than_days: float, include_referenced: bool, apply: bool):
+        """Drop stale sessions rows. Never touches messages.
+
+        Two guards, both structural rather than advisory:
+
+        1. A live session is never a candidate, whatever `older_than_days` says
+           -- the cutoff is clamped to at least ONLINE_THRESHOLD in the past, so
+           `--older-than=0` still cannot delete the identity of a monitor that
+           is heartbeating right now.
+        2. An identity referenced by any message is skipped unless the caller
+           opts in with include_referenced. The sessions row is the only place
+           that records where an identity lived (cwd/host/os/role); messages
+           carry the composite key but none of that provenance. Deleting the
+           card while keeping the letters loses provenance and buys nothing --
+           being offline is not evidence an identity is junk. Real debris (test
+           registrations that never spoke) has zero messages and prunes freely.
+        """
+        now = time.time()
+        cutoff = min(now - older_than_days * 86400.0, now - ONLINE_THRESHOLD)
+        prune, skipped = [], []
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT project, name, cwd, host, os, role, last_seen FROM sessions"
+                " WHERE COALESCE(last_seen, 0) < ?",
+                (cutoff,),
+            ).fetchall()
+            for r in rows:
+                msgs = conn.execute(
+                    "SELECT COUNT(*) AS c FROM messages"
+                    " WHERE (sender_project=? AND sender=?)"
+                    "    OR (recipient_project=? AND recipient=?)",
+                    (r["project"], r["name"], r["project"], r["name"]),
+                ).fetchone()["c"]
+                item = {
+                    "project": r["project"], "name": r["name"],
+                    "cwd": r["cwd"], "host": r["host"], "os": r["os"],
+                    "role": r["role"] or "worker",
+                    "last_seen": r["last_seen"] or 0,
+                    "age_days": round((now - (r["last_seen"] or 0)) / 86400.0, 1),
+                    "msgs": msgs,
+                }
+                (skipped if (msgs and not include_referenced) else prune).append(item)
+            if apply:
+                for it in prune:
+                    conn.execute(
+                        "DELETE FROM sessions WHERE project=? AND name=?",
+                        (it["project"], it["name"]),
+                    )
+        return {"applied": apply, "pruned": prune, "skipped_referenced": skipped}
 
     def _unregister(self, project: str, name: str):
         # Report whether a row actually existed at this composite key -- an

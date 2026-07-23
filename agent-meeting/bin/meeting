@@ -1512,6 +1512,59 @@ def cmd_list(args):
         print(f"{r['status']}\t{r['name']}\t{r['project']}\t{r['msgs']}\t{r.get('role') or 'worker'}\t{r.get('cwd') or ''}\t{r.get('host') or ''}\t{r.get('os') or ''}")
 
 
+def cmd_projcache(args):
+    action = getattr(args, "action", None) or "list"
+    cwd = os.getcwd()
+    root = meeting_common._project_root(cwd)
+
+    if action == "list":
+        entries = meeting_common.proj_cache_entries()
+        if not entries:
+            print("no cached project declarations")
+            return
+        for e in entries:
+            current = "*" if e["root"] == root else " "
+            label = e["root"] or f"(unknown root, key={e['key']})"
+            print(f"[{current}] {label}\t{e['proj']}")
+        return
+
+    if action == "clear":
+        if getattr(args, "all", False):
+            n = meeting_common.proj_cache_clear_all()
+            print(f"cleared {n} cached declaration(s)")
+            return
+        proj = meeting_common.proj_cache_get(root)
+        if meeting_common.proj_cache_clear(root):
+            print(f"cleared cached declaration for {root}: {proj}")
+        else:
+            print(f"no cached declaration for {root}")
+
+
+def cmd_prune(args):
+    host = _resolve_host(getattr(args, "host", None))
+    r = http("POST", host, "/prune", body={
+        "older_than_days": args.older_than,
+        "include_referenced": args.include_referenced,
+        "apply": args.yes,
+    })
+    prune, skipped = r["pruned"], r["skipped_referenced"]
+
+    for it in skipped:
+        print(f"skip   {it['name']}@{it['project']}\t{it['age_days']}d\t{it['msgs']} msgs\t(has history)")
+    for it in prune:
+        verb = "pruned" if r["applied"] else "would prune"
+        print(f"{verb} {it['name']}@{it['project']}\t{it['age_days']}d\t{it['msgs']} msgs\t{it['host'] or '?'}")
+
+    if not prune and not skipped:
+        print(f"nothing older than {args.older_than}d")
+        return
+    if r["applied"]:
+        print(f"\npruned {len(prune)} session row(s); {len(skipped)} kept (referenced by messages)")
+    else:
+        print(f"\ndry run -- {len(prune)} row(s) would be pruned, {len(skipped)} kept. "
+              f"Re-run with --yes to apply.")
+
+
 # ---------- main ----------
 
 def main():
@@ -1555,6 +1608,20 @@ def main():
     s = sub.add_parser("list", help="list all session names with status + msg count")
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_list)
+
+    s = sub.add_parser("prune", help="drop stale sessions rows (dry run unless --yes); never touches messages")
+    s.add_argument("--older-than", dest="older_than", type=float, default=7,
+                   help="only consider rows whose last heartbeat is older than N days (default 7)")
+    s.add_argument("--include-referenced", dest="include_referenced", action="store_true",
+                   help="also prune identities that appear in messages (their history stays)")
+    s.add_argument("--yes", action="store_true", help="actually delete; without it this is a dry run")
+    s.add_argument("--host", default=None)
+    s.set_defaults(func=cmd_prune)
+
+    s = sub.add_parser("projcache", help="inspect/clear cached --proj declarations (local only, no daemon call)")
+    s.add_argument("action", nargs="?", choices=["list", "clear"], default="list")
+    s.add_argument("--all", action="store_true", help="with clear: clear every cached declaration, not just this cwd's repo root")
+    s.set_defaults(func=cmd_projcache)
 
     s = sub.add_parser("delete", help="clear all messages with a peer (hard delete, atomic)")
     s.add_argument("self_arg", metavar="self")

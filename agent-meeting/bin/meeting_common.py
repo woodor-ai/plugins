@@ -69,30 +69,92 @@ def _project_root(cwd: str) -> str:
 
 
 def proj_cache_path(root: str) -> str:
-    """Path to the cached explicit --proj declaration for a given repo root."""
+    """Path to the cached explicit --proj declaration for a given repo root.
+
+    File format: first line is the value (the proj), any further lines are
+    display-only metadata (currently: the root, written by proj_cache_set so
+    proj_cache_entries() can show a human-readable key -> root mapping without
+    re-deriving it, since the key itself is an opaque sha1 hash).
+    """
     key = hashlib.sha1(os.path.normpath(root).encode("utf-8", "replace")).hexdigest()[:16]
     return os.path.join(MEETING_HOME, "projcache", key)
 
 
 def proj_cache_get(root: str):
-    """Return the cached proj for root, or None if never declared."""
+    """Return the cached proj for root (first line of the cache file), or None if never declared."""
     try:
         with open(proj_cache_path(root)) as f:
-            val = f.read().strip()
+            val = f.readline().strip()
             return val or None
     except Exception:
         return None
 
 
 def proj_cache_set(root: str, proj: str) -> None:
-    """Cache an explicit --proj declaration for root. Best-effort."""
+    """Cache an explicit --proj declaration for root. Best-effort.
+
+    Writes two lines: first the value (proj), then the root for display
+    purposes (see proj_cache_path's docstring).
+    """
     try:
         path = proj_cache_path(root)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
-            f.write(proj)
+            f.write(f"{proj}\n{root}\n")
     except Exception:
         pass
+
+
+def proj_cache_entries() -> list:
+    """List all cached --proj declarations under MEETING_HOME/projcache/.
+
+    Returns a list of {"key", "proj", "root"} dicts, sorted by root (entries
+    with no recoverable root sort last) then by key. "root" is None for cache
+    files written before the two-line format (or otherwise unreadable).
+    """
+    cache_dir = os.path.join(MEETING_HOME, "projcache")
+    entries = []
+    try:
+        keys = os.listdir(cache_dir)
+    except FileNotFoundError:
+        keys = []
+    for key in keys:
+        try:
+            with open(os.path.join(cache_dir, key)) as f:
+                lines = f.read().splitlines()
+        except Exception:
+            continue
+        proj = lines[0].strip() if lines else ""
+        root = lines[1].strip() if len(lines) > 1 else None
+        entries.append({"key": key, "proj": proj, "root": root or None})
+    entries.sort(key=lambda e: (e["root"] is None, e["root"] or "", e["key"]))
+    return entries
+
+
+def proj_cache_clear(root: str) -> bool:
+    """Delete the cached --proj declaration for root. Returns True if a file was removed."""
+    try:
+        os.remove(proj_cache_path(root))
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def proj_cache_clear_all() -> int:
+    """Delete every cached --proj declaration. Returns the number of files removed."""
+    cache_dir = os.path.join(MEETING_HOME, "projcache")
+    try:
+        keys = os.listdir(cache_dir)
+    except FileNotFoundError:
+        return 0
+    removed = 0
+    for key in keys:
+        try:
+            os.remove(os.path.join(cache_dir, key))
+            removed += 1
+        except Exception:
+            pass
+    return removed
 
 
 def validate_proj(proj: str) -> str:

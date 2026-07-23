@@ -45,6 +45,15 @@ Reserved names (cannot be used as session names): `list` `delete` `rename` `stop
 
 Also understands natural language forms like "tell Alice to check the logs" or "ask Bob what branch he's on".
 
+### CLI maintenance commands
+
+Not exposed as slash commands — run directly via `~/.agent-meeting/bin/meeting <cmd>`:
+
+| Command | What it does |
+|---|---|
+| `meeting prune [--older-than N] [--include-referenced] [--yes]` | Drop stale `sessions` rows (dry run unless `--yes`); never touches message history |
+| `meeting projcache [list\|clear] [--all]` | Inspect or clear this machine's cached `--proj` declarations (local file only, no daemon call) |
+
 ## Configuration
 
 ### `~/.agent-meeting/config.json`

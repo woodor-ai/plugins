@@ -12,6 +12,7 @@
      MEETING_HOME=$(mktemp -d) python3 agent-meeting/tests/test_ws.py
      MEETING_HOME=$(mktemp -d) python3 agent-meeting/tests/test_ws_monitor.py
      MEETING_HOME=$(mktemp -d) python3 agent-meeting/tests/test_authoritative_project.py
+     MEETING_HOME=$(mktemp -d) python3 agent-meeting/tests/test_prune.py
 
    pytest collection must skip these — it would otherwise report
    "fixture 'meeting_home'/'db_dir' not found" for every function, which is
@@ -23,4 +24,5 @@ collect_ignore = [
     "test_ws.py",
     "test_ws_monitor.py",
     "test_authoritative_project.py",
+    "test_prune.py",
 ]
