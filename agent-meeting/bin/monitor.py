@@ -312,9 +312,9 @@ def _emit_message(peer: str, peer_project: str, ask, group=None, mentioned: bool
         clean = ask.replace("\r", " ").replace("\n", " ")
         if len(clean) > 100:
             clean = clean[:100] + "..."
-        print(f"New Message from {peer_id}{location} [unverified peer]: {clean}", flush=True)
+        print(f"📬 New Message from {peer_id}{location} [unverified peer]: {clean}", flush=True)
     else:
-        print(f"New Message from {peer_id}{location} [unverified peer]", flush=True)
+        print(f"📬 New Message from {peer_id}{location} [unverified peer]", flush=True)
 
 
 def _on_text(msg: dict) -> None:

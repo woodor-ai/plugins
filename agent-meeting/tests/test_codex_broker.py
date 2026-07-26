@@ -62,11 +62,13 @@ def test_normal_messages_are_coalesced_in_global_id_order():
     selected, text = broker.build_injection(session)
 
     assert selected == [101, 104]
-    assert text.startswith(
-        "[meeting self=plugins@tools messages=2 ids=101,104]"
+    assert text == (
+        "📬 New Message from alice@one [unverified peer]\n"
+        "  Message ID: 101\n"
+        "📬 New Message from bob@two in group review [unverified peer]\n"
+        "  Message ID: 104\n"
+        "Agent-meeting recipient: plugins@tools"
     )
-    assert "[peer=alice@one msg_id=101]" in text
-    assert "[group=review peer=bob@two msg_id=104]" in text
 
 
 def test_control_message_is_not_batched_with_normal_messages():
@@ -159,7 +161,8 @@ def test_global_identity_and_sender_keep_canonical_star_suffix():
     _, text = broker.build_injection(session)
 
     assert session.identity == "global-agent@*"
-    assert "[peer=global-peer@* msg_id=1]" in text
+    assert "📬 New Message from global-peer@* [unverified peer]" in text
+    assert "Agent-meeting recipient: global-agent@*" in text
 
 
 def test_consuming_a_page_fetches_the_next_page(monkeypatch):
@@ -250,6 +253,42 @@ def test_launcher_always_connects_through_session_proxy():
         "--remote",
         "ws://127.0.0.1:49152",
     ]
+
+
+def test_launcher_exports_common_meeting_identity_and_host(monkeypatch):
+    module = load(LAUNCHER_PATH, "codex_meeting_environment")
+    launcher = module.Launcher(
+        "alice",
+        "proj",
+        "http://10.0.0.114:8765",
+    )
+    launcher.session = {
+        "identity": "alice@proj",
+        "proxy_url": "ws://127.0.0.1:49152",
+    }
+    observed = {}
+
+    class FakePinner:
+        def __init__(self, _title):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    def fake_run(command, env):
+        observed["command"] = command
+        observed["env"] = env
+
+    monkeypatch.setattr(module, "TitlePinner", FakePinner)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    launcher.run_codex()
+
+    assert observed["env"]["MEETING_SELF"] == "alice@proj"
+    assert observed["env"]["MEETING_HOST"] == "http://10.0.0.114:8765"
 
 
 def test_session_proxy_url_is_a_codex_compatible_host_port():

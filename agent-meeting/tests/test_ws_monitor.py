@@ -496,13 +496,13 @@ def test_m1_realtime_stdout(db_dir: str):
         # Send a live message with ask
         _send("m1_alice", "m1_bob", "hello world", ask="请回复")
 
-        lines = collect_stdout_lines(proc, "New Message", count=1, timeout=6.0,
+        lines = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=6.0,
                                      _shared_lines=shared, _shared_offset=offset)
 
         check("TC-M1: got notification stdout line", len(lines) >= 1, f"got {lines}")
         if lines:
             line = lines[0]
-            expected_prefix = f"New Message from m1_alice@{TEST_PROJECT} [unverified peer]:"
+            expected_prefix = f"📬 New Message from m1_alice@{TEST_PROJECT} [unverified peer]:"
             check("TC-M1: stdout format correct",
                   line.startswith(expected_prefix),
                   f"got: {line!r}")
@@ -511,10 +511,10 @@ def test_m1_realtime_stdout(db_dir: str):
 
         # Send a message without ask
         _send("m1_alice", "m1_bob", "no ask msg")
-        lines2 = collect_stdout_lines(proc, "New Message", count=1, timeout=5.0,
+        lines2 = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=5.0,
                                       _shared_lines=shared, _shared_offset=offset)
         check("TC-M1: no-ask line correct",
-              any(l == f"New Message from m1_alice@{TEST_PROJECT} [unverified peer]" for l in lines2),
+              any(l == f"📬 New Message from m1_alice@{TEST_PROJECT} [unverified peer]" for l in lines2),
               f"got: {lines2}")
 
     finally:
@@ -540,7 +540,7 @@ def test_m2_backlog_replay(db_dir: str):
     proc, shared, offset = start_monitor("m2_recv", db_dir)
     try:
         # Should receive msgs 2 and 3 as backlog, not msg 1
-        lines = collect_stdout_lines(proc, "New Message", count=2, timeout=8.0,
+        lines = collect_stdout_lines(proc, "📬 New Message", count=2, timeout=8.0,
                                      _shared_lines=shared, _shared_offset=offset)
         check("TC-M2: received 2 backlog msgs", len(lines) == 2, f"got {len(lines)}: {lines}")
         # Can't check body text (no ask in msgs), but count=2 proves msg1 was skipped
@@ -572,7 +572,7 @@ def test_m3_ping_pong(db_dir: str):
         # After 8s (2 central amctl ping cycles), send a message from m3_other (not self)
         # so the self-echo suppression does not filter it out.
         _send("m3_other", "m3_user", "still alive")
-        lines = collect_stdout_lines(proc, "New Message", count=1, timeout=5.0,
+        lines = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=5.0,
                                      _shared_lines=shared, _shared_offset=offset)
         check("TC-M3: monitor still alive after ping cycles",
               len(lines) >= 1, f"got {lines}")
@@ -636,7 +636,7 @@ def test_m4_reconnect_backlog(db_dir: str):
 
         # Monitor should reconnect and get the 2 missed messages as backlog.
         # Central amctl reads read_cursors (=r0) and replays everything after it.
-        lines = collect_stdout_lines(proc, "New Message", count=2, timeout=40.0,
+        lines = collect_stdout_lines(proc, "📬 New Message", count=2, timeout=40.0,
                                      _shared_lines=shared, _shared_offset=offset)
         check("TC-M4: received 2 missed msgs after reconnect",
               len(lines) == 2, f"got {len(lines)}: {lines}")
@@ -721,7 +721,7 @@ def test_m6_first_seed_zero_replay(db_dir: str):
         time.sleep(2.5)
 
         # No notification lines should have appeared (history must be suppressed by first-seed)
-        lines_before = collect_stdout_lines(proc, "New Message", count=1, timeout=0.5,
+        lines_before = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=0.5,
                                             _shared_lines=shared, _shared_offset=offset)
         check("TC-M6: no history flood on fresh start",
               len(lines_before) == 0, f"got {len(lines_before)} unexpected lines: {lines_before}")
@@ -736,7 +736,7 @@ def test_m6_first_seed_zero_replay(db_dir: str):
 
         # New live message after seeding must still arrive
         _send("m6_sender", "m6_recv", "live")
-        lines_live = collect_stdout_lines(proc, "New Message", count=1, timeout=6.0,
+        lines_live = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=6.0,
                                           _shared_lines=shared, _shared_offset=offset)
         check("TC-M6: live message delivered after seed",
               len(lines_live) == 1, f"got {lines_live}")
@@ -770,7 +770,7 @@ def test_mg1_group_notification(db_dir: str):
         # Send a group message — monitor should receive it and print a notification
         _send("mg1_sender", "mg1-chan", "group hello", ask="reply")
 
-        lines = collect_stdout_lines(proc, "New Message", count=1, timeout=6.0,
+        lines = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=6.0,
                                      _shared_lines=shared, _shared_offset=offset)
         check("TC-MG1: notification line for group msg", len(lines) >= 1, f"got {lines}")
         if lines:
@@ -799,14 +799,14 @@ def test_ms1_self_echo_suppressed(db_dir: str):
         _send("ms1_self", "ms1_self", "self-echo", ask="should not appear")
 
         # Short wait — if suppression works, no notification line appears
-        self_lines = collect_stdout_lines(proc, "New Message", count=1, timeout=2.0,
+        self_lines = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=2.0,
                                           _shared_lines=shared, _shared_offset=offset)
         check("TC-MS1: self-echo not emitted", len(self_lines) == 0,
               f"got unexpected lines: {self_lines}")
 
         # Send from other → self: should arrive normally
         _send("ms1_other", "ms1_self", "from other", ask="hi")
-        other_lines = collect_stdout_lines(proc, "New Message", count=1, timeout=5.0,
+        other_lines = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=5.0,
                                            _shared_lines=shared, _shared_offset=offset)
         check("TC-MS1: other-sender msg emitted", len(other_lines) >= 1,
               f"got {other_lines}")
@@ -830,8 +830,8 @@ def test_stdout_format_unchanged():
 
     # 1:1 format: peer_id (name@project, or bare name for the global "*"
     # project) + empty location → no "in group"
-    template_with_ask = 'New Message from {peer_id}{location} [unverified peer]: {clean}'
-    template_without_ask = 'New Message from {peer_id}{location} [unverified peer]'
+    template_with_ask = '📬 New Message from {peer_id}{location} [unverified peer]: {clean}'
+    template_without_ask = '📬 New Message from {peer_id}{location} [unverified peer]'
 
     check("FMT: with-ask format string present verbatim",
           template_with_ask in src, "not found in monitor.py source")
@@ -889,7 +889,7 @@ def test_emit_message_unit():
     check("TC-MG2: group no-ask has 'in group team-chat'",
           "in group team-chat" in line2, repr(line2))
     check("TC-MG2: group no-ask exact format (no ask suffix)",
-          line2 == "New Message from bob@wsproj in group team-chat [unverified peer]", repr(line2))
+          line2 == "📬 New Message from bob@wsproj in group team-chat [unverified peer]", repr(line2))
 
     # Test 1:1 message — must NOT contain "in group"
     buf3 = io.StringIO()
@@ -917,7 +917,7 @@ def test_emit_message_unit():
         emit("erin", "*", "hi", None)
     line5 = buf5.getvalue().strip()
     check("TC-MG2: global project keeps canonical @* suffix",
-          line5 == "New Message from erin@* [unverified peer]: hi", repr(line5))
+          line5 == "📬 New Message from erin@* [unverified peer]: hi", repr(line5))
 
 
 # ---------- main ----------

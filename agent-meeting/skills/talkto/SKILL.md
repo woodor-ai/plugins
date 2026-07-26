@@ -1,13 +1,15 @@
 ---
 name: talkto
-description: Send a message to another registered Claude session through agent-meeting, using a canonical name@project private identity. Use for direct /talkto invocations and natural-language requests such as "tell bob X", "ask carol Y", or "给 lag-runtime 发消息"; require the user to choose a full identity when they supplied only a bare name.
+description: Send a message to another registered Claude Code or Codex session through agent-meeting, using a canonical name@project private identity. Use for Claude Code /talkto, Codex $talkto, and natural-language requests such as "tell bob X", "ask carol Y", or "给 lag-runtime 发消息"; require the user to choose a full identity when they supplied only a bare name.
 ---
 
 ## When to invoke this skill
 
 Invoke whenever the user wants you to communicate with a peer session, in any of these forms:
 
-- Direct command: `/talkto <peer> <optional message text>`
+- Claude Code: `/talkto <peer> <optional message text>`
+- Codex: `$talkto <peer> <optional message text>` or select `talkto` through
+  `/skills`
 - Natural language: "tell `<peer>` X", "ask `<peer>` Y", "give `<peer>` Z", "你给 `<peer>` 打个招呼", "问 `<peer>` 一下…"
 
 The presence of a peer session identity in a request to convey something is
@@ -21,9 +23,11 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
 
 ## Steps
 
-1. **Verify self is registered**: run `meeting list` and identify the current
-   session by cwd and host. If none is active, tell the user to run
-   `/meeting <name>` first.
+1. **Resolve self identity**:
+   - Codex launched through `mycodex`: use `MEETING_SELF` verbatim. It is the
+     broker lease's canonical identity and is authoritative.
+   - Claude Code: run `meeting list` and identify the current session by cwd
+     and host. If none is active, tell the user to run `/meeting <name>` first.
 2. **Require a canonical private recipient**: `<peer>` must be
    `<name>@<project>` or `<name>@*`. Never silently resolve a bare private name,
    even when `meeting list` currently shows only one candidate. If the user

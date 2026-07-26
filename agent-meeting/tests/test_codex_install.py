@@ -267,10 +267,10 @@ def test_ensure_agents_md_posix_runs_runtime_wrappers_directly(tmp_path):
     mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
 
     text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
-    say = meeting_home / "bin" / "meeting-say"
     cli = meeting_home / "bin" / "meeting"
-    assert f'"{say}" X' in text
+    assert f'"{cli}" send "$MEETING_SELF" X' in text
     assert f'"{cli}" list' in text
+    assert "meeting-say" not in text
     assert "& \"" not in text
     assert str(mod._venv_python(meeting_home)) not in text
 
@@ -355,8 +355,8 @@ def _make_plugin_root(base: Path) -> Path:
     (pr / ".claude-plugin").mkdir(parents=True)
     (pr / "bin" / "meeting").write_text("#!/bin/sh\necho meeting\n")
     (pr / "bin" / "amctl").write_text("#!/bin/sh\necho central amctl\n")
+    (pr / "bin" / "monitor.py").write_text("print('monitor-v1')\n")
     (pr / "codex" / "codex-meeting.py").write_text("# stub\n")
-    (pr / "codex" / "meeting-say.py").write_text("# stub\n")
     (pr / "codex" / "mycodex-posix.sh").write_text("#!/bin/sh\necho mycodex-stub\n")
     (pr / "codex" / "mycodex-impl.ps1").write_text("# mycodex-stub\n")
     (pr / "codex" / "mycodex.cmd").write_text("@echo off\r\n")
@@ -415,6 +415,58 @@ def test_old_codex_meeting_removed_on_regen(tmp_path):
 
     assert not (meeting_home / "bin" / "codex-meeting").exists()
     assert (meeting_home / "bin" / "mycodex").exists()
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX wrapper test")
+def test_same_install_path_new_version_regenerates_copied_runtime(tmp_path):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    _make_venv(meeting_home)
+
+    mod = _load_bootstrap(meeting_home, plugin_root)
+    mod.DATA = meeting_home
+    mod.BIN_LINK = meeting_home / "bin"
+    mod.VENV = meeting_home / "venv"
+    mod.PLUGIN_ROOT = plugin_root
+
+    mod.ensure_bin_wrappers()
+    assert (meeting_home / "bin" / "monitor.py").read_text() == "print('monitor-v1')\n"
+
+    (plugin_root / "bin" / "monitor.py").write_text(
+        "print('monitor-v2')\n",
+        encoding="utf-8",
+    )
+    (plugin_root / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "agent-meeting", "version": "0.8.40"}),
+        encoding="utf-8",
+    )
+    mod.ensure_bin_wrappers()
+
+    assert (meeting_home / "bin" / "monitor.py").read_text() == "print('monitor-v2')\n"
+    assert (meeting_home / ".bin-plugin-root").read_text().endswith("\n0.8.40")
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX wrapper test")
+def test_stale_meeting_say_is_removed_without_full_regeneration(tmp_path):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    _make_venv(meeting_home)
+
+    mod = _load_bootstrap(meeting_home, plugin_root)
+    mod.DATA = meeting_home
+    mod.BIN_LINK = meeting_home / "bin"
+    mod.VENV = meeting_home / "venv"
+    mod.PLUGIN_ROOT = plugin_root
+
+    mod.ensure_bin_wrappers()
+    stale = meeting_home / "bin" / "meeting-say"
+    stale.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    mod.ensure_bin_wrappers()
+
+    assert not stale.exists()
 
 
 def test_legacy_launchd_install_migrates_missing_is_host_to_true(tmp_path):
@@ -494,7 +546,7 @@ def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
 
     bin_dir = meeting_home / "bin"
     bin_dir.mkdir(parents=True)
-    for name in ("meeting", "amctl", "meeting-say"):
+    for name in ("meeting", "amctl"):
         (bin_dir / name).write_text("#!/bin/sh\n")
 
     mod = _load_bootstrap(meeting_home, plugin_root)

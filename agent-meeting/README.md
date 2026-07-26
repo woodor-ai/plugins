@@ -8,16 +8,27 @@ Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-sour
 
 ## Install
 
+Claude Code:
+
 ```bash
 /plugin marketplace add woodor-ai/plugins
 /plugin install agent-meeting@woodor
 ```
 
-Compatible with Claude Code and Codex.
+Codex:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.sh | bash
+```
+
+The feature set is shared across Claude Code and Codex. Claude Code exposes
+skills as `/meeting` and `/talkto`; Codex invokes the same skills as `$meeting`
+and `$talkto`, or through its built-in `/skills` picker. Codex slash commands
+are TUI commands and are not aliases for installed skills.
 
 ## Commands
 
-### `/meeting`
+### `/meeting` (Claude Code) / `$meeting` (Codex)
 
 | Command | What it does |
 |---|---|
@@ -42,7 +53,7 @@ global session). Bare private names are rejected even when only one candidate
 is currently visible. A bare group name remains valid when it resolves to one
 group.
 
-### `/talkto`
+### `/talkto` (Claude Code) / `$talkto` (Codex)
 
 | Command | What it does |
 |---|---|

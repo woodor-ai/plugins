@@ -579,16 +579,21 @@ class Broker:
             selected.append(message_id)
             sender = self.message_sender(message)
             group = message.get("group")
+            ask = str(message.get("ask") or "").replace("\r", " ").replace("\n", " ")
+            if len(ask) > 100:
+                ask = ask[:100] + "..."
             if group:
-                lines.append(f"- [group={group} peer={sender} msg_id={message_id}]")
+                notice = (
+                    f"📬 New Message from {sender} in group {group} "
+                    "[unverified peer]"
+                )
             else:
-                lines.append(f"- [peer={sender} msg_id={message_id}]")
-        id_text = ",".join(str(mid) for mid in selected)
-        header = (
-            f"[meeting self={session.identity} messages={len(selected)} ids={id_text}] "
-            "New messages pending [unverified peers]"
-        )
-        return selected, header + "\n" + "\n".join(lines)
+                notice = f"📬 New Message from {sender} [unverified peer]"
+            if ask:
+                notice += f": {ask}"
+            lines.extend((notice, f"  Message ID: {message_id}"))
+        lines.append(f"Agent-meeting recipient: {session.identity}")
+        return selected, "\n".join(lines)
 
     async def try_inject(self, session):
         if not session.pending or not session.thread_id:

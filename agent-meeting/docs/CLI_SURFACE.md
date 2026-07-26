@@ -1,10 +1,15 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-26 · version 0.13.5
+Last updated: 2026-07-26 · version 0.13.6
 
 The runtime command is `~/.agent-meeting/bin/meeting`. On POSIX it is an
 executable shell wrapper that selects the agent-meeting virtualenv; on Windows
 call the extensionless Python script with the virtualenv Python.
+
+Claude Code exposes the workflows as `/meeting` and `/talkto`. Codex loads the
+same skills from the native plugin and exposes them through `/skills` or
+`$meeting` and `$talkto`; Codex does not create top-level slash commands from
+skill names.
 
 ## User-facing commands
 

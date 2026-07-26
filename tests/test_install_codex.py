@@ -177,6 +177,45 @@ def test_run_interactive_n_skips(tmp_path):
     assert result["skipped"] == ["myplugin"]
 
 
+def test_install_native_plugins_refreshes_marketplace_and_installs(tmp_path, monkeypatch):
+    mod = _load()
+    install_dir = tmp_path / "agent-meeting"
+    manifest = install_dir / ".codex-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}")
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/local/bin/codex")
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda command, **_kwargs: calls.append(command) or Result(),
+    )
+
+    mod._install_native_plugins([("agent-meeting", install_dir)])
+
+    assert calls == [
+        [
+            "/usr/local/bin/codex",
+            "plugin",
+            "marketplace",
+            "upgrade",
+            "woodor",
+        ],
+        [
+            "/usr/local/bin/codex",
+            "plugin",
+            "add",
+            "agent-meeting@woodor",
+        ],
+    ]
+
+
 def test_run_interactive_y_explicit(tmp_path):
     mod = _load()
     src = tmp_path / "src"
@@ -389,6 +428,8 @@ def test_main_cleans_up_stale_codex_plugins(tmp_path, monkeypatch):
     (bin_dir / "codex-plugins").write_text("#!/bin/sh\necho old\n")
     (bin_dir / "codex-plugins.cmd").write_text("@echo off\r\n")
     (bin_dir / "codex-plugins.ps1").write_text("# old\n")
+    (bin_dir / "meeting-say").write_text("#!/bin/sh\necho old\n")
+    (bin_dir / "meeting-say.cmd").write_text("@echo off\r\n")
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("MEETING_HOME", str(meeting_home))
@@ -403,6 +444,8 @@ def test_main_cleans_up_stale_codex_plugins(tmp_path, monkeypatch):
     assert not (bin_dir / "codex-plugins").exists()
     assert not (bin_dir / "codex-plugins.cmd").exists()
     assert not (bin_dir / "codex-plugins.ps1").exists()
+    assert not (bin_dir / "meeting-say").exists()
+    assert not (bin_dir / "meeting-say.cmd").exists()
     assert (bin_dir / "mycodex").exists()
 
 

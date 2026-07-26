@@ -202,9 +202,9 @@ def ensure_bin_wrappers():
     privilege on Windows and would crash the whole bootstrap (taking statusLine
     registration down with it); a copy is privilege-free and identical on every OS.
 
-    Wrappers are regenerated whenever PLUGIN_ROOT changes (plugin version upgrade),
-    which keeps the copied .py files fresh. The sentinel file .bin-plugin-root
-    records the last generated plugin path.
+    Wrappers are regenerated whenever PLUGIN_ROOT or its plugin version changes,
+    which keeps copied .py files fresh even when a Codex upgrade overwrites the
+    same install path. The sentinel file .bin-plugin-root records both values.
     """
     import shutil as _shutil
 
@@ -217,8 +217,8 @@ def ensure_bin_wrappers():
     py = venv_python()
 
     sentinel = DATA / ".bin-plugin-root"
-    current_root = str(plugin_bin)
-    existing_root = sentinel.read_text().strip() if sentinel.exists() else ""
+    current_stamp = f"{plugin_bin}\n{_read_plugin_version()}"
+    existing_stamp = sentinel.read_text().strip() if sentinel.exists() else ""
 
     def _all_present() -> bool:
         # Every plugin bin entry must have a corresponding dest (.py copied as-is,
@@ -237,13 +237,9 @@ def ensure_bin_wrappers():
             return False
         if IS_WINDOWS and not (BIN_LINK / "mycodex-impl.ps1").exists():
             return False
-        if (PLUGIN_ROOT / "codex" / "meeting-say.py").exists():
-            _wname = "meeting-say.cmd" if IS_WINDOWS else "meeting-say"
-            if not (BIN_LINK / _wname).exists():
-                return False
         return True
 
-    if (existing_root == current_root
+    if (existing_stamp == current_stamp
             and BIN_LINK.is_dir()
             and not BIN_LINK.is_symlink()
             and not _is_reparse_point(BIN_LINK)
@@ -304,21 +300,6 @@ def ensure_bin_wrappers():
             _shutil.copyfile(str(_mycodex_src_dir / "mycodex-posix.sh"), str(_dest_sh))
             _dest_sh.chmod(0o755)
 
-        # `meeting-say`: outbound helper living in codex/ (not bin/), wrapped the
-        # same way as the generic bin/ entries above. Built into tmp_bin so it is
-        # part of the atomic swap below.
-        _say_src = PLUGIN_ROOT / "codex" / "meeting-say.py"
-        if _say_src.exists():
-            if IS_WINDOWS:
-                (tmp_bin / "meeting-say.cmd").write_text(f'@echo off\r\n"{py}" "{_say_src}" %*\r\n')
-                # Extensionless copy: invoke as `python.exe <bin>\meeting-say <args>` via
-                # CreateProcess, bypassing cmd.exe which mangles < / > in %* as redirection.
-                # meeting-say is the primary carrier of user text and MUST use this form.
-                _shutil.copyfile(str(_say_src), str(tmp_bin / "meeting-say"))
-            else:
-                _w = tmp_bin / "meeting-say"
-                _w.write_text(f'#!/bin/sh\nexec "{py}" "{_say_src}" "$@"\n')
-                _w.chmod(0o755)
     except Exception:
         _shutil.rmtree(str(tmp_bin), ignore_errors=True)
         raise
@@ -340,7 +321,7 @@ def ensure_bin_wrappers():
         BIN_LINK.unlink()
 
     os.rename(str(tmp_bin), str(BIN_LINK))
-    sentinel.write_text(current_root)
+    sentinel.write_text(current_stamp)
     _cleanup_stale_codex_plugins(BIN_LINK)
     log(f"generated venv-python wrappers in bin/ (plugin: {plugin_bin.name})")
 
@@ -361,7 +342,13 @@ def _cleanup_stale_codex_plugins(bin_dir: Path) -> None:
     """
     if bin_dir.resolve() != (DATA / "bin").resolve():
         return
-    names = ("codex-plugins", "codex-plugins.cmd", "codex-plugins.ps1")
+    names = (
+        "codex-plugins",
+        "codex-plugins.cmd",
+        "codex-plugins.ps1",
+        "meeting-say",
+        "meeting-say.cmd",
+    )
     if IS_WINDOWS:
         names = names + ("mycodex", "mycodex.ps1")
     for name in names:

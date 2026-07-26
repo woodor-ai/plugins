@@ -16,6 +16,7 @@ ctx keys passed to each plugin:
 import importlib.util
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -153,7 +154,50 @@ def run_interactive(plugins_src: Path, codex_home: Path, prompt_fn=None) -> dict
     return {"installed": installed, "skipped": skipped}
 
 
-_STALE_CODEX_PLUGINS_NAMES = ("codex-plugins", "codex-plugins.cmd", "codex-plugins.ps1")
+def _install_native_plugins(installed: list) -> None:
+    """Register selected Codex-native plugin bundles from the woodor marketplace."""
+    native = [
+        name
+        for name, install_dir in installed
+        if (install_dir / ".codex-plugin" / "plugin.json").exists()
+    ]
+    if not native:
+        return
+    codex = shutil.which("codex")
+    if not codex:
+        print("  WARNING: codex CLI not found; native plugin skills were not installed")
+        return
+
+    refreshed = subprocess.run(
+        [codex, "plugin", "marketplace", "upgrade", "woodor"],
+        capture_output=True,
+        text=True,
+    )
+    if refreshed.returncode != 0:
+        detail = (refreshed.stderr or refreshed.stdout or "").strip()
+        print(f"  WARNING: could not refresh the woodor plugin marketplace: {detail}")
+        return
+
+    for name in native:
+        result = subprocess.run(
+            [codex, "plugin", "add", f"{name}@woodor"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print(f"  native Codex plugin installed: {name}@woodor")
+        else:
+            detail = (result.stderr or result.stdout or "").strip()
+            print(f"  WARNING: native Codex plugin install failed for {name}: {detail}")
+
+
+_STALE_CODEX_PLUGINS_NAMES = (
+    "codex-plugins",
+    "codex-plugins.cmd",
+    "codex-plugins.ps1",
+    "meeting-say",
+    "meeting-say.cmd",
+)
 
 
 def _generate_mycodex_command(plugins_src: Path, bin_dir: Path) -> None:
@@ -237,6 +281,7 @@ def main():
     print()
 
     result = run_interactive(HERE, codex_home)
+    _install_native_plugins(result["installed"])
 
     print()
     print("=== summary ===")

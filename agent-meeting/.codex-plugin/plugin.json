@@ -1,0 +1,23 @@
+{
+  "name": "agent-meeting",
+  "version": "0.13.6",
+  "description": "Peer messaging for Claude Code and Codex agents through a shared LAN control node.",
+  "author": {
+    "name": "Woodor",
+    "url": "https://github.com/woodor-ai"
+  },
+  "homepage": "https://github.com/woodor-ai/plugins",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Woodor: Agent Meeting",
+    "shortDescription": "Coordinate Claude Code and Codex agents.",
+    "longDescription": "Register agent identities, exchange direct or group messages, and preserve ordered delivery across Claude Code and Codex sessions.",
+    "developerName": "Woodor",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Use $talkto to send a message to another registered agent.",
+      "Use $meeting to inspect agent-meeting sessions."
+    ]
+  }
+}

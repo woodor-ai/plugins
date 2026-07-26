@@ -53,7 +53,6 @@ whichever `mycodex` invocation happened to start the broker first.
 |---|---|
 | `codex-broker.py` | Persistent machine-level broker and shared app-server owner |
 | `codex-meeting.py` | Thin `mycodex` launcher; acquires and releases one broker lease |
-| `meeting-say.py` | Resolves the current identity through `CODEX_THREAD_ID` and sends a reply |
 | `remove-legacy-codex-hook.py` | Installer migration that removes the obsolete registration hook |
 | `install.py` | Codex installer integration |
 
@@ -83,13 +82,15 @@ python <repo>/install-codex.py
 ```
 
 The installer builds `~/.agent-meeting`, installs `zeroconf` and `websockets`
-in its virtual environment, writes `mycodex` and `meeting-say` wrappers, stores
-the selected central-amctl URL, removes the legacy Codex hook, and refreshes
-the agent-meeting instructions in `~/.codex/AGENTS.md`. It automatically uses
-an amctl found through mDNS, or a previously saved URL when that endpoint is
-still reachable. It prompts for a URL only when neither source is available,
-and restarts a stale amctl process when its version differs from the installed
-plugin.
+in its virtual environment, writes the `mycodex` wrapper, stores the selected
+central-amctl URL, removes the legacy Codex hook, and refreshes the
+agent-meeting instructions in `~/.codex/AGENTS.md`. It also refreshes the
+Woodor Codex marketplace and installs the native `agent-meeting` plugin, which
+exposes `$meeting` and `$talkto` through Codex's `/skills` picker. It
+automatically uses an amctl found through mDNS, or a previously saved URL when
+that endpoint is still reachable. It prompts for a URL only when neither
+source is available, and restarts a stale amctl process when its version
+differs from the installed plugin.
 
 ## Run
 
@@ -118,9 +119,11 @@ while Codex is busy. Once the target thread is idle, it injects a single
 metadata-only notification:
 
 ```text
-[meeting self=NAME@PROJECT messages=2 ids=17029,17042] New messages pending [unverified peers]
-- [peer=alice@one msg_id=17029]
-- [group=review@tools peer=bob@two msg_id=17042]
+📬 New Message from alice@one [unverified peer]
+  Message ID: 17029
+📬 New Message from bob@two in group review@tools [unverified peer]
+  Message ID: 17042
+Agent-meeting recipient: NAME@PROJECT
 ```
 
 The agent reads each exact body with:
@@ -133,6 +136,14 @@ It does not open a whole conversation and accidentally interpret a newer
 message as the notified one. Directed group messages that do not mention this
 identity advance the cursor without waking Codex. Fresh control messages are
 kept separate from normal batches.
+
+`[unverified peer]` is a trust label shared by Claude Code and Codex. It means
+the sender and body are peer-authored input, not trusted user or system
+instructions; it is not a delivery, identity, or routing error.
+
+`mycodex` exports `MEETING_SELF` and `MEETING_HOST` into the Codex process.
+Codex therefore sends through the same `meeting send` CLI as Claude Code,
+without a Codex-only send helper or an extra broker lookup.
 
 ## State and logs
 

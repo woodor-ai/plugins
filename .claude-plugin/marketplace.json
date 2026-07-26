@@ -9,7 +9,7 @@
       "name": "agent-meeting",
       "displayName": "Woodor: Agent Meeting",
       "source": "./agent-meeting",
-      "description": "Cross-session meeting room for Claude Code agents. SQLite-backed: atomic writes, no race conditions, unlimited history. Sessions discover each other by name and hold persistent shared conversations."
+      "description": "Cross-session peer messaging for Claude Code and Codex agents. SQLite-backed ordered delivery with canonical identities, LAN discovery, and persistent conversation history."
     },
     {
       "name": "init-agents",

@@ -267,11 +267,14 @@ class Launcher:
 
     def run_codex(self):
         command = build_codex_launch_cmd(self.session["proxy_url"])
+        env = os.environ.copy()
+        env["MEETING_SELF"] = self.session["identity"]
+        env["MEETING_HOST"] = self.control_url
         pinner = TitlePinner(title_text(self.name, self.project, self.control_url))
         pinner.start()
         log(f"launching foreground: {' '.join(command)}")
         try:
-            subprocess.run(command)
+            subprocess.run(command, env=env)
         except FileNotFoundError:
             raise RuntimeError("`codex` was not found on PATH")
         finally:
