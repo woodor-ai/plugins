@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Identity regression suite for meeting-daemon composite-key schema.
+Identity regression suite for amctl composite-key schema.
 
 Covers:
   TC1  - cross-project isolation (same name, different projects)
@@ -36,7 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-TEST_PORT = 8797  # distinct port to avoid collision with live daemon (8765) or other test (8799)
+TEST_PORT = 8797  # distinct port to avoid collision with live central amctl (8765) or other test (8799)
 HOST = "127.0.0.1"
 
 # ---------- DB bootstrap (new composite-key schema) ----------
@@ -113,14 +113,14 @@ def init_db(home_dir: str):
     conn.close()
 
 
-# ---------- daemon lifecycle ----------
+# ---------- central amctl lifecycle ----------
 
-def start_daemon(home_dir: str) -> subprocess.Popen:
-    daemon_path = os.path.join(os.path.dirname(__file__), "..", "bin", "meeting-daemon")
+def start_amctl(home_dir: str) -> subprocess.Popen:
+    amctl_path = os.path.join(os.path.dirname(__file__), "..", "bin", "amctl")
     env = os.environ.copy()
     env["MEETING_HOME"] = home_dir
     proc = subprocess.Popen(
-        [sys.executable, daemon_path, f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, amctl_path, f"--port={TEST_PORT}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -133,8 +133,8 @@ def start_daemon(home_dir: str) -> subprocess.Popen:
         except Exception:
             if proc.poll() is not None:
                 _, err = proc.communicate()
-                raise RuntimeError(f"Daemon exited early:\n{err.decode()}")
-    raise RuntimeError("Daemon did not start within 10s")
+                raise RuntimeError(f"Central amctl exited early:\n{err.decode()}")
+    raise RuntimeError("Central amctl did not start within 10s")
 
 
 # ---------- HTTP helpers ----------
@@ -790,7 +790,7 @@ def test_tc11_global_priority_over_scoped():
               f"got project={candidates[0]['project']}")
 
     # Also verify explicit SuperUser@projA still resolves correctly (direct @project path, not via /resolve)
-    # (resolve endpoint only does bare-name; @project is handled by CLI splitting, not daemon)
+    # (resolve endpoint only does bare-name; @project is handled by CLI splitting, not central amctl)
 
 
 # ---------- TC12: _derive_project sanitizes basename=='*' ----------
@@ -804,9 +804,8 @@ def test_tc12_derive_project_sanitizes_star():
     print("\n[TC12] _derive_project 清洗 '*' + worktree 收敛到主仓 home-relative 路径")
 
     # Replicate the current --git-common-dir + home-relative-path implementation
-    # used by both codex-bridge.py and monitor.py (v0.8.54+, explicit --proj
-    # cache takes priority when present; this replica has no cache so it always
-    # exercises the fallback derivation).
+    # used by monitor.py (explicit --proj cache takes priority when present; this
+    # replica has no cache so it always exercises fallback derivation).
     def _derive_project_impl(cwd: str) -> str:
         try:
             result = subprocess.run(
@@ -888,11 +887,11 @@ def test_tc12_derive_project_sanitizes_star():
     check("TC12: sentinel unreachable via _derive_project", True)
 
 
-# ---------- TC13: show/turn display hides @* for global identity ----------
+# ---------- TC13: display keeps the canonical @* global suffix ----------
 
-def test_tc13_display_hides_global_suffix():
-    """show and turn text output must not contain '@*' for global identity senders."""
-    print("\n[TC13] 显示层 project='*' 渲染裸名")
+def test_tc13_display_keeps_global_suffix():
+    """show output must retain @* so a global identity is directly addressable."""
+    print("\n[TC13] 显示层 project='*' 保留 canonical @*")
 
     _http("/register", "POST", {"project": "*", "name": "GlobalSender", "cwd": "/tmp", "force": True})
     _http("/register", "POST", {"project": "displayP", "name": "Receiver", "cwd": "/tmp/d", "force": True})
@@ -908,9 +907,8 @@ def test_tc13_display_hides_global_suffix():
                 "self_project=displayP&self=Receiver&peer_project=*&peer=GlobalSender&limit=5")
     with urllib.request.urlopen(show_url, timeout=5) as _r:
         show_text = _r.read().decode("utf-8")
-    check("TC13: show text does not contain '@*'", "@*" not in show_text,
-          f"show_text snippet: {show_text[:300]!r}")
-    check("TC13: show text contains bare 'GlobalSender'", "GlobalSender" in show_text,
+    check("TC13: show text contains canonical GlobalSender@*",
+          "GlobalSender@*" in show_text,
           f"show_text snippet: {show_text[:300]!r}")
 
     # /turn returns the recipient of the last message. GlobalSender sent to Receiver@displayP,
@@ -925,11 +923,11 @@ def test_tc13_display_hides_global_suffix():
           f"turn={turn_r!r}")
 
 
-# ---------- TC14: /group/members hides @* for global members ----------
+# ---------- TC14: /group/members keeps @* for global members ----------
 
-def test_tc14_group_members_hides_global_suffix():
-    """/group/members must return bare name for global (*) members, name@project for others."""
-    print("\n[TC14] /group/members 全局成员裸名显示")
+def test_tc14_group_members_keeps_global_suffix():
+    """/group/members must return canonical name@project identities."""
+    print("\n[TC14] /group/members 全局成员保留 @*")
 
     _http("/register", "POST", {"project": "tc14p", "name": "RegularMember", "cwd": "/tmp", "force": True})
     _http("/register", "POST", {"project": "*", "name": "GlobalMember14", "cwd": "/tmp", "force": True})
@@ -944,19 +942,18 @@ def test_tc14_group_members_hides_global_suffix():
     })
 
     members = _http("/group/members", params={"group_project": "tc14p", "group": "tc14-group"})
-    check("TC14: global member appears as bare name", "GlobalMember14" in members,
-          f"members={members}")
-    check("TC14: global member does NOT appear as GlobalMember14@*", "GlobalMember14@*" not in members,
+    check("TC14: global member appears as GlobalMember14@*",
+          "GlobalMember14@*" in members,
           f"members={members}")
     check("TC14: regular member appears as name@project", "RegularMember@tc14p" in members,
           f"members={members}")
 
 
-# ---------- TC15: send to global identity — turn field is bare name ----------
+# ---------- TC15: send to global identity keeps canonical turn ----------
 
-def test_tc15_send_turn_hides_global_suffix():
-    """1-to-1 send where peer is a global identity must return turn as bare name, not name@*."""
-    print("\n[TC15] send 到全局身份 turn 字段裸名")
+def test_tc15_send_turn_keeps_global_suffix():
+    """A global turn holder must be returned as the addressable name@* identity."""
+    print("\n[TC15] send 到全局身份 turn 字段保留 @*")
 
     _http("/register", "POST", {"project": "tc15p", "name": "Sender15", "cwd": "/tmp", "force": True})
     _http("/register", "POST", {"project": "*", "name": "GlobalRecipient15", "cwd": "/tmp", "force": True})
@@ -967,15 +964,15 @@ def test_tc15_send_turn_hides_global_suffix():
         "body": "hello global", "kind": "消息",
     })
     turn_val = r.get("turn", "")
-    check("TC15: turn is bare name (no @*)", turn_val == "GlobalRecipient15",
+    check("TC15: turn is canonical name@*", turn_val == "GlobalRecipient15@*",
           f"turn={turn_val!r}")
 
 
-# ---------- TC16: group/create with global member — members list hides @* ----------
+# ---------- TC16: group/create with global member keeps @* ----------
 
-def test_tc16_group_create_members_hides_global_suffix():
-    """/group/create response members list must not contain @* for global members."""
-    print("\n[TC16] group/create 返回的 members 含全局成员裸名")
+def test_tc16_group_create_members_keeps_global_suffix():
+    """/group/create returns every member as a canonical identity."""
+    print("\n[TC16] group/create 返回的 global member 保留 @*")
 
     _http("/register", "POST", {"project": "tc16p", "name": "Creator16", "cwd": "/tmp", "force": True})
     _http("/register", "POST", {"project": "*", "name": "GlobalMember16", "cwd": "/tmp", "force": True})
@@ -986,9 +983,8 @@ def test_tc16_group_create_members_hides_global_suffix():
     })
     members = r.get("members", [])
     check("TC16: create returned ok", r.get("ok") is True, str(r))
-    check("TC16: global member appears as bare name in create response", "GlobalMember16" in members,
-          f"members={members}")
-    check("TC16: global member NOT as GlobalMember16@* in create response", "GlobalMember16@*" not in members,
+    check("TC16: global member appears as GlobalMember16@*",
+          "GlobalMember16@*" in members,
           f"members={members}")
     check("TC16: regular member appears as Creator16@tc16p", "Creator16@tc16p" in members,
           f"members={members}")
@@ -1104,7 +1100,7 @@ def test_tc19_register_instance_aware(home_dir: str):
 
     now = time.time()
 
-    # (a) 同 instance 重连 → 永远放行，即使心跳刚更新也不受影响 (daemon 重启后
+    # (a) 同 instance 重连 → 永远放行，即使心跳刚更新也不受影响 (central amctl 重启后
     # monitor 重连场景，必须保住).
     _set_session(home_dir, "tc19p", "sess-a", instance="inst-A", last_seen=now)
     r = _http("/register", "POST",
@@ -1139,24 +1135,22 @@ def test_tc19_register_instance_aware(home_dir: str):
           r.get("ok") is True, str(r))
 
 
-# ---------- TC20: codex chain instance semantics (same-launch multi-fire vs cross-launch collision vs no-instance fallback) ----------
+# ---------- TC20: broker registration instance semantics ----------
 
 def test_tc20_codex_instance_semantics(home_dir: str):
-    """TC20: codex 链路的 instance 语义 —— 一次 `mycodex <name>` 启动内 codex-register.py
-    会被 hook 多次拉起(startup/resume/clear/compact)、codex-bridge.py 长驻重连也会重复
-    /register，全部共享同一个 runtime.json 里生成的 instance，必须全部放行；两次真正独立
-    的 Launcher.setup()（各自生成新 instance）抢同一个名字，心跳新鲜时后者必须被拒；
-    runtime.json 缺 instance 字段（instance=None）时退化为纯心跳判定，不崩、不误判成
-    same-instance。"""
-    print("\n[TC20] codex 链路 instance 语义（同启动多次触发 / 跨启动冲突 / 无 instance 退化）")
+    """TC20: broker subscriptions may re-register the same launch instance.
+
+    Repeated registration for one launch must succeed, a different live broker
+    lease must be refused, and legacy no-instance clients keep heartbeat-only
+    fallback behavior.
+    """
+    print("\n[TC20] broker lease instance 语义（重连 / 跨启动冲突 / 无 instance 退化）")
 
     now = time.time()
 
-    # (a) 模拟一次 `mycodex codexA` 启动：codex-meeting.py 生成 instance=launch-1，
-    # codex-bridge.py 先注册一次，随后 codex-register.py 被 hook 触发三次
-    # (startup / resume / clear) —— 全部带同一个 instance，全部必须放行。
+    # (a) One broker lease can re-register after subscription reconnects.
     _set_session(home_dir, "tc20p", "codexA", instance="launch-1", last_seen=now)
-    for fire in ("bridge-startup", "hook-startup", "hook-resume", "hook-clear"):
+    for fire in ("broker-startup", "subscription-connect", "subscription-reconnect"):
         r = _http("/register", "POST",
                   {"project": "tc20p", "name": "codexA", "instance": "launch-1"},
                   allow_error=True)
@@ -1172,9 +1166,7 @@ def test_tc20_codex_instance_semantics(home_dir: str):
           r.get("error") is not None, str(r))
     check("TC20b: refusal carries code=name_taken", r.get("code") == "name_taken", str(r))
 
-    # (c) runtime.json 没有 instance 字段（老会话/非 mycodex 启动路径）—— instance=None
-    # 退化为纯心跳判定（此特性上线前的原行为）：心跳新鲜就拒，不因为两次都是 None 就
-    # 误判成 same-instance，也不能崩/抛异常。
+    # (c) A legacy client without an instance falls back to heartbeat semantics.
     _set_session(home_dir, "tc20p", "codexB", instance=None, last_seen=now)
     r = _http("/register", "POST", {"project": "tc20p", "name": "codexB"}, allow_error=True)
     check("TC20c: no-instance re-register on fresh heartbeat refused (heartbeat-only fallback)",
@@ -1195,10 +1187,10 @@ def test_tc21_two_step_registration_self_rejects(home_dir: str):
     """TC21: locks down the 0.9.0 `/meeting <name>` regression this fix removes the cause
     of. The old skill flow did a standalone `meeting online` (no --instance) as its own
     step, then installed the monitor which immediately re-registered with its own freshly-
-    generated `--instance` uuid. The daemon sees that as a DIFFERENT live process (existing
+    generated `--instance` uuid. The central amctl sees that as a DIFFERENT live process (existing
     instance=None != incoming uuid, heartbeat still fresh) and refuses it — the session
     rejected its own registration. This test proves that shape still self-rejects at the
-    daemon level (so nobody reintroduces the two-step flow believing it's harmless), and
+    central amctl level (so nobody reintroduces the two-step flow believing it's harmless), and
     proves the fixed shape — monitor is the SOLE registrant, one call with its own instance,
     no prior bare `online` — succeeds cleanly on a free name."""
     print("\n[TC21] 两步注册自拒回归钉子 + monitor 独立注册验证")
@@ -1238,7 +1230,7 @@ def main():
 
     try:
         init_db(home_dir)
-        proc = start_daemon(home_dir)
+        proc = start_amctl(home_dir)
 
         try:
             test_tc1_cross_project_isolation(home_dir)
@@ -1253,10 +1245,10 @@ def main():
             test_tc10_global_registration()
             test_tc11_global_priority_over_scoped()
             test_tc12_derive_project_sanitizes_star()
-            test_tc13_display_hides_global_suffix()
-            test_tc14_group_members_hides_global_suffix()
-            test_tc15_send_turn_hides_global_suffix()
-            test_tc16_group_create_members_hides_global_suffix()
+            test_tc13_display_keeps_global_suffix()
+            test_tc14_group_members_keeps_global_suffix()
+            test_tc15_send_turn_keeps_global_suffix()
+            test_tc16_group_create_members_keeps_global_suffix()
             test_tc17_same_name_cross_project_conversation_isolation(home_dir)
             test_tc18_rename_cursor_collision(home_dir)
             test_tc19_register_instance_aware(home_dir)

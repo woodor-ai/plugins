@@ -4,7 +4,7 @@ Tests for:
   - agent-meeting/bin/session-bootstrap.py  mycodex wrapper generation
     and _all_present() sentinel when mycodex is absent.
 
-All tests run without a live daemon and without touching real ~/.agent-meeting
+All tests run without a live central amctl and without touching real ~/.agent-meeting
 or ~/.codex.  The bootstrap is loaded with env vars pointing at tmp_path dirs,
 then its module-level globals are monkey-patched to keep everything in tmp_path.
 """
@@ -21,6 +21,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 INSTALL_PY = REPO / "agent-meeting" / "codex" / "install.py"
 BOOTSTRAP_PY = REPO / "agent-meeting" / "bin" / "session-bootstrap.py"
+HOOK_REMOVER_PY = (
+    REPO / "agent-meeting" / "codex" / "remove-legacy-codex-hook.py"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +49,15 @@ def _load_bootstrap(meeting_home: Path, plugin_root: Path):
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_hook_remover():
+    spec = importlib.util.spec_from_file_location(
+        "am_codex_hook_remover", HOOK_REMOVER_PY
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
     return mod
 
 
@@ -137,6 +149,7 @@ def test_ensure_agents_md_refresh_with_windows_backslash_path(tmp_path):
     # a fresh, throwaway module instance for this test only — no restore needed.
     win_vpy = r"C:\Users\admin\.agent-meeting\venv\Scripts\python.exe"
     mod._venv_python = lambda _meeting_home: win_vpy
+    mod.IS_WINDOWS = True
     mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
 
     text = agents.read_text(encoding="utf-8")
@@ -157,11 +170,99 @@ def test_ensure_agents_md_append_branch_unaffected(tmp_path):
 
     win_vpy = r"C:\Users\admin\.agent-meeting\venv\Scripts\python.exe"
     mod._venv_python = lambda _meeting_home: win_vpy
+    mod.IS_WINDOWS = True
     mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
 
     text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
     assert win_vpy in text
     assert mod._AGENTS_BEGIN in text and mod._AGENTS_END in text
+
+
+def test_ensure_agents_md_posix_runs_runtime_wrappers_directly(tmp_path):
+    mod = _load_install()
+    mod.IS_WINDOWS = False
+    codex_home = tmp_path / "codex_home"
+    meeting_home = tmp_path / "meeting_home"
+    codex_home.mkdir()
+    meeting_home.mkdir()
+
+    mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
+
+    text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
+    say = meeting_home / "bin" / "meeting-say"
+    cli = meeting_home / "bin" / "meeting"
+    assert f'"{say}" X' in text
+    assert f'"{cli}" list' in text
+    assert "& \"" not in text
+    assert str(mod._venv_python(meeting_home)) not in text
+
+
+def test_legacy_codex_registration_hook_is_removed_without_touching_others():
+    mod = _load_hook_remover()
+    content = """
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear|compact"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/venv/python /plugin/codex/codex-register.py"
+timeout = 10
+
+[[hooks.SessionStart]]
+matcher = "startup"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/venv/python /plugin/handoff/session-start.py"
+timeout = 10
+"""
+
+    updated = mod.remove_legacy_blocks(content)
+
+    assert "codex-register.py" not in updated
+    assert "handoff/session-start.py" in updated
+
+
+def test_hook_state_reindex_preserves_plugin_owned_trust_entries():
+    mod = _load_hook_remover()
+    config_key = mod.toml_escape(str(mod.CONFIG_PATH))
+    content = f"""
+[[hooks.SessionStart]]
+matcher = "startup"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/plugin/codex/codex-register.py"
+
+[[hooks.SessionStart]]
+matcher = "resume"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/plugin/handoff/session-start.py"
+
+[hooks.state]
+
+[hooks.state."{config_key}:session_start:0:0"]
+enabled = true
+trusted_hash = "old-agent-meeting"
+
+[hooks.state."{config_key}:session_start:1:0"]
+enabled = true
+trusted_hash = "old-handoff-index"
+
+[hooks.state."handoff@woodor:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "plugin-owned"
+"""
+
+    updated = mod.rewrite_session_start_state(mod.remove_legacy_blocks(content))
+
+    assert "codex-register.py" not in updated
+    assert f'{config_key}:session_start:0:0' in updated
+    assert f'{config_key}:session_start:1:0' not in updated
+    assert "old-agent-meeting" not in updated
+    assert "old-handoff-index" not in updated
+    assert "plugin-owned" in updated
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +276,7 @@ def _make_plugin_root(base: Path) -> Path:
     (pr / "codex").mkdir(parents=True)
     (pr / ".claude-plugin").mkdir(parents=True)
     (pr / "bin" / "meeting").write_text("#!/bin/sh\necho meeting\n")
-    (pr / "bin" / "meeting-daemon").write_text("#!/bin/sh\necho daemon\n")
+    (pr / "bin" / "amctl").write_text("#!/bin/sh\necho central amctl\n")
     (pr / "codex" / "codex-meeting.py").write_text("# stub\n")
     (pr / "codex" / "meeting-say.py").write_text("# stub\n")
     (pr / "codex" / "mycodex-posix.sh").write_text("#!/bin/sh\necho mycodex-stub\n")
@@ -238,6 +339,33 @@ def test_old_codex_meeting_removed_on_regen(tmp_path):
     assert (meeting_home / "bin" / "mycodex").exists()
 
 
+def test_legacy_launchd_install_migrates_missing_is_host_to_true(tmp_path):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    config = meeting_home / "config.json"
+    config.write_text(
+        json.dumps({"machine_id": "machine-1", "plugin_version": "0.12.0"}),
+        encoding="utf-8",
+    )
+    old_plist = tmp_path / "com.tommy.agent-meeting.plist"
+    old_plist.touch()
+
+    mod = _load_bootstrap(meeting_home, plugin_root)
+    mod.CONFIG = config
+    mod.PLUGIN_ROOT = plugin_root
+    mod.IS_MAC = True
+    mod.IS_WINDOWS = False
+    mod.IS_LINUX = False
+    mod._PRE_AMCTL_LAUNCHD_PLIST = old_plist
+    mod.LAUNCHD_PLIST = tmp_path / "com.tommy.agent-meeting.amctl.plist"
+
+    cfg, _, _ = mod.load_or_create_config()
+
+    assert cfg["is_host"] is True
+    assert json.loads(config.read_text(encoding="utf-8"))["is_host"] is True
+
+
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX sentinel test")
 def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
     """
@@ -251,7 +379,7 @@ def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
 
     bin_dir = meeting_home / "bin"
     bin_dir.mkdir(parents=True)
-    for name in ("meeting", "meeting-daemon", "meeting-say"):
+    for name in ("meeting", "amctl", "meeting-say"):
         (bin_dir / name).write_text("#!/bin/sh\n")
 
     mod = _load_bootstrap(meeting_home, plugin_root)

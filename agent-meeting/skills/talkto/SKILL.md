@@ -1,6 +1,6 @@
 ---
 name: talkto
-description: Send a message to another registered Claude session by name via the meeting-room system. Use this skill for ANY outbound message to a peer session — direct /talkto invocations AND natural-language requests like "tell bob X", "ask carol Y", "给 lag-runtime 打个招呼".
+description: Send a message to another registered Claude session through agent-meeting, using a canonical name@project private identity. Use for direct /talkto invocations and natural-language requests such as "tell bob X", "ask carol Y", or "给 lag-runtime 发消息"; require the user to choose a full identity when they supplied only a bare name.
 ---
 
 ## When to invoke this skill
@@ -10,7 +10,8 @@ Invoke whenever the user wants you to communicate with a peer session, in any of
 - Direct command: `/talkto <peer> <optional message text>`
 - Natural language: "tell `<peer>` X", "ask `<peer>` Y", "give `<peer>` Z", "你给 `<peer>` 打个招呼", "问 `<peer>` 一下…"
 
-The presence of a peer session name (from `~/.agent-meeting/directory.json`) anywhere in the user prompt — combined with an instruction to convey something — is the trigger.
+The presence of a peer session identity in a request to convey something is
+the trigger.
 
 ## Architecture (changed 2026-05-26)
 
@@ -20,14 +21,23 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
 
 ## Steps
 
-1. **Verify self is registered**: read `~/.agent-meeting/directory.json`, check that this session's name is present. If not, refuse and tell user to run `/meeting <name>` first.
-2. **Verify peer exists in directory**: if `<peer>` not present, list available peers and refuse.
-3. **Read recent room history (optional but recommended)**: `~/.agent-meeting/bin/meeting show <self> <peer> --limit=20`. Skip if you already have full context.
-4. **Turn check (advisory, not blocking)**: `~/.agent-meeting/bin/meeting turn <self> <peer>`.
+1. **Verify self is registered**: run `meeting list` and identify the current
+   session by cwd and host. If none is active, tell the user to run
+   `/meeting <name>` first.
+2. **Require a canonical private recipient**: `<peer>` must be
+   `<name>@<project>` or `<name>@*`. Never silently resolve a bare private name,
+   even when `meeting list` currently shows only one candidate. If the user
+   supplied a bare name, show matching full identities from `meeting list` and
+   ask them to choose.
+3. **Verify the full peer identity exists** in `meeting list`; refuse if it does
+   not.
+4. **Read recent history when useful**:
+   `meeting show <self> <peer> --limit=20`.
+5. **Turn check (advisory, not blocking)**: `meeting turn <self> <peer>`.
    - If output is `<self>` → normal case, send your message.
    - If output is `<peer>` → peer is expected to respond next. You MAY still send when the user explicitly asks for a follow-up or you have a non-deferrable addition. Don't refuse on this basis alone.
    - The room may not exist yet — that's fine, `meeting send` will create it on first message.
-5. **Compose your message body** (markdown, ≤30 lines is the soft norm).
+6. **Compose your message body** (markdown, ≤30 lines is the soft norm).
 
    **Do NOT send ack-only / no-info messages** — this is a hard rule, not a style preference. Abort the send if your body is just one of:
    - "收到 / got it / thanks / 好的 / ok / understood"
@@ -40,7 +50,7 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
 
    **If you only have an ack**: don't call `meeting send` at all. Tell the user one line ("→ no message to send, ack-only suppressed") and stop.
 
-6. **Send via the CLI** (one atomic transaction inserts msg + flips turn). Three body modes — pick by content:
+7. **Send via the CLI** (one atomic transaction inserts msg + flips turn). Three body modes — pick by content:
 
    **Mode A — inline (short, no shell-special chars)**:
    ```
@@ -65,7 +75,7 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
    The CLI prints `sent: room=<name> msg_id=<N> turn→<peer>` on success.
 
    **Never prefix the command with `bash`** — the script's shebang is `#!/usr/bin/env python3`. `bash <path>` will crash with shell parse errors. On Windows, prefix with the venv Python instead (per the per-OS rule above).
-7. **Brief confirm to user**: one short line like "→ sent to lag-rct (msg #42, turn → lag-rct)". No long summary.
+8. **Brief confirm to user** with the full recipient identity and msg ID.
 
 After sending, the peer's monitor will detect the new message within ~3 seconds (it polls `meeting ring`) and their Claude will compose a reply.
 

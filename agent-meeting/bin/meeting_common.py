@@ -2,16 +2,15 @@
 """
 Shared kernel for agent-meeting's Python-side runtime scripts.
 
-Covers the pieces that were independently forked across bin/meeting,
-bin/monitor.py, codex/codex-bridge.py and codex/codex-meeting.py:
+Covers the pieces shared by bin/meeting, bin/monitor.py, and the Codex
+launcher:
   - git-based project name derivation
   - a `meeting` CLI subprocess wrapper
   - control-endpoint discovery via `meeting controls --json`
   - the WS /subscribe client kernel (handshake, ping/pong, backoff reconnect)
 
 Message/frame *semantics* (DM vs group, cursors, control:* instructions, UI
-notification formatting) are intentionally NOT here -- those differ between
-monitor.py and codex-bridge.py and stay as caller-supplied callbacks.
+notification formatting) are intentionally NOT here.
 
 Import layout: this file must be importable from both runtime layouts:
   - bin/meeting, bin/monitor.py run from <plugin>/bin (source) or
@@ -20,9 +19,8 @@ Import layout: this file must be importable from both runtime layouts:
     file in <plugin>/bin/ into the runtime dir, this one included), so a
     plain `import meeting_common` resolves via Python's own script-directory
     sys.path[0] with no extra wiring.
-  - codex/codex-bridge.py and codex/codex-meeting.py run directly from
-    <plugin>/codex/ (never copied) and add ~/.agent-meeting/bin to sys.path
-    before importing this module.
+  - codex/codex-meeting.py runs directly from <plugin>/codex/ (never copied)
+    and adds ~/.agent-meeting/bin to sys.path before importing this module.
 """
 
 import base64
@@ -270,15 +268,29 @@ def run_meeting_cli(cli_path, *args, python=None, host=None, cwd=None, timeout=1
 
     python: interpreter to exec cli_path with (venv python / sys.executable), or
         None to invoke cli_path directly -- its own shebang (POSIX) or .cmd
-        wrapper (Windows) picks the interpreter. monitor.py uses None because
-        cli_path there is already such a wrapper; codex-bridge.py and
-        codex-meeting.py pass an explicit interpreter because they invoke the
-        extensionless script directly (bypassing cmd.exe's `<`/`>` mangling).
+        wrapper (Windows) picks the interpreter.  On POSIX, the installed
+        runtime CLI is itself a `#!/bin/sh` wrapper around the venv Python;
+        that wrapper must be invoked directly even if a caller supplied
+        ``python``.  Passing the wrapper to Python makes Python parse `exec`
+        as source code and fails before the CLI can register or read messages.
+        On Windows the extensionless runtime file is a Python script, so the
+        supplied interpreter remains necessary there.
     host: optional control base URL, appended as `--host <host>`.
     Raises whatever subprocess.run raises (e.g. TimeoutExpired) -- callers that
     want a swallow-errors mode catch it themselves.
     """
-    cmd = ([str(python)] if python else []) + [str(cli_path)] + list(args)
+    cli_path = os.fspath(cli_path)
+    is_posix_shell_wrapper = False
+    if python and not sys.platform.startswith("win"):
+        try:
+            with open(cli_path, "rb") as f:
+                first_line = f.readline(200)
+            is_posix_shell_wrapper = first_line.startswith(b"#!") and b"sh" in first_line
+        except OSError:
+            pass
+
+    cmd = ([] if is_posix_shell_wrapper else ([str(python)] if python else []))
+    cmd += [cli_path] + list(args)
     if host:
         cmd += ["--host", host]
     kw = {"creationflags": 0x08000000} if sys.platform.startswith("win") else {}  # CREATE_NO_WINDOW
@@ -355,7 +367,7 @@ def read_plugin_version(data_dir):
 
 # ---------------------------------------------------------------------------
 # WS frame primitives (RFC 6455 client-side framing; text/ping/pong/close
-# only -- fragmented frames are not supported, matching the daemon's framing)
+# only -- fragmented frames are not supported, matching central amctl's framing)
 # ---------------------------------------------------------------------------
 
 def ws_make_key() -> "tuple[str, str]":
@@ -433,15 +445,10 @@ class WSSubscribeClient:
                  on_connect=None, log=None):
         """
         resolve_addr: callable() -> (ip, port) | None. Called on every connect
-            attempt -- pass a fixed-tuple closure for a once-resolved endpoint
-            (codex-bridge.py, which resolves the control ONCE at startup) or a
-            fresh-discovery closure to re-resolve on every reconnect
-            (monitor.py).
+            attempt; monitor.py uses a fresh-discovery closure so reconnects
+            can follow a moved control node.
         project: callable() -> str, the X-Meeting-Project handshake header.
-            Called on every connect attempt -- pass a fixed-value closure for a
-            static project (monitor.py, whose own cwd never changes) or a
-            fresh-derivation closure (codex-bridge.py, whose session mapping
-            file's cwd can be updated underneath a long-lived process).
+            Called on every connect attempt.
         read_token: callable() -> str | None, the bearer token for Authorization.
         on_text: callable(msg: dict) -- called for every decoded JSON text frame.
         on_connect: callable() | None -- called once per successful handshake,
@@ -565,7 +572,7 @@ class WSSubscribeClient:
                 now = time.time()
 
                 if now - last_frame_time > self.DEAD_TIMEOUT:
-                    self.log(f"no daemon frame for {self.DEAD_TIMEOUT}s, reconnecting")
+                    self.log(f"no central amctl frame for {self.DEAD_TIMEOUT}s, reconnecting")
                     disconnected = True
                     break
 
@@ -598,13 +605,13 @@ class WSSubscribeClient:
                         continue
                     self.on_text(msg)
 
-                elif opcode == 0x9:  # ping from daemon
+                elif opcode == 0x9:  # ping from central amctl
                     try:
                         ws_send_masked(sock, 0xA, payload)
                     except Exception:
                         disconnected = True
 
-                elif opcode == 0xA:  # pong from daemon
+                elif opcode == 0xA:  # pong from central amctl
                     pass
 
                 elif opcode == 0x8:  # close

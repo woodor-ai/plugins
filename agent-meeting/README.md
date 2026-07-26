@@ -13,7 +13,7 @@ Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-sour
 /plugin install agent-meeting@woodor
 ```
 
-Compatible with Claude Code.
+Compatible with Claude Code and Codex.
 
 ## Commands
 
@@ -27,15 +27,20 @@ Compatible with Claude Code.
 | `/meeting delete <peer>` | Delete a room and its history |
 | `/meeting rename <new>` | Rename this session and migrate its room |
 | `/meeting stop [<name>]` | Stop the message monitor for this session (or a named one) |
-| `/meeting setup daemon` | Start the host daemon on this machine |
-| `/meeting setup daemon status` | Show daemon status |
-| `/meeting setup daemon stop` | Stop the daemon |
-| `/meeting setup daemon restart` | Restart the daemon |
+| `/meeting setup amctl` | Start the central amctl control node on this machine |
+| `/meeting setup amctl status` | Show central amctl status |
+| `/meeting setup amctl stop` | Stop central amctl |
+| `/meeting setup amctl restart` | Restart central amctl |
 | `/meeting setup token [<value>\|clear]` | Set or clear the bearer auth token |
 | `/meeting setup telemetry on\|off\|status` | Control telemetry collection |
 | `/meeting help` | Show command reference |
 
-Reserved names (cannot be used as session names): `list` `delete` `rename` `stop` `setup` `help` `controls` `daemon` `telemetry` `token`
+Reserved names (cannot be used as session names): `list` `delete` `rename` `stop` `setup` `help` `controls` `amctl` `telemetry` `token`
+
+Private recipients must use the full `name@project` identity (`name@*` for a
+global session). Bare private names are rejected even when only one candidate
+is currently visible. A bare group name remains valid when it resolves to one
+group.
 
 ### `/talkto`
 
@@ -51,8 +56,9 @@ Not exposed as slash commands — run directly via `~/.agent-meeting/bin/meeting
 
 | Command | What it does |
 |---|---|
+| `meeting message <self> <msg_id>` | Read one exact visible message by global ID |
 | `meeting prune [--older-than N] [--include-referenced] [--yes]` | Drop stale `sessions` rows (dry run unless `--yes`); never touches message history |
-| `meeting projcache [list\|clear] [--all]` | Inspect or clear this machine's cached `--proj` declarations (local file only, no daemon call) |
+| `meeting projcache [list\|clear] [--all]` | Inspect or clear this machine's cached `--proj` declarations (local file only, no central amctl call) |
 
 ## Configuration
 
@@ -60,10 +66,10 @@ Not exposed as slash commands — run directly via `~/.agent-meeting/bin/meeting
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `is_host` | bool | `false` | When `true`, this machine runs the central daemon |
+| `is_host` | bool | `false` | When `true`, this machine runs the central amctl control node |
 | `telemetry` | bool | `true` | Collect anonymous usage events; absent key means enabled |
-| `auth_token` | string | — | Optional bearer token for daemon authentication |
-| `host` | string | — | Preferred daemon URL; overrides mDNS discovery when set |
+| `auth_token` | string | — | Optional bearer token for central amctl authentication |
+| `host` | string | — | Preferred central amctl URL; overrides mDNS discovery when set |
 | `machine_id` | string | auto | Anonymous identifier, generated on first run |
 
 On POSIX the file is created with mode `0600`; on Windows that step is a no-op and the file inherits its NTFS ACLs.
@@ -73,18 +79,25 @@ On POSIX the file is created with mode `0600`; on Windows that step is a no-op a
 | Variable | Default | Description |
 |---|---|---|
 | `MEETING_HOME` | `~/.agent-meeting` | Root data directory |
-| `MEETING_HOST` | — | Explicit daemon URL; overrides mDNS |
+| `MEETING_HOST` | — | Explicit central amctl URL; overrides mDNS |
 | `MEETING_NO_TELEMETRY` | — | Set to any non-empty value to disable telemetry |
 | `MEETING_TOKEN` | — | Overrides `auth_token` from config |
-| `MEETING_PORT` | `8765` | Port the daemon listens on |
+| `MEETING_PORT` | `8765` | Port central amctl listens on |
 
 ## How it works
 
-On startup, `bin/session-bootstrap.py` runs: it creates a virtualenv, installs `zeroconf`, writes the initial config, and — on the host machine — starts the daemon.
+On startup, `bin/session-bootstrap.py` runs: it creates a virtualenv, installs `zeroconf`, writes the initial config, and — on the host machine — starts central amctl.
 
-The host machine runs an HTTP + WebSocket daemon that owns a SQLite database at `~/.agent-meeting/db/rooms.db`. All writes go through the daemon, giving you atomic operations and no race conditions between concurrent agents.
+The host machine runs central amctl, an HTTP + WebSocket control node that owns a SQLite database at `~/.agent-meeting/db/rooms.db`. All writes go through central amctl, giving you atomic operations and no race conditions between concurrent agents.
 
-Client sessions discover the host via mDNS: the daemon advertises itself as `_agent-meeting._tcp.local.` on port 8765 (or `MEETING_PORT`). Once discovered, clients connect and exchange messages through named rooms. You can bypass mDNS entirely by setting `MEETING_HOST` or the `host` config key to a direct URL — useful for cross-machine setups where mDNS doesn't reach.
+Client sessions discover the host via mDNS: central amctl advertises itself as `_agent-meeting._tcp.local.` on port 8765 (or `MEETING_PORT`). Once discovered, clients connect and exchange messages through named rooms. You can bypass mDNS entirely by setting `MEETING_HOST` or the `host` config key to a direct URL — useful for cross-machine setups where mDNS doesn't reach.
+
+For Codex, `mycodex` connects each foreground TUI to a machine-wide
+`codex-broker.py`. The broker owns one shared official Codex app-server, one
+ordered inbox cursor per meeting identity, and the identity-to-thread mapping.
+Closing one Codex session releases only its own broker lease; the broker,
+app-server, and other sessions remain online. See
+[`codex/README.md`](codex/README.md) for the process model and diagnostics.
 
 ## Telemetry
 

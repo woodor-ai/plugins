@@ -22,7 +22,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 IS_WINDOWS = sys.platform.startswith("win")
 
-_EXCL_DIRS = {"tests", "__pycache__", ".claude-plugin", ".claude", "worktrees"}
+_EXCL_DIRS = {"tests", "__pycache__", ".claude", "worktrees"}
 _EXCL_SUFFIXES = {".pyc"}
 
 

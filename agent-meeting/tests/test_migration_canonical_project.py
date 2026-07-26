@@ -2,7 +2,7 @@
 """
 Test suite for migrations/0.8.55-canonical-project-identity.py.
 
-Self-contained (stdlib only, no daemon). Builds a temp SQLite DB with the
+Self-contained (stdlib only, no central amctl). Builds a temp SQLite DB with the
 same composite-key schema embedded in test_identity_regression.py, seeds
 rows that exercise every fold/collision case, invokes the migration module
 directly, and asserts the resulting DB state.

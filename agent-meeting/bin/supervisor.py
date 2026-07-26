@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-meeting-supervisor — Windows keep-alive babysitter for meeting-daemon.
+meeting-supervisor — Windows keep-alive supervisor for central amctl.
 
 Windows analog of macOS launchd KeepAlive. On Windows there is no built-in
 "restart this process when it exits" facility for a user-level, no-admin
@@ -11,29 +11,29 @@ ensure_schtasks) and runs for the lifetime of the logon session.
 Responsibilities
 ----------------
 1. Single-instance guard — refuse to run if another live supervisor exists.
-2. Launch meeting-daemon detached (venv pythonw → no console window).
-3. Keep it alive: relaunch whenever the daemon process exits, for ANY reason
-   — crash, the daemon's own watchdog os._exit(1) on 假死, or an external
+2. Launch central amctl detached (venv pythonw → no console window).
+3. Keep it alive: relaunch whenever the central amctl process exits, for any reason
+   — crash, its own watchdog os._exit(1), or an external
    taskkill — UNLESS the stop sentinel is present.
-4. Redundant external health probe. The daemon has an in-process watchdog
+4. Redundant external health probe. Central amctl has an in-process watchdog
    that os._exit(1)s when its self /health check fails. But a total GIL-level
    wedge (a C extension holding the GIL) could stall that in-process thread
    too. We probe /health out-of-process every PROBE_INTERVAL seconds; two
-   consecutive failures → taskkill the daemon so the relaunch loop revives it.
+   consecutive failures → taskkill central amctl so the relaunch loop revives it.
    This is the only layer that can recover a wedge the in-process watchdog
    can't.
 
-Contract with `meeting daemon` (CLI, cmd_daemon Windows branch)
+Contract with `meeting amctl` (CLI, cmd_amctl Windows branch)
 ---------------------------------------------------------------
-Stop sentinel: ~/.agent-meeting/daemon.stopped
-  - `meeting daemon stop`    → writes the sentinel (then taskkills daemon +
+Stop sentinel: ~/.agent-meeting/amctl.stopped
+  - `meeting amctl stop`    → writes the sentinel (then taskkills central amctl +
     supervisor). Seeing it, the supervisor exits WITHOUT relaunching.
-  - `meeting daemon start/restart` → removes the sentinel before (re)launching.
-The sentinel is the authoritative "operator wants it down" signal; the daemon
+  - `meeting amctl start/restart` → removes the sentinel before (re)launching.
+The sentinel is the authoritative "operator wants it down" signal; central amctl's
 exit code alone can't distinguish a deliberate stop from a crash/wedge, so the
 sentinel — not the exit code — gates relaunch.
 
-Testing hook: set MEETING_NO_MDNS=1 to launch the daemon with --no-mdns
+Testing hook: set MEETING_NO_MDNS=1 to launch central amctl with --no-mdns
 (local-only, no LAN announce) — used for single-machine self-tests.
 """
 
@@ -48,19 +48,19 @@ from pathlib import Path
 HOME = Path.home()
 MEETING_HOME = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
 BIN = MEETING_HOME / "bin"
-STOP_SENTINEL = MEETING_HOME / "daemon.stopped"
+STOP_SENTINEL = MEETING_HOME / "amctl.stopped"
 
 TMP = Path(tempfile.gettempdir())
-DAEMON_PID_FILE = TMP / "meeting-daemon.pid"
+AMCTL_PID_FILE = TMP / "amctl.pid"
 SUPERVISOR_PID_FILE = TMP / "meeting-supervisor.pid"
-DAEMON_LOG = TMP / "meeting-daemon.log"
+AMCTL_LOG = TMP / "amctl.log"
 SUPERVISOR_LOG = TMP / "meeting-supervisor.log"
 
 PORT = int(os.environ.get("MEETING_PORT", "8765"))
 POLL = 5               # main loop tick (seconds)
 PROBE_INTERVAL = 20    # how often to run the redundant /health probe
 PROBE_FAILS_TO_KILL = 2
-RELAUNCH_BACKOFF = 3   # min seconds between consecutive daemon launches
+RELAUNCH_BACKOFF = 3   # min seconds between consecutive central amctl launches
 
 IS_WINDOWS = sys.platform.startswith("win")
 
@@ -106,8 +106,8 @@ def read_pid(path: Path) -> int:
         return 0
 
 
-def daemon_alive() -> bool:
-    return pid_alive(read_pid(DAEMON_PID_FILE))
+def amctl_alive() -> bool:
+    return pid_alive(read_pid(AMCTL_PID_FILE))
 
 
 def taskkill(pid: int):
@@ -130,18 +130,18 @@ def venv_python(windowless: bool) -> Path:
     return MEETING_HOME / "venv" / "bin" / "python"
 
 
-# ---------- daemon lifecycle ----------
+# ---------- central amctl lifecycle ----------
 
-def launch_daemon():
-    daemon = BIN / "meeting-daemon"
-    if not daemon.exists():
-        log(f"daemon script missing: {daemon}")
+def launch_amctl():
+    amctl = BIN / "amctl"
+    if not amctl.exists():
+        log(f"central amctl script missing: {amctl}")
         return
     py = venv_python(windowless=True)
-    cmd = [str(py), str(daemon), "--port", str(PORT)]
+    cmd = [str(py), str(amctl), "--port", str(PORT)]
     if os.environ.get("MEETING_NO_MDNS"):
         cmd.append("--no-mdns")
-    logf = open(DAEMON_LOG, "a", encoding="utf-8")
+    logf = open(AMCTL_LOG, "a", encoding="utf-8")
     if IS_WINDOWS:
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — survive supervisor death;
         # a fresh supervisor re-adopts it via the pid file.
@@ -151,8 +151,8 @@ def launch_daemon():
     else:
         proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
                                 start_new_session=True, close_fds=True)
-    DAEMON_PID_FILE.write_text(str(proc.pid))
-    log(f"daemon launched pid={proc.pid} cmd={' '.join(cmd)}")
+    AMCTL_PID_FILE.write_text(str(proc.pid))
+    log(f"central amctl launched pid={proc.pid} cmd={' '.join(cmd)}")
 
 
 def probe_health() -> bool:
@@ -211,8 +211,8 @@ def main():
                 log("stop sentinel detected — exiting without relaunch")
                 return
 
-            if not daemon_alive():
-                # Respect backoff so a daemon that exits immediately on launch
+            if not amctl_alive():
+                # Respect backoff so central amctl does not spin when it exits immediately.
                 # doesn't spin the loop.
                 wait = RELAUNCH_BACKOFF - (time.monotonic() - last_launch)
                 if wait > 0:
@@ -220,15 +220,15 @@ def main():
                 if STOP_SENTINEL.exists():
                     log("stop sentinel detected during backoff — exiting")
                     return
-                log("daemon not running — (re)launching")
-                launch_daemon()
+                log("central amctl not running — (re)launching")
+                launch_amctl()
                 last_launch = time.monotonic()
                 health_failures = 0
                 last_probe = time.monotonic()  # grace before first probe
                 time.sleep(POLL)
                 continue
 
-            # Daemon alive — redundant external health probe.
+            # Central amctl alive — redundant external health probe.
             now = time.monotonic()
             if now - last_probe >= PROBE_INTERVAL:
                 last_probe = now
@@ -238,9 +238,9 @@ def main():
                     health_failures += 1
                     log(f"health probe failed ({health_failures}/{PROBE_FAILS_TO_KILL})")
                     if health_failures >= PROBE_FAILS_TO_KILL:
-                        log("daemon wedged (in-process watchdog stalled?) — "
+                        log("central amctl wedged (in-process watchdog stalled?) — "
                             "taskkill to force relaunch")
-                        taskkill(read_pid(DAEMON_PID_FILE))
+                        taskkill(read_pid(AMCTL_PID_FILE))
                         health_failures = 0
             time.sleep(POLL)
     finally:

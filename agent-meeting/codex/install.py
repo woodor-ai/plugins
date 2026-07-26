@@ -12,7 +12,7 @@ What run_install does (in order):
   2. Discover LAN controls via `meeting controls --json`; prompt the user to confirm
      or enter the control URL.
   3. Write the control_url to launcher.json so bare `mycodex` needs no --control-url.
-  4. Install the codex SessionStart register hook into ~/.codex/config.toml.
+  4. Remove the obsolete per-session Codex register hook.
   5. Windows: force [windows] sandbox = "unelevated" in config.toml.
   6. Write the agent-meeting usage block into ~/.codex/AGENTS.md.
   7. Put ~/.agent-meeting/bin on the user PATH (Windows: idempotent winreg edit).
@@ -36,7 +36,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent          # <install>/agent-meeting/codex/
 PLUGIN_ROOT = HERE.parent                        # <install>/agent-meeting/
 BOOTSTRAP = PLUGIN_ROOT / "bin" / "session-bootstrap.py"
-HOOK_INSTALLER = HERE / "install-codex-hook.py"
+HOOK_REMOVER = HERE / "remove-legacy-codex-hook.py"
 IS_WINDOWS = sys.platform.startswith("win")
 
 
@@ -199,31 +199,52 @@ def _ensure_agents_md(codex_home: Path, meeting_home: Path, control: str):
     vpy = _venv_python(meeting_home)
     cli = meeting_home / "bin" / "meeting"
     ctrl = control or "http://<your-mac-tailnet-ip>:8765"
+    if IS_WINDOWS:
+        say_command = f'& "{vpy}" "{say}"'
+        cli_command = f'& "{vpy}" "{cli}"'
+        message_command = f'& "{vpy}" "{cli}" message S N'
+        quoting_note = (
+            "Put the body in **single quotes** (PowerShell treats them literally — safe for "
+            "Chinese prose and punctuation; a literal `'` inside must be doubled `''`)."
+        )
+    else:
+        # The POSIX runtime entries are executable /bin/sh wrappers.  They must
+        # be run directly: `python <wrapper>` makes Python parse the wrapper's
+        # `exec` line as source code and raises SyntaxError.
+        say_command = f'"{say}"'
+        cli_command = f'"{cli}"'
+        message_command = f'"{cli}" message S N'
+        quoting_note = (
+            "Put the body in **single quotes** (safe for Chinese prose and punctuation; "
+            "a literal `'` inside must be escaped for your shell)."
+        )
     block = f"""{_AGENTS_BEGIN}
 ## agent-meeting (peer messaging)
 
 You are a peer on **agent-meeting** — other agents can message you and you can
 message them.
 
-- **Direct message (1:1)**: an incoming turn whose text begins with
-  `[peer=X msg_id=N]` means agent **X** is talking to you directly.
-  Reply (or message anyone) with ONE command:
+- **Inbound notification**: a broker-injected turn begins with
+  `[meeting self=S messages=K ids=...]`, followed by one or more
+  `[peer=X msg_id=N]` or `[group=G peer=X msg_id=N]` lines. The notification
+  contains no peer-authored body. Before acting on message **N**, read exactly
+  that message using the displayed self identity **S**:
   ```
-  & "{vpy}" "{say}" X '正文放在单引号里'
+  {message_command}
   ```
-  Put the body in **single quotes** (PowerShell treats them literally — safe for
-  Chinese prose and punctuation; a literal `'` inside must be doubled `''`). You do
-  NOT need to know your own name or the control address — meeting-say fills them in.
-- **Group message**: an incoming turn whose text begins with
-  `[group=G peer=X msg_id=N]` means agent **X** sent to group **G**. Reply to the
-  group (so all members see it) using the group name as the recipient:
+- **Reply**: send to peer **X**, or to group **G** for a group message:
   ```
-  & "{vpy}" "{say}" G '正文'
+  {say_command} X '正文放在单引号里'
   ```
-  Use **G** (the group name), not **X** (the sender), as the recipient.
+  {quoting_note} You do NOT need to know your own name or the control address —
+  meeting-say fills them in.
+- **Group context**: read the charter before responding to a group:
+  ```
+  {cli_command} group charter G
+  ```
 - **See who is online**:
   ```
-  & "{vpy}" "{cli}" list --host {ctrl}
+  {cli_command} list --host {ctrl}
   ```
 - **Etiquette**: reply only when you have something substantive (an answer, a
   question, a decision, a status change). Do NOT send bare acks ("收到 / ok / 好的")
@@ -422,7 +443,7 @@ def run_install(ctx: dict) -> None:
         lambda msg, default="": (input(f"{msg} [{default}]: " if default else f"{msg}: ").strip() or default)
     )
 
-    for p in (BOOTSTRAP, HOOK_INSTALLER):
+    for p in (BOOTSTRAP, HOOK_REMOVER):
         if not p.exists():
             sys.exit(f"install: required file missing: {p}")
 
@@ -459,8 +480,12 @@ def run_install(ctx: dict) -> None:
     # 3. write launcher defaults
     _write_launcher_defaults(meeting_home, control_url)
 
-    # 4. codex SessionStart register hook
-    _run([sys.executable, str(HOOK_INSTALLER)], env, "install codex SessionStart hook")
+    # 4. remove the obsolete per-session register hook
+    _run(
+        [sys.executable, str(HOOK_REMOVER)],
+        env,
+        "remove legacy Codex SessionStart hook",
+    )
 
     # 5. Windows sandbox fix + AGENTS.md
     print("\n=== configure codex outbound ===")

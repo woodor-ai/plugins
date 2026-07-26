@@ -1,119 +1,138 @@
-# agent-meeting × codex bridge
+# agent-meeting × Codex
 
-Lets a **codex** session participate in agent-meeting — receive peer messages and
-reply — the same way Claude Code sessions do. This is "form B": messages are
-injected into a **live interactive `codex --remote` session** so the user sees
-them (and the reply) appear on screen, and the reply is relayed back to the peer.
+This integration lets local Codex sessions participate in agent-meeting while
+sharing one machine-wide broker and one official Codex app-server.
 
-Parallel to `handoff/codex/`. All scripts run in place from this clone and depend
-only on the `~/.agent-meeting` runtime (venv + `meeting` CLI). They honor
-`MEETING_HOME` / `CODEX_HOME` for relocated / isolated installs.
+## Architecture
 
-## Pieces
+The process model is:
 
-| file | role |
+```text
+mycodex launcher A ─┐
+mycodex launcher B ─┼─ ws://127.0.0.1:8789/session/<launch>
+mycodex launcher C ─┘                  │
+                                      ▼
+                         codex-broker.py (one per machine)
+                           ├─ one Codex app-server
+                           ├─ one lease per mycodex session
+                           ├─ one ordered inbox per identity
+                           └─ one central-amctl subscription per identity
+```
+
+Each `mycodex` process owns only its foreground TUI and broker lease. Closing
+one TUI unregisters that identity without stopping the broker, app-server, or
+other Codex sessions. The broker stays resident for later launches.
+
+The broker exposes two loopback-only endpoints:
+
+- `127.0.0.1:8788`: launcher lifecycle and
+  `CODEX_THREAD_ID` → agent-meeting identity lookup.
+- `127.0.0.1:8789`: session-aware WebSocket proxy between Codex TUIs and the
+  shared app-server.
+
+The proxy observes successful `thread/start`, `thread/resume`, and
+`thread/fork` responses, so `/clear`, resume, compact, and fork keep the
+identity mapping current. There is no shared `runtime.json` and no Codex
+SessionStart registration hook.
+
+## Components
+
+| File | Role |
 |---|---|
-| `install.py` | install entry point: `run_install(ctx)` interface + standalone CLI |
-| `install-codex-hook.py` | writes the SessionStart register hook into `~/.codex/config.toml` |
-| `codex-register.py` | the hook target — registers the session + writes the mapping file |
-| `codex-bridge.py` | long-running daemon — WS `/subscribe` inbound + heartbeat, injects into the codex app-server thread, relays the reply |
-| `codex-meeting.py` | launcher — one command: app-server + runtime.json + bridge + `codex --remote` + teardown |
+| `codex-broker.py` | Persistent machine-level broker and shared app-server owner |
+| `codex-meeting.py` | Thin `mycodex` launcher; acquires and releases one broker lease |
+| `meeting-say.py` | Resolves the current identity through `CODEX_THREAD_ID` and sends a reply |
+| `remove-legacy-codex-hook.py` | Installer migration that removes the obsolete registration hook |
+| `install.py` | Codex installer integration |
 
-## Install (fresh, codex-only machine)
+`codex app-server` is an official Codex process. agent-meeting starts and owns
+one shared instance because Homebrew and other unmanaged Codex installations
+cannot use Codex's managed app-server service lifecycle.
 
-**One-liner (PowerShell):**
+## Install
+
+PowerShell:
+
 ```powershell
 iwr -useb https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.ps1 | iex
 ```
 
-**One-liner (macOS / Linux):**
+macOS or Linux:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.sh | bash
 ```
 
-**Manual:**
-```
+Manual:
+
+```sh
 git clone https://github.com/woodor-ai/plugins
 python <repo>/install-codex.py
 ```
 
-The interactive installer copies selected plugins to `~/.codex/plugins/<name>`,
-builds `~/.agent-meeting` (venv + zeroconf + websockets + `meeting` CLI), and
-installs the codex SessionStart hook. On a client machine no daemon/persistence
-is installed — the agent-meeting control stays on the host.
+The installer builds `~/.agent-meeting`, installs `zeroconf` and `websockets`
+in its virtual environment, writes `mycodex` and `meeting-say` wrappers, stores
+the selected central-amctl URL, removes the legacy Codex hook, and refreshes
+the agent-meeting instructions in `~/.codex/AGENTS.md`.
 
-The installer also drops a single `mycodex` command into `~/.agent-meeting/bin`
-(added to PATH) — unconditionally, regardless of which plugins you selected
-above. **Later, to install more plugins or update existing ones, just run:**
+## Run
 
-```
-mycodex --update
+```sh
+mycodex [<name>] [--control-url URL] [--proj PROJECT | --global]
 ```
 
-instead of re-pasting the one-liner — it pulls (or clones, if missing) the
-`~/.codex/plugins-src` checkout and reruns the interactive installer. This works
-even if you only installed a different plugin (e.g. `handoff`) and skipped
-agent-meeting.
+`--proj` declares and caches an authoritative project identity for the current
+repository. A later launch from the same repository can omit it. Use
+`--global` for a machine-global identity.
 
-On a **fresh install** (never asked again on `mycodex --update`), the installer
-finishes by asking whether to enable codex's fully-unattended config
-(`approval_policy="never"` + `sandbox_mode="danger-full-access"`) — default is
-no; answer `y` to enable it.
+For lifecycle-only diagnostics:
 
-## Run a bridged live session
-
-```
-mycodex [<name>] [--port N] [--control-url URL] [--proj X]
+```sh
+mycodex <name> --proj PROJECT --no-codex
 ```
 
-This starts the app-server + bridge in the background and drops you into a live
-`codex --remote` TUI. Peers can now message `<name>`; the message appears in
-your session and the reply goes back to the peer. Exit the TUI (or Ctrl-C) to
-tear everything down. If agent-meeting is not installed yet, `mycodex` reports
-that clearly and tells you to run `mycodex --update` first.
+This acquires a broker lease without opening the TUI and holds it until
+SIGINT/SIGTERM.
 
-`--proj X` declares an explicit project identity for this repo root (symmetric
-with `/meeting <name> --proj=<x>` in Claude Code) — it's cached per repo root so
-registration and the bridge both pick it up without re-typing it every session.
+## Message delivery
 
-## Known limitations
+Central amctl exposes one recipient-wide inbox ordered by global `msg_id`.
+The broker keeps one cursor per identity and coalesces pending normal messages
+while Codex is busy. Once the target thread is idle, it injects a single
+metadata-only notification:
 
-- **Idle detection only guards against an in-flight model turn**, not "the user is
-  typing but hasn't hit enter". The bridge waits for the thread to read idle twice
-  before injecting; it can still inject between a user's keystrokes.
-- **No spaces in the venv-python / script paths.** Codex's Windows hook runner
-  splits the command on whitespace and does not honor quotes, so the hook command
-  must be two space-free tokens (the `~/.agent-meeting` venv path satisfies this).
-- **`https://` / `wss://` control endpoints are not supported yet** — plaintext
-  `http://` (→ plaintext ws) only.
-- **Auto-warm is best-effort.** `codex-meeting` fires a minimal turn on the
-  app-server right after startup (`thread/start` + `turn/start`, same protocol the
-  bridge uses to inject peer messages) so the name↔session mapping exists before
-  you type anything, then launches the foreground session as `codex resume
-  <thread> --remote <addr>` instead of a bare `--remote`. If warm-up fails for any
-  reason (app-server not ready yet, `websockets` missing, protocol error) it logs
-  and falls back to a plain fresh `codex --remote <addr>` — the original
-  first-turn-mapping window (see the old changelog) reopens only in that fallback
-  case.
-- **Control instructions (`control:restart` / `control:clear`) are injected only
-  when fresh** — created within the last 10 minutes AND after this bridge process
-  started. Stale or unrecognized `control:<x>` kinds are logged and dropped, never
-  injected, so they can't wake the live session with noise.
-- **Group charter is cached per group name for 3 minutes** inside the bridge
-  process (`meeting group charter <name>`), so a burst of messages in the same
-  group doesn't re-run the CLI on every single one. 1:1 messages never look up or
-  inject a charter.
+```text
+[meeting self=NAME@PROJECT messages=2 ids=17029,17042] New messages pending [unverified peers]
+- [peer=alice@one msg_id=17029]
+- [group=review@tools peer=bob@two msg_id=17042]
+```
 
-## Follow-ups (non-blocking)
+The agent reads each exact body with:
 
-- Hide the transient console window from background/child processes on Windows
-  (`CREATE_NO_WINDOW`) — needs desktop verification. (The blank PowerShell window the
-  user may see is codex's OWN command shell, a child of the codex app-server, not one
-  of these scripts — it cannot be hidden from this side.)
+```sh
+meeting message NAME@PROJECT 17029
+```
 
-## Note
+It does not open a whole conversation and accidentally interpret a newer
+message as the notified one. Directed group messages that do not mention this
+identity advance the cursor without waking Codex. Fresh control messages are
+kept separate from normal batches.
 
-The pre-existing **handoff** SessionStart hook exits 1 under codex on Windows
-(its `python3 || py -3 || python` command form is mangled by codex's hook runner);
-that is a handoff-side issue, independent of this bridge, which uses the
-space-free unquoted command form and fires cleanly.
+## State and logs
+
+- `~/.agent-meeting/codex/broker-state.json`: durable per-identity inbox cursors.
+- `~/.agent-meeting/codex/logs/broker.log`: broker lifecycle and injection log.
+- `~/.agent-meeting/codex/logs/app-server.log`: shared official app-server log.
+- `~/.agent-meeting/codex/launcher.json`: selected central-amctl URL.
+
+The broker deliberately does not reuse a stray app-server found on another
+port; it owns its child process and can restart it safely.
+
+## Limitations
+
+- Control endpoints currently require plaintext `http://`, with WebSocket
+  subscriptions derived as `ws://`.
+- Idle detection protects against an in-flight Codex turn, not text that a
+  user has typed but not submitted.
+- WebSocket transport is required because the Codex TUI connects through the
+  broker's session-aware proxy.

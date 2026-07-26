@@ -11,7 +11,7 @@ The line is composed of, in order (segments are dropped when unavailable):
     📞 <meeting-name>  |  <model>  |  <dir>  |  <git-branch>
 
 The meeting name is NOT looked up from the central SQLite DB (that would be
-slow and would require mDNS/daemon discovery on every refresh, and wouldn't
+slow and would require mDNS/central-amctl discovery on every refresh, and wouldn't
 work on client machines). Instead, monitor.py writes the registered session name
 to a tiny local cache file keyed by the session's cwd when `/meeting <name>`
 registers, and removes it on exit. This script just reads that file — purely

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-meeting-daemon — HTTP+mDNS server for LAN-wide agent-meeting.
+amctl — central HTTP+mDNS control node for LAN-wide agent-meeting.
 
 Single-host model: this process owns the SQLite DB. Other machines on the
 LAN discover us via mDNS (_agent-meeting._tcp.local.) and hit our HTTP API
@@ -12,7 +12,7 @@ is <1ms so the cost is negligible).
 
 Auth model: open by default (trusted-network assumption). Set `auth_token`
 in config.json to enable Bearer-token enforcement on all routes except
-/health. Token is re-read on every request — no daemon restart required
+/health. Token is re-read on every request — no central amctl restart required
 after `meeting token` writes it.
 
 Identity: sessions are identified by (project, name) composite key.
@@ -24,7 +24,7 @@ DEPLOY NOTE: this schema is incompatible with the old single-key schema.
 Wipe ~/.agent-meeting/db/rooms.db before deploying.
 
 Usage:
-  meeting-daemon [--port 8765] [--bind 0.0.0.0]
+  amctl [--port 8765] [--bind 0.0.0.0]
 
 Run forever; stop with SIGINT/SIGTERM (mDNS unregister + clean shutdown).
 """
@@ -439,6 +439,17 @@ class Handler(BaseHTTPRequestHandler):
                     int(q.get("limit", ["30"])[0]),
                     int(q.get("since", ["0"])[0]),
                 ))
+            if path == "/inbox":
+                return self._json(200, self._inbox(
+                    q["project"][0], q["name"][0],
+                    int(q.get("since", ["0"])[0]),
+                    int(q.get("limit", ["500"])[0]),
+                    q.get("initial", ["0"])[0] == "1",
+                ))
+            if path == "/message":
+                return self._json(200, self._message(
+                    q["project"][0], q["name"][0], int(q["id"][0]),
+                ))
             if path == "/group/list":
                 return self._json(200, self._group_list(
                     q.get("member_project", [None])[0],
@@ -531,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
                 cursor = row["cursor"]
 
             # Upsert the sessions row so pong updates have a target row even after
-            # a daemon restart or wipe. Preserve existing role/cwd if already set.
+            # a central amctl restart or wipe. Preserve existing role/cwd if already set.
             conn.execute(
                 "INSERT INTO sessions (project, name, cwd, host, os, registered_at, last_seen, role)"
                 " VALUES (?, ?, NULL, NULL, NULL, ?, ?, 'worker')"
@@ -698,7 +709,9 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("client_version"),
                 ))
             if path == "/unregister":
-                return self._json(200, self._unregister(body["project"], body["name"]))
+                return self._json(200, self._unregister(
+                    body["project"], body["name"], body.get("instance"),
+                ))
             if path == "/prune":
                 return self._json(200, self._prune(
                     float(body.get("older_than_days", 7)),
@@ -773,8 +786,8 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _fmt_id(name: str, project: str) -> str:
-        """Render identity for human-readable display. Global identity hides the @* suffix."""
-        return name if project == "*" else f"{name}@{project}"
+        """Render the canonical identity; global identities retain the @* suffix."""
+        return f"{name}@{project}"
 
     def _resolve_candidates(self, raw_name: str):
         with db() as conn:
@@ -951,16 +964,31 @@ class Handler(BaseHTTPRequestHandler):
                     )
         return {"applied": apply, "pruned": prune, "skipped_referenced": skipped}
 
-    def _unregister(self, project: str, name: str):
+    def _unregister(self, project: str, name: str, instance=None):
         # Report whether a row actually existed at this composite key -- an
         # unconditional {"ok": True} here made `meeting offline <name>` claim
         # success even when the target was registered under a different
         # project (phase 2 target #3); the CLI caller uses `deleted` to tell
         # a real unregister apart from a no-op.
         with db() as conn:
-            cur = conn.execute("DELETE FROM sessions WHERE project=? AND name=?", (project, name))
+            if instance:
+                cur = conn.execute(
+                    "DELETE FROM sessions WHERE project=? AND name=? AND instance=?",
+                    (project, name, instance),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM sessions WHERE project=? AND name=?",
+                    (project, name),
+                )
             deleted = cur.rowcount > 0
-        return {"ok": True, "deleted": deleted, "project": project, "name": name}
+        return {
+            "ok": True,
+            "deleted": deleted,
+            "project": project,
+            "name": name,
+            "instance": instance,
+        }
 
     def _turn(self, self_project: str, self_name: str, peer_project: str, peer_name: str):
         clause, params = _conversation_clause(self_project, self_name, peer_project, peer_name)
@@ -1032,6 +1060,102 @@ class Handler(BaseHTTPRequestHandler):
         with db() as conn:
             rows = conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
+
+    def _inbox(self, project: str, name: str, since: int, limit: int, initial: bool):
+        """Return one recipient-wide stream ordered by the global message id."""
+        limit = max(1, min(limit, 5000))
+        with db() as conn:
+            max_id = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) AS m FROM messages"
+            ).fetchone()["m"]
+            if initial:
+                return {"messages": [], "high_water_mark": max_id}
+            rows = conn.execute(
+                "SELECT messages.* FROM messages"
+                " WHERE id>?"
+                "   AND ("
+                "     (recipient_project=? AND recipient=?)"
+                "     OR EXISTS ("
+                "       SELECT 1 FROM group_members gm"
+                "       WHERE gm.member_project=? AND gm.member_name=?"
+                "         AND gm.group_project=messages.recipient_project"
+                "         AND gm.group_name=messages.recipient"
+                "     )"
+                "   )"
+                " ORDER BY id ASC LIMIT ?",
+                (since, project, name, project, name, limit),
+            ).fetchall()
+            output = []
+            for row in rows:
+                item = dict(row)
+                is_group = _is_group(
+                    conn, item["recipient_project"], item["recipient"]
+                )
+                if is_group:
+                    member_rows = conn.execute(
+                        "SELECT member_name FROM group_members"
+                        " WHERE group_project=? AND group_name=?",
+                        (item["recipient_project"], item["recipient"]),
+                    ).fetchall()
+                    member_names = {member["member_name"] for member in member_rows}
+                    mentions = _parse_mentions(item["body"], member_names)
+                    item["deliver"] = not mentions or name in mentions
+                    item["group"] = self._fmt_id(
+                        item["recipient"], item["recipient_project"]
+                    )
+                else:
+                    item["deliver"] = True
+                    item["group"] = None
+                item["sender_identity"] = self._fmt_id(
+                    item["sender"], item["sender_project"]
+                )
+                item["recipient_identity"] = self._fmt_id(
+                    item["recipient"], item["recipient_project"]
+                )
+                output.append(item)
+        return {"messages": output, "high_water_mark": max_id}
+
+    def _message(self, project: str, name: str, message_id: int):
+        """Read one exact message when the supplied identity is a participant."""
+        with db() as conn:
+            row = conn.execute(
+                "SELECT * FROM messages WHERE id=?", (message_id,)
+            ).fetchone()
+            if row is None:
+                return {"error": f"message {message_id} not found"}
+            item = dict(row)
+            is_group = _is_group(
+                conn, item["recipient_project"], item["recipient"]
+            )
+            allowed = (
+                (item["sender_project"], item["sender"]) == (project, name)
+                or (item["recipient_project"], item["recipient"]) == (project, name)
+            )
+            if is_group and not allowed:
+                allowed = conn.execute(
+                    "SELECT 1 FROM group_members"
+                    " WHERE group_project=? AND group_name=?"
+                    "   AND member_project=? AND member_name=?",
+                    (
+                        item["recipient_project"],
+                        item["recipient"],
+                        project,
+                        name,
+                    ),
+                ).fetchone() is not None
+            if not allowed:
+                return {"error": f"message {message_id} is not visible to {name}@{project}"}
+            item["group"] = (
+                self._fmt_id(item["recipient"], item["recipient_project"])
+                if is_group else None
+            )
+            item["sender_identity"] = self._fmt_id(
+                item["sender"], item["sender_project"]
+            )
+            item["recipient_identity"] = self._fmt_id(
+                item["recipient"], item["recipient_project"]
+            )
+            return item
 
     def _send(self, self_project: str, self_name: str, peer_project: str, peer_name: str,
               body: str, kind: str, ask):
@@ -1509,7 +1633,7 @@ CREATE INDEX IF NOT EXISTS idx_group_members_member ON group_members(member_proj
 # ---------- main ----------
 
 def main():
-    p = argparse.ArgumentParser(prog="meeting-daemon")
+    p = argparse.ArgumentParser(prog="amctl")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--bind", default="0.0.0.0")
     p.add_argument("--no-mdns", action="store_true", help="skip mDNS publish (for testing)")
@@ -1580,7 +1704,7 @@ def main():
                 failures += 1
                 print(f"[watchdog] health check failed ({failures}/3)", flush=True)
                 if failures >= 3:
-                    print("[watchdog] daemon unresponsive, forcing exit", flush=True)
+                    print("[watchdog] central amctl unresponsive, forcing exit", flush=True)
                     os._exit(1)
             time.sleep(10)
 

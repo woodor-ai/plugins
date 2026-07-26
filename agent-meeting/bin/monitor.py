@@ -6,8 +6,8 @@ Behavior:
   - On startup, calls `meeting online` to write this session into the
     central sessions table (project derived from cwd). On exit, calls
     `meeting offline`.
-  - Liveness is tracked via WS pong: the daemon updates last_seen on pong.
-  - Connects WS to daemon /subscribe, receives pushed frames, emits
+  - Liveness is tracked via WS pong: central amctl updates last_seen on pong.
+  - Connects to central amctl /subscribe, receives pushed frames, emits
     stdout lines for Claude Code task notifications.
   - WS handshake sends X-Meeting-Name and X-Meeting-Project headers.
 
@@ -59,10 +59,10 @@ IS_GLOBAL = _args.is_global
 IS_PROJ = _args.proj
 IS_HOST = _args.host
 _force_next = _args.force
-# Process-unique id sent as `meeting online --instance`. Lets the daemon tell
-# "this same monitor process reconnecting after a daemon restart" (always
+# Process-unique id sent as `meeting online --instance`. Lets central amctl tell
+# "this same monitor process reconnecting after a central amctl restart" (always
 # allowed) apart from "a DIFFERENT live process claiming the same name"
-# (refused unless --force) -- see meeting-daemon's _register().
+# (refused unless --force) -- see amctl's _register().
 INSTANCE = uuid.uuid4().hex
 HOME = Path.home()
 _MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
@@ -89,14 +89,14 @@ RUN_DIR = DATA / "run"
 
 _derive_project = meeting_common.derive_project
 
-# Read once at startup -- reported to the daemon on every (re)register so
+# Read once at startup -- reported to central amctl on every (re)register so
 # `meeting list` / sessions rows can tell which plugin build a live session
 # is running. config.json (not plugin.json) is the only version source
 # monitor.py can reliably read: it runs from the copied ~/.agent-meeting/bin
 # runtime, not the plugin source tree, with no CLAUDE_PLUGIN_ROOT guarantee.
 _CLIENT_VERSION = meeting_common.read_plugin_version(DATA)
 
-# Exit codes from `meeting online` that mean the daemon/CLI made a considered,
+# Exit codes from `meeting online` that mean central amctl/CLI made a considered,
 # stable refusal (not a transient hiccup) -- retrying would either spin
 # forever against the same refusal (name_taken) or repeatedly fail to send a
 # request that was never even attempted (missing_project_identity). Any other
@@ -150,20 +150,20 @@ def _register():
     if _force_next:
         extra.append("--force")
         # One-shot: this call is the takeover the user asked for. Later
-        # reconnects (daemon restart, WS drop) must NOT keep forcing --
+        # reconnects (central amctl restart, WS drop) must NOT keep forcing --
         # a name that moved to a different live process after we forced our
         # way in once should refuse us like anyone else, not be steamrolled
         # again on every reconnect.
         _force_next = False
     # Best-effort: this runs on EVERY ws reconnect (see the connect loop), and a
     # reconnect often coincides with the control having just restarted — TCP is
-    # back up but the daemon is still busy, so `online` can hang the full 15s and
+    # back up but central amctl is still busy, so `online` can hang the full 15s and
     # raise TimeoutExpired. That must NOT kill the monitor (it would drop the
-    # session to historical until a human restarts it — exactly the daemon-restart
+    # session to historical until a human restarts it — exactly the central-amctl-restart
     # case this re-register exists to cover). Swallow non-refusal failures; the
     # next reconnect cycle retries.
     #
-    # Exit codes in _NORETRY_EXIT_CODES are different: the daemon/CLI is telling
+    # Exit codes in _NORETRY_EXIT_CODES are different: central amctl/CLI is telling
     # us, by a stable code (not string-matched), that this registration was
     # considered and refused -- not a transient hiccup to retry. 3 = a DIFFERENT
     # live process already holds this name (different --instance, heartbeat
@@ -222,19 +222,19 @@ def _register():
 
 
 def _unregister():
-    # Only call `offline` (deletes the daemon-side sessions row) if we ever
+    # Only call `offline` (deletes the central-amctl-side sessions row) if we ever
     # actually won registration -- if every attempt was refused or swallowed,
     # the row may belong to a different live process and offline-ing it here
     # would kick that process's monitor off. Local pidfile/statusline cleanup
     # below is unconditional since those files are ours regardless.
     if _registered:
         # Must target the same composite key `online` registered under, or
-        # the daemon's DELETE matches zero rows and this session's row is
+        # central amctl's DELETE matches zero rows and this session's row is
         # left registered forever (phase 2 target #3's failure mode, hit here
         # for every --global/--proj monitor since offline had no escape hatch).
         extra = ["--global"] if IS_GLOBAL else (["--proj", IS_PROJ] if IS_PROJ else [])
         try:
-            _run_meeting("offline", SELF, *extra)
+            _run_meeting("offline", SELF, "--instance", INSTANCE, *extra)
         except Exception:
             pass
     try:
@@ -283,9 +283,11 @@ def _read_token():
 
 
 def _resolve_ws_addr():
-    """Re-run control discovery on every connect attempt (unlike codex-bridge.py,
-    which resolves once at startup) -- monitor.py has no fixed control_url of its
-    own, so this is how it survives a control restart on a different port/host."""
+    """Re-run control discovery on every connect attempt.
+
+    monitor.py has no fixed control_url of its own, so this is how it survives
+    a control restart on a different port or host.
+    """
     info = _discover_control_info()
     ip, port = info.get("ip", ""), info.get("port", "")
     if not ip or not port:
@@ -299,14 +301,11 @@ def _resolve_ws_addr():
 def _emit_message(peer: str, peer_project: str, ask, group=None, mentioned: bool = False):
     """Print the harness-facing notification line. Format is frozen -- do not change.
 
-    peer is rendered as peer@peer_project (bare peer only for the global
-    project "*", matching the display convention used everywhere else in this
-    codebase -- e.g. monitor.py's own _display_id, meeting's _fmt_id) so two
-    same-named senders in different projects produce distinguishable lines
-    (phase 2 target #9). SKILL.md's peer-extraction instructions must stay in
-    sync with this format.
+    peer is always rendered as the canonical peer@peer_project identity,
+    including peer@* for a global sender. SKILL.md's peer-extraction
+    instructions must stay in sync with this format.
     """
-    peer_id = peer if peer_project == "*" else f"{peer}@{peer_project}"
+    peer_id = f"{peer}@{peer_project}"
     at_tag = " @you" if (group and mentioned) else ""
     location = f" in group {group}{at_tag}" if group else ""
     if ask:
@@ -339,7 +338,7 @@ def _on_text(msg: dict) -> None:
 
 
 def _on_connect() -> None:
-    # Re-register on every reconnect so role/cwd are correct after daemon restart/wipe.
+    # Re-register on every reconnect so role/cwd are correct after central amctl restart/wipe.
     _register()
 
 

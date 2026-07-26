@@ -70,7 +70,7 @@ def test_copy_excludes_tests_pycache_claudeplugin(tmp_path):
     assert (dest / "bin" / "some-script").exists()
     assert not (dest / "tests").exists()
     assert not (dest / "__pycache__").exists()
-    assert not (dest / ".claude-plugin").exists()
+    assert (dest / ".claude-plugin" / "plugin.json").exists()
 
 
 def test_copy_clears_stale_previous_install(tmp_path):

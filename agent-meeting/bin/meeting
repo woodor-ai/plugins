@@ -109,7 +109,7 @@ _NO_CONTROL_MSG = (
     "mDNS auto-discovery returned nothing and no last-known-good cache is available. "
     "Possible causes: control not started / different subnet / multicast blocked "
     "(Wi-Fi AP isolation or firewall blocking UDP 5353). "
-    "Fix: run /meeting daemon to make this machine the control node; "
+    "Fix: run /meeting setup amctl to make this machine the central amctl control node; "
     "or pin a control for unreachable machines — meeting host http://<ip>:<port> (persistent) "
     "or temporarily export MEETING_HOST=http://<ip>:<port>."
 )
@@ -126,7 +126,7 @@ def _parse_name_arg(raw: str, cwd: str | None = None) -> tuple[str, str]:
     """Parse a bare name or name@project into (project, name).
 
     For a bare name with cwd, derive project from cwd.
-    For a bare name without cwd, return ("", name) — caller resolves via daemon.
+    For a bare name without cwd, return ("", name) — caller resolves via central amctl.
     """
     if "@" in raw:
         name, _, project = raw.partition("@")
@@ -136,17 +136,20 @@ def _parse_name_arg(raw: str, cwd: str | None = None) -> tuple[str, str]:
     return ("", raw)
 
 
-def _resolve_peer(host_url: str, raw: str) -> tuple[str, str]:
+def _resolve_peer(
+    host_url: str, raw: str, *, require_full_session: bool = False
+) -> tuple[str, str]:
     """Resolve a peer name arg to (project, name).
 
     1. If raw has @project, use it directly.
-    2. Otherwise query /resolve on the daemon.
+    2. Otherwise query /resolve on the central amctl.
        - 0 results: no live session or message history anywhere for this name.
          Guessing self_project used to be the default here -- if the peer later
          registers under a different project, the message is filed under a
          composite key the peer can never read from, permanently and silently
          (phase 2 target #5). Require an explicit qualifier instead.
-       - 1 result: use it.
+       - 1 group result: a caller may use it when group short names are allowed.
+       - 1 session result: send requires the canonical name@project form.
        - 2+ results: require @project qualifier and raise SystemExit.
     """
     if "@" in raw:
@@ -162,6 +165,14 @@ def _resolve_peer(host_url: str, raw: str) -> tuple[str, str]:
             f"(or {raw}@* if it registers globally)."
         )
     if len(candidates) == 1:
+        candidate = candidates[0]
+        if require_full_session and candidate.get("kind") != "group":
+            project = candidate["project"]
+            raise SystemExit(
+                f"private recipient '{raw}' must use its full identity: "
+                f"{raw}@{project}. Bare private names are not accepted even "
+                "when the current candidate is unique."
+            )
         return (candidates[0]["project"], raw)
     # Ambiguous
     options = ", ".join(f"{raw}@{c['project']}" for c in candidates)
@@ -598,19 +609,19 @@ def http(method: str, host_url: str, path: str,
         return _http_once(method, host_url, path, params, body)
     except urllib.error.HTTPError as e:
         err = e.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"daemon error: HTTP {e.code}: {err}")
+        raise SystemExit(f"central amctl error: HTTP {e.code}: {err}")
     except urllib.error.URLError as e:
         _invalidate_host_cache()
-        raise SystemExit(f"daemon unreachable at {host_url}: {e.reason}")
+        raise SystemExit(f"central amctl unreachable at {host_url}: {e.reason}")
     except _BROKEN as e:
         _invalidate_host_cache()
         new_host = discover_host()
         if new_host is None:
-            raise SystemExit(f"daemon connection broken and no daemon found on retry: {e}")
+            raise SystemExit(f"central amctl connection broken and no control node found on retry: {e}")
         try:
             return _http_once(method, new_host, path, params, body)
         except Exception as e2:
-            raise SystemExit(f"daemon unreachable after retry: {e2}") from e2
+            raise SystemExit(f"central amctl unreachable after retry: {e2}") from e2
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -711,7 +722,9 @@ def cmd_send(args):
     cwd = os.getcwd()
 
     self_project, self_name = _parse_name_arg(args.self_arg, cwd)
-    peer_project, peer_name = _resolve_peer(host, args.peer)
+    peer_project, peer_name = _resolve_peer(
+        host, args.peer, require_full_session=True
+    )
 
     payload = {
         "self_project": self_project, "self": self_name,
@@ -744,6 +757,32 @@ def cmd_read(args):
         sp = r["sender_project"]
         sender_id = r["sender"] if sp == "*" else f"{r['sender']}@{sp}"
         print(f"{r['id']}\t{r['created_at']}\t{sender_id}\t{r['kind']}\t{ask}\t{body}")
+
+
+def cmd_message(args):
+    host = _resolve_host(getattr(args, "host", None))
+    self_project, self_name = _parse_name_arg(args.self_arg, os.getcwd())
+    message = http(
+        "GET",
+        host,
+        "/message",
+        params={
+            "project": self_project,
+            "name": self_name,
+            "id": args.message_id,
+        },
+    )
+    if message.get("error"):
+        raise SystemExit(f"message: {message['error']}")
+    print(f"# Message {message['id']}")
+    print(f"from: {message['sender_identity']}")
+    print(f"to: {message['recipient_identity']}")
+    print(f"kind: {message['kind']}")
+    print(f"created_at: {message['created_at']}")
+    if message.get("ask"):
+        print(f"ask: {message['ask']}")
+    print()
+    print(message["body"])
 
 
 def cmd_show(args):
@@ -827,7 +866,7 @@ def cmd_online(args):
         "project": project, "name": name, "cwd": cwd,
         "force": args.force,
         # Always send an explicit role so re-registration is authoritative:
-        # the daemon upserts role via COALESCE(?, role), so sending None on a
+        # central amctl upserts role via COALESCE(?, role), so sending None on a
         # worker re-register would preserve a stale 'director' and make demotion
         # impossible. "director"/"worker" lets the monitor's --director flag win.
         "role": "director" if args.director else "worker",
@@ -839,7 +878,7 @@ def cmd_online(args):
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         # Exit code 3 is a distinct, machine-checkable signal for "name is taken
-        # by another live registration" (daemon-supplied code, not string-matched)
+        # by another live registration" (central-amctl-supplied code, not string-matched)
         # so callers like monitor.py can tell it apart from generic failures.
         sys.exit(3 if r.get("code") == "name_taken" else 1)
     # Any host we just registered against is a good last-known-good — seed the
@@ -893,7 +932,10 @@ def cmd_offline(args):
         # will target the wrong composite key (see the `deleted` check below).
         project = _derive_project(cwd)
 
-    r = http("POST", host, "/unregister", body={"project": project, "name": name})
+    payload = {"project": project, "name": name}
+    if getattr(args, "instance", None):
+        payload["instance"] = args.instance
+    r = http("POST", host, "/unregister", body=payload)
     if r.get("error"):
         print(r["error"], file=sys.stderr)
         sys.exit(1)
@@ -907,11 +949,11 @@ def cmd_offline(args):
     print(f"offline: {name}@{project}")
 
 
-LAUNCHD_LABEL = "com.tommy.agent-meeting"
-SCHTASKS_TN = "agent-meeting-daemon"
-DAEMON_PORT = int(os.environ.get("MEETING_PORT", "8765"))
-STOP_SENTINEL = os.path.join(MEETING_HOME, "daemon.stopped")
-_DAEMON_PID_FILE = os.path.join(tempfile.gettempdir(), "meeting-daemon.pid")
+LAUNCHD_LABEL = "com.tommy.agent-meeting.amctl"
+SCHTASKS_TN = "agent-meeting-amctl"
+AMCTL_PORT = int(os.environ.get("MEETING_PORT", "8765"))
+STOP_SENTINEL = os.path.join(MEETING_HOME, "amctl.stopped")
+_AMCTL_PID_FILE = os.path.join(tempfile.gettempdir(), "amctl.pid")
 _SUPERVISOR_PID_FILE = os.path.join(tempfile.gettempdir(), "meeting-supervisor.pid")
 
 
@@ -961,13 +1003,13 @@ def _read_pid(path: str) -> int:
 
 def _probe_health() -> dict | None:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{DAEMON_PORT}/health", timeout=5) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{AMCTL_PORT}/health", timeout=5) as r:
             return json.loads(r.read().decode("utf-8"))
     except Exception:
         return None
 
 
-def _cmd_daemon_windows(args):
+def _cmd_amctl_windows(args):
     import subprocess as sp
 
     if args.action == "status":
@@ -982,10 +1024,10 @@ def _cmd_daemon_windows(args):
                     print(line)
         sup = _read_pid(_SUPERVISOR_PID_FILE)
         print(f"supervisor: {'running pid='+str(sup) if _win_pid_alive(sup) else 'not running'}")
-        dpid = _read_pid(_DAEMON_PID_FILE)
-        print(f"daemon proc: {'running pid='+str(dpid) if _win_pid_alive(dpid) else 'not running'}")
+        dpid = _read_pid(_AMCTL_PID_FILE)
+        print(f"central amctl proc: {'running pid='+str(dpid) if _win_pid_alive(dpid) else 'not running'}")
         h = _probe_health()
-        print(f"daemon /health: {'ok, version '+h.get('version','?') if h else 'unreachable'}")
+        print(f"central amctl /health: {'ok, version '+h.get('version','?') if h else 'unreachable'}")
         if os.path.exists(STOP_SENTINEL):
             print("stop sentinel: PRESENT (supervisor will not relaunch)")
         return
@@ -997,10 +1039,10 @@ def _cmd_daemon_windows(args):
         except Exception as e:
             print(f"could not write stop sentinel: {e}", file=sys.stderr)
         sp.run(["schtasks", "/End", "/TN", SCHTASKS_TN], capture_output=True)
-        for pid in (_read_pid(_DAEMON_PID_FILE), _read_pid(_SUPERVISOR_PID_FILE)):
+        for pid in (_read_pid(_AMCTL_PID_FILE), _read_pid(_SUPERVISOR_PID_FILE)):
             if pid > 0:
                 sp.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
-        print(f"daemon stopped: {SCHTASKS_TN} (stop sentinel set)")
+        print(f"central amctl stopped: {SCHTASKS_TN} (stop sentinel set)")
         print("(note: next Claude SessionStart with is_host=true clears the sentinel "
               "and reinstalls + restarts it)")
         return
@@ -1012,14 +1054,14 @@ def _cmd_daemon_windows(args):
             pass
         if not _win_pid_alive(_read_pid(_SUPERVISOR_PID_FILE)):
             sp.run(["schtasks", "/Run", "/TN", SCHTASKS_TN], capture_output=True)
-        dpid = _read_pid(_DAEMON_PID_FILE)
+        dpid = _read_pid(_AMCTL_PID_FILE)
         if dpid > 0:
             sp.run(["taskkill", "/F", "/PID", str(dpid)], capture_output=True)
-        print(f"daemon restarting: {SCHTASKS_TN} (supervisor will relaunch a fresh daemon)")
+        print(f"central amctl restarting: {SCHTASKS_TN} (supervisor will relaunch it)")
         return
 
 
-def _cmd_daemon_start(sp, system: str):
+def _cmd_amctl_start(sp, system: str):
     try:
         with open(_CONFIG_PATH) as f:
             cfg = json.load(f)
@@ -1041,37 +1083,37 @@ def _cmd_daemon_start(sp, system: str):
         result = sp.run([sys.executable, bootstrap], env=env, capture_output=True, text=True)
         if result.returncode != 0:
             sys.stderr.write(result.stderr)
-        print("daemon started: this machine is now the control node (agent-meeting-control)")
+        print("central amctl started: this machine is now the control node (agent-meeting-control)")
     else:
-        daemon_script = os.path.join(plugin_root, "bin", "meeting-daemon")
-        if not os.path.exists(daemon_script):
-            raise SystemExit(f"daemon script not found: {daemon_script}")
+        amctl_script = os.path.join(plugin_root, "bin", "amctl")
+        if not os.path.exists(amctl_script):
+            raise SystemExit(f"central amctl script not found: {amctl_script}")
         import tempfile as _tempfile
-        log_file = os.path.join(_tempfile.gettempdir(), "meeting-daemon.log")
+        log_file = os.path.join(_tempfile.gettempdir(), "amctl.log")
         if system == "Windows":
             flags = 0x00000008 | 0x00000200
-            sp.Popen([sys.executable, daemon_script, "--port", "8765"],
+            sp.Popen([sys.executable, amctl_script, "--port", "8765"],
                      stdout=open(log_file, "a"), stderr=sp.STDOUT,
                      creationflags=flags, close_fds=True)
         else:
-            sp.Popen([sys.executable, daemon_script, "--port", "8765"],
+            sp.Popen([sys.executable, amctl_script, "--port", "8765"],
                      stdout=open(log_file, "a"), stderr=sp.STDOUT,
                      start_new_session=True, close_fds=True)
-        print("daemon started: this machine is now the control node (agent-meeting-control)")
+        print("central amctl started: this machine is now the control node (agent-meeting-control)")
 
 
-def cmd_daemon(args):
+def cmd_amctl(args):
     import platform
     import subprocess as sp
     system = platform.system()
 
     if not args.action:
-        return _cmd_daemon_start(sp, system)
+        return _cmd_amctl_start(sp, system)
 
     if system == "Windows":
-        return _cmd_daemon_windows(args)
+        return _cmd_amctl_windows(args)
     if system != "Darwin":
-        print("daemon mgmt not supported on this platform (Linux daemon is session-bound)", file=sys.stderr)
+        print("central amctl management is not supported on this platform (Linux amctl is session-bound)", file=sys.stderr)
         sys.exit(1)
 
     uid = os.getuid()
@@ -1082,7 +1124,7 @@ def cmd_daemon(args):
     if args.action == "status":
         r = sp.run(["launchctl", "print", target], capture_output=True, text=True)
         if r.returncode != 0:
-            print(f"daemon: not registered with launchd ({LAUNCHD_LABEL})")
+            print(f"central amctl: not registered with launchd ({LAUNCHD_LABEL})")
             print(f"plist on disk: {'yes' if os.path.exists(plist) else 'no'}")
             return
         keys = ("state =", "pid =", "program =", "path =")
@@ -1098,8 +1140,8 @@ def cmd_daemon(args):
             healthy = _probe_health() is not None
             if not healthy:
                 print(
-                    f"\nThis machine is configured as control but the daemon is not listening on :{DAEMON_PORT}. "
-                    "Fix: run 'meeting daemon restart' if launchctl self-heal did not fire, "
+                    f"\nThis machine is configured as control but central amctl is not listening on :{AMCTL_PORT}. "
+                    "Fix: run 'meeting amctl restart' if launchctl self-heal did not fire, "
                     "or reopen the Claude session to trigger auto-launch. "
                     "See ~/.agent-meeting/logs/bootstrap.log"
                 )
@@ -1112,7 +1154,7 @@ def cmd_daemon(args):
                 p = sp.run(["launchctl", "print", target], capture_output=True)
                 if p.returncode != 0:
                     break
-            print(f"daemon stopped: {LAUNCHD_LABEL}")
+            print(f"central amctl stopped: {LAUNCHD_LABEL}")
             print("(note: next Claude SessionStart with is_host=true will reinstall + restart it)")
         else:
             print(f"stop failed: {r.stderr.strip()}", file=sys.stderr)
@@ -1123,7 +1165,7 @@ def cmd_daemon(args):
         if loaded:
             r = sp.run(["launchctl", "kickstart", "-k", target], capture_output=True, text=True)
             if r.returncode == 0:
-                print(f"daemon restarted: {LAUNCHD_LABEL}")
+                print(f"central amctl restarted: {LAUNCHD_LABEL}")
                 return
             print(f"kickstart failed: {r.stderr.strip()}", file=sys.stderr)
             sys.exit(1)
@@ -1133,7 +1175,7 @@ def cmd_daemon(args):
             sys.exit(1)
         r = sp.run(["launchctl", "bootstrap", domain, plist], capture_output=True, text=True)
         if r.returncode == 0:
-            print(f"daemon started: {LAUNCHD_LABEL}")
+            print(f"central amctl started: {LAUNCHD_LABEL}")
         else:
             print(f"bootstrap failed: {r.stderr.strip()}", file=sys.stderr)
             sys.exit(1)
@@ -1181,7 +1223,7 @@ def cmd_token(args):
         cfg.pop("auth_token", None)
         with open(_CONFIG_PATH, "w") as f:
             json.dump(cfg, f, indent=2)
-        print("auth_token cleared -- daemon is now open (no auth required)")
+        print("auth_token cleared -- central amctl is now open (no auth required)")
         return
 
     if value:
@@ -1592,6 +1634,12 @@ def main():
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_read)
 
+    s = sub.add_parser("message", help="read one exact message by global msg_id")
+    s.add_argument("self_arg", metavar="self")
+    s.add_argument("message_id", type=int, metavar="msg_id")
+    s.add_argument("--host", default=None)
+    s.set_defaults(func=cmd_message)
+
     s = sub.add_parser("show", help="pretty markdown render")
     s.add_argument("self_arg", metavar="self")
     s.add_argument("peer")
@@ -1618,7 +1666,7 @@ def main():
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_prune)
 
-    s = sub.add_parser("projcache", help="inspect/clear cached --proj declarations (local only, no daemon call)")
+    s = sub.add_parser("projcache", help="inspect/clear cached --proj declarations (local only, no central amctl call)")
     s.add_argument("action", nargs="?", choices=["list", "clear"], default="list")
     s.add_argument("--all", action="store_true", help="with clear: clear every cached declaration, not just this cwd's repo root")
     s.set_defaults(func=cmd_projcache)
@@ -1629,10 +1677,10 @@ def main():
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_delete)
 
-    s = sub.add_parser("daemon",
-                       help="manage the local meeting daemon; bare `daemon` promotes this machine to control node")
+    s = sub.add_parser("amctl",
+                       help="manage the central amctl control node; bare `amctl` promotes this machine to control")
     s.add_argument("action", nargs="?", choices=["status", "stop", "restart"], default=None)
-    s.set_defaults(func=cmd_daemon)
+    s.set_defaults(func=cmd_amctl)
 
     s = sub.add_parser("controls",
                        help="list all discovered control nodes")
@@ -1665,7 +1713,7 @@ def main():
     s.add_argument("--proj", default=None,
                    help="explicit project identity; bypasses folder-based derivation and is cached per repo root")
     s.add_argument("--instance", default=None,
-                   help="process-unique id (e.g. a monitor's own uuid) so daemon-restart reconnects "
+                   help="process-unique id (e.g. a monitor's own uuid) so central-amctl-restart reconnects "
                         "of the SAME process are always allowed, while a DIFFERENT live process "
                         "registering the same name is refused instead of silently taking over")
     s.add_argument("--client-version", dest="client_version", default=None,
@@ -1681,6 +1729,7 @@ def main():
                    help="target the global identity (project='*'), skips cwd project derivation")
     s.add_argument("--proj", default=None,
                    help="explicit project identity to target; bypasses folder-based derivation")
+    s.add_argument("--instance", default=None, help=argparse.SUPPRESS)
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_offline)
 

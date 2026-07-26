@@ -6,10 +6,10 @@ Responsibilities (idempotent — runs every SessionStart):
   1. Ensure ~/.agent-meeting/ structure exists (db/, bin link)
   2. Ensure venv at ~/.agent-meeting/venv with zeroconf installed
   3. Read ~/.agent-meeting/config.json (auto-create if missing). The `is_host`
-     flag determines whether this machine launches the daemon.
-  4. If is_host=true and daemon not already running → spawn meeting-daemon
-     detached as a background process. Tracks pid in /tmp/meeting-daemon.pid
-     (on Windows: %TEMP%\\meeting-daemon.pid).
+     flag determines whether this machine launches the central amctl.
+  4. If is_host=true and central amctl is not already running → spawn amctl
+     detached as a background process. Tracks pid in /tmp/amctl.pid
+     (on Windows: %TEMP%\\amctl.pid).
   5. Emit JSON `hookSpecificOutput.additionalContext` with online peers + setup hints.
 
 Replaces the bash session-bootstrap.sh — that one only worked on POSIX.
@@ -49,25 +49,29 @@ BIN_LINK = DATA / "bin"
 
 PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("PLUGIN_ROOT") or "")
 TMP = Path(tempfile.gettempdir())
-DAEMON_PID_FILE = TMP / "meeting-daemon.pid"
+AMCTL_PID_FILE = TMP / "amctl.pid"
 
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform.startswith("win")
 IS_LINUX = sys.platform.startswith("linux")
 
-LAUNCHD_LABEL = "com.tommy.agent-meeting"
+LAUNCHD_LABEL = "com.tommy.agent-meeting.amctl"
 LAUNCHD_PLIST = HOME / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+_PRE_AMCTL_LAUNCHD_LABEL = "com.tommy.agent-meeting"
+_PRE_AMCTL_LAUNCHD_PLIST = HOME / "Library" / "LaunchAgents" / f"{_PRE_AMCTL_LAUNCHD_LABEL}.plist"
 
 # Windows: no-admin persistence is a Startup-folder launcher (primary logon
 # auto-start) + a /SC MINUTE schtasks task (resurrects the supervisor process
 # if it is killed mid-session). ONLOGON tasks need admin, so they are NOT used.
 # Sentinel records the task command so we only recreate it when the plugin path
 # moves (mirrors ensure_launchd).
-SCHTASKS_TN = "agent-meeting-daemon"
+SCHTASKS_TN = "agent-meeting-amctl"
+_PRE_AMCTL_SCHTASKS_TN = "agent-meeting-daemon"
 SCHTASKS_SENTINEL = DATA / ".schtasks-cmd"
 SUPERVISOR_PID_FILE = TMP / "meeting-supervisor.pid"
-STOP_SENTINEL = DATA / "daemon.stopped"
+STOP_SENTINEL = DATA / "amctl.stopped"
 STARTUP_DIR = HOME / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+_PRE_AMCTL_STARTUP_CMD = STARTUP_DIR / "agent-meeting-daemon.cmd"
 
 TELEMETRY_URL = "https://www.woodor.ai/_functions/t"
 
@@ -85,8 +89,8 @@ def blog(msg: str):
         f.write(f"[{ts}] {msg}\n")
 
 
-def _daemon_healthy(port: int = 8765, timeout: float = 1.0) -> bool:
-    """GET /health 探测 daemon 是否在线。2xx 视为健康，任何异常/超时返回 False。"""
+def _amctl_healthy(port: int = 8765, timeout: float = 1.0) -> bool:
+    """Return whether the central amctl /health endpoint is available."""
     try:
         with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/health", timeout=timeout
@@ -165,16 +169,15 @@ def ensure_bin_wrappers():
     The old design used a symlink/junction bin/ → plugin's bin/, which made the CLI
     scripts run under system python3 (shebang: #!/usr/bin/env python3). System
     python3 often lacks zeroconf, so discover_host() always returned None and the
-    client fell back to local SQLite instead of connecting to the LAN daemon.
+    client fell back to local SQLite instead of connecting to the central amctl.
 
     New design: bin/ is a real directory. Extensionless scripts (meeting,
-    meeting-daemon) become thin shell wrappers that exec the venv
+    amctl) become thin shell wrappers that exec the venv
     python with the real plugin script path. .py files (monitor.py, statusline.py,
     session-bootstrap.py, meeting_common.py) are COPIED, because callers
     explicitly pass `python3 ~/.agent-meeting/bin/foo.py` and so they must be
-    real .py files -- this is also how codex-bridge.py and codex-meeting.py
-    (which run from <plugin>/codex/, never copied) get an importable copy of
-    meeting_common.py: they add this directory to sys.path at startup.
+    real .py files. codex-meeting.py also imports the copied
+    meeting_common.py from this directory.
     We copy rather than symlink: symlink_to() needs Administrator / Developer-Mode
     privilege on Windows and would crash the whole bootstrap (taking statusLine
     registration down with it); a copy is privilege-free and identical on every OS.
@@ -374,8 +377,8 @@ def ensure_zeroconf():
 
 
 def ensure_websockets():
-    # Required by the codex bridge daemon (agent-meeting/codex/codex-bridge.py),
-    # which speaks JSON-RPC over WebSockets to a codex app-server.
+    # Required by the machine-wide Codex broker, which proxies the remote TUI
+    # and speaks JSON-RPC to the shared official Codex app-server.
     py = venv_python()
     r = subprocess.run([str(py), "-c", "import websockets"], capture_output=True)
     if r.returncode == 0:
@@ -440,6 +443,27 @@ def load_or_create_config(min_version: str | None = None) -> tuple[dict, bool, s
         is_new_install = True
     else:
         dirty = False
+        if "is_host" not in cfg:
+            legacy_host = False
+            if IS_MAC:
+                legacy_host = (
+                    _PRE_AMCTL_LAUNCHD_PLIST.exists()
+                    or LAUNCHD_PLIST.exists()
+                )
+            elif IS_WINDOWS:
+                legacy_host = (
+                    _PRE_AMCTL_STARTUP_CMD.exists()
+                    or (STARTUP_DIR / "agent-meeting-amctl.cmd").exists()
+                )
+            elif IS_LINUX:
+                legacy_host = (
+                    (TMP / "meeting-daemon.pid").exists()
+                    or AMCTL_PID_FILE.exists()
+                )
+            cfg["is_host"] = legacy_host
+            dirty = True
+            if legacy_host:
+                log("migrated legacy central-node installation to is_host=true")
         if "machine_id" not in cfg:
             cfg["machine_id"] = uuid.uuid4().hex
             dirty = True
@@ -452,7 +476,7 @@ def load_or_create_config(min_version: str | None = None) -> tuple[dict, bool, s
     return cfg, is_new_install, cfg["machine_id"]
 
 
-# ---------- 4. daemon launch ----------
+# ---------- 4. central amctl launch ----------
 
 def pid_alive(pid: int) -> bool:
     if IS_WINDOWS:
@@ -473,30 +497,30 @@ def pid_alive(pid: int) -> bool:
         return True
 
 
-def daemon_running() -> bool:
-    if not DAEMON_PID_FILE.exists():
+def amctl_running() -> bool:
+    if not AMCTL_PID_FILE.exists():
         return False
     try:
-        pid = int(DAEMON_PID_FILE.read_text().strip())
+        pid = int(AMCTL_PID_FILE.read_text().strip())
     except Exception:
         return False
     return pid_alive(pid)
 
 
-def launch_daemon():
-    """Session-bound daemon launch (Linux / Windows). Mac uses launchd instead."""
-    daemon_path = PLUGIN_ROOT / "bin" / "meeting-daemon"
-    if not daemon_path.exists():
-        log(f"daemon script missing: {daemon_path}")
+def launch_amctl():
+    """Launch the session-bound central amctl on Linux or Windows."""
+    amctl_path = PLUGIN_ROOT / "bin" / "amctl"
+    if not amctl_path.exists():
+        log(f"central amctl script missing: {amctl_path}")
         return
     py = venv_python()
-    log_file = TMP / "meeting-daemon.log"
-    # Detach the daemon so it survives hook exit and Claude Code session close.
+    log_file = TMP / "amctl.log"
+    # Detach central amctl so it survives hook exit and Claude Code session close.
     if IS_WINDOWS:
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         flags = 0x00000008 | 0x00000200
         proc = subprocess.Popen(
-            [str(py), str(daemon_path), "--port", "8765"],
+            [str(py), str(amctl_path), "--port", "8765"],
             stdout=open(log_file, "a"),
             stderr=subprocess.STDOUT,
             creationflags=flags,
@@ -504,37 +528,36 @@ def launch_daemon():
         )
     else:
         proc = subprocess.Popen(
-            [str(py), str(daemon_path), "--port", "8765"],
+            [str(py), str(amctl_path), "--port", "8765"],
             stdout=open(log_file, "a"),
             stderr=subprocess.STDOUT,
             start_new_session=True,
             close_fds=True,
         )
-    DAEMON_PID_FILE.write_text(str(proc.pid))
-    log(f"daemon launched pid={proc.pid}, log={log_file}")
+    AMCTL_PID_FILE.write_text(str(proc.pid))
+    log(f"central amctl launched pid={proc.pid}, log={log_file}")
 
 
 # ---------- 4b. launchd integration (Mac host only) ----------
 
-def kill_bootstrap_daemon():
-    """If a previous bootstrap-launched daemon is running, kill it.
-    Mac launchd is about to take over — two daemons on :8765 = conflict."""
-    if not DAEMON_PID_FILE.exists():
+def kill_bootstrap_amctl():
+    """Stop a previous bootstrap-launched central amctl before launchd takes over."""
+    if not AMCTL_PID_FILE.exists():
         return
     try:
-        pid = int(DAEMON_PID_FILE.read_text().strip())
+        pid = int(AMCTL_PID_FILE.read_text().strip())
         os.kill(pid, 15)  # SIGTERM
         time.sleep(0.5)
     except (ValueError, OSError):
         pass
     try:
-        DAEMON_PID_FILE.unlink()
+        AMCTL_PID_FILE.unlink()
     except FileNotFoundError:
         pass
 
 
 def ensure_launchd():
-    """在 ~/Library/LaunchAgents/ 安装 plist 并用 launchd 托管 daemon。
+    """Install a launchd plist that manages the central amctl control node.
 
     策略：OS 持久化为主，SessionStart hook 降级为兜底体检。
     - 每次调用先做 launchctl enable（幂等清除 disabled 覆盖，确保登录自启）。
@@ -551,19 +574,20 @@ def ensure_launchd():
     import plistlib
 
     LAUNCHD_PLIST.parent.mkdir(parents=True, exist_ok=True)
+    _remove_pre_amctl_launchd_service()
 
-    daemon_path = PLUGIN_ROOT / "bin" / "meeting-daemon"
-    if not daemon_path.exists():
-        msg = f"daemon script missing: {daemon_path}"
+    amctl_path = PLUGIN_ROOT / "bin" / "amctl"
+    if not amctl_path.exists():
+        msg = f"central amctl script missing: {amctl_path}"
         log(msg)
         blog(msg)
         return
     py = venv_python()
-    log_file = TMP / "meeting-daemon.log"
+    log_file = TMP / "amctl.log"
 
     plist = {
         "Label": LAUNCHD_LABEL,
-        "ProgramArguments": [str(py), str(daemon_path), "--port", "8765"],
+        "ProgramArguments": [str(py), str(amctl_path), "--port", "8765"],
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(log_file),
@@ -599,6 +623,17 @@ def ensure_launchd():
         lock_file.close()
 
 
+def _remove_pre_amctl_launchd_service():
+    """Remove the pre-amctl launchd service before managing its replacement."""
+    uid = os.getuid()
+    old_target = f"gui/{uid}/{_PRE_AMCTL_LAUNCHD_LABEL}"
+    subprocess.run(["launchctl", "bootout", old_target], capture_output=True)
+    try:
+        _PRE_AMCTL_LAUNCHD_PLIST.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
     """ensure_launchd 的实体逻辑；调用方持有跨进程文件锁后才能进入。"""
     global LAUNCHD_WARNING
@@ -625,10 +660,10 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
     ).returncode == 0
 
     if listed and not plist_changed:
-        if _daemon_healthy():
+        if _amctl_healthy():
             log(f"launchd already manages {LAUNCHD_LABEL} (healthy)")
             return
-        # listed 但 /health 不通 → daemon 卡死/crashloop，走重装自愈路径
+        # A registered but unhealthy central amctl enters the self-heal path.
         blog("launchd listed but /health unreachable, entering self-heal path")
 
     if listed:
@@ -637,8 +672,8 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
             capture_output=True,
         )
 
-    # Kill any session-bound daemon so port 8765 is free
-    kill_bootstrap_daemon()
+    # Stop any session-bound central amctl so port 8765 is free.
+    kill_bootstrap_amctl()
 
     def _do_bootstrap() -> bool:
         """执行 bootstrap，失败时降级到 legacy load -w。返回是否命令本身成功。"""
@@ -658,7 +693,7 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
         """轮询 /health，最多等 total 秒。"""
         steps = int(total / interval)
         for _ in range(steps):
-            if _daemon_healthy():
+            if _amctl_healthy():
                 return True
             time.sleep(interval)
         return False
@@ -673,7 +708,7 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
 
     # 自愈重试，最多 2 次
     for attempt in range(1, 3):
-        blog(f"post-bootstrap daemon unhealthy, self-heal retry #{attempt}")
+        blog(f"post-bootstrap central amctl unhealthy, self-heal retry #{attempt}")
         subprocess.run(["launchctl", "bootout", service_target], capture_output=True)
         time.sleep(1.5)
         _do_bootstrap()
@@ -685,8 +720,8 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
 
     # 全部失败
     warn = (
-        "⚠ control daemon failed to start automatically; "
-        "run `meeting daemon restart` or check ~/.agent-meeting/logs/bootstrap.log"
+        "central amctl failed to start automatically; "
+        "run `meeting amctl restart` or check ~/.agent-meeting/logs/bootstrap.log"
     )
     log(warn)
     blog(f"FAIL: {warn}")
@@ -706,11 +741,11 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
 #      belt-and-suspenders: resurrects the supervisor PROCESS if it is killed
 #      mid-session without a re-logon. The supervisor's single-instance guard
 #      makes repeated launches a no-op while one is alive.
-# The supervisor itself owns daemon keep-alive (instant relaunch on exit + 20s
+# The supervisor itself owns central amctl keep-alive (instant relaunch on exit + 20s
 # 假死 health probe). The only uncovered case — start before interactive logon
 # (lock screen) — inherently needs a service = admin, so it is out of scope.
 
-STARTUP_CMD = STARTUP_DIR / "agent-meeting-daemon.cmd"
+STARTUP_CMD = STARTUP_DIR / "agent-meeting-amctl.cmd"
 
 
 def _supervisor_running() -> bool:
@@ -722,7 +757,7 @@ def _supervisor_running() -> bool:
 
 
 def _launch_supervisor_now(pyw: Path, supervisor: Path):
-    """Start the supervisor immediately (detached, no console) so the daemon is
+    """Start the supervisor immediately so central amctl is
     up this session without waiting for the Startup launcher or the MINUTE task.
     No-op if one is already alive (the supervisor's own singleton guard would
     make a second one exit anyway)."""
@@ -736,7 +771,7 @@ def _launch_supervisor_now(pyw: Path, supervisor: Path):
 
 
 def ensure_windows_persistence():
-    """Install/refresh the no-admin Windows persistence for the daemon and make
+    """Install/refresh no-admin Windows persistence for central amctl and make
     sure the supervisor is running now. Idempotent like ensure_launchd: the
     Startup .cmd and the MINUTE task both embed the venv-pythonw + supervisor
     path, so we only rewrite/recreate when that path changes (plugin move)."""
@@ -745,18 +780,29 @@ def ensure_windows_persistence():
         log(f"supervisor missing: {supervisor}")
         return
 
+    # The prior lifecycle names must not survive alongside central amctl:
+    # the legacy task can restart a removed executable and keep port 8765 busy.
+    subprocess.run(
+        ["schtasks", "/Delete", "/TN", _PRE_AMCTL_SCHTASKS_TN, "/F"],
+        capture_output=True,
+    )
+    try:
+        _PRE_AMCTL_STARTUP_CMD.unlink()
+    except FileNotFoundError:
+        pass
+
     pyw = VENV / "Scripts" / "pythonw.exe"
     if not pyw.exists():
         pyw = venv_python()  # fall back to python.exe (console window)
     tr = f'"{pyw}" "{supervisor}"'
 
-    # A fresh install/refresh means the daemon SHOULD be running — clear any
+    # A fresh install/refresh means central amctl should be running — clear any
     # prior stop sentinel so the supervisor doesn't immediately bail.
     try:
         STOP_SENTINEL.unlink()
     except FileNotFoundError:
         pass
-    kill_bootstrap_daemon()  # free :8765 from any old session-bound daemon
+    kill_bootstrap_amctl()  # free :8765 from any old session-bound central amctl
 
     # Layer 1: Startup-folder launcher (primary logon auto-start, no admin).
     # Use \n in-memory; text-mode write_text translates to CRLF on disk (what
@@ -794,9 +840,7 @@ def ensure_windows_persistence():
 
 
 def remove_windows_persistence():
-    """Tear down the Windows persistence (Startup .cmd + MINUTE task) and stop a
-    running supervisor/daemon. Called when this machine is NOT a host, so a
-    former host stops auto-launching a daemon. Idempotent."""
+    """Tear down Windows persistence and stop the central amctl control node."""
     removed = False
     try:
         if STARTUP_CMD.exists():
@@ -812,12 +856,12 @@ def remove_windows_persistence():
         SCHTASKS_SENTINEL.unlink()
     except FileNotFoundError:
         pass
-    # Stop a running supervisor (sentinel makes it exit without relaunch) + daemon.
+    # Stop a running supervisor (sentinel prevents relaunch) and central amctl.
     try:
         STOP_SENTINEL.write_text(str(int(time.time())))
     except Exception:
         pass
-    for pidf in (DAEMON_PID_FILE, SUPERVISOR_PID_FILE):
+    for pidf in (AMCTL_PID_FILE, SUPERVISOR_PID_FILE):
         try:
             pid = int(pidf.read_text().strip())
             if IS_WINDOWS:
@@ -898,7 +942,7 @@ def online_peers_str() -> str:
     send/read/show/turn already accept name@project to disambiguate. Global
     identities (project "*") drop the suffix, matching the display convention
     used everywhere else in this codebase (monitor.py's _display_id, meeting's
-    _fmt_id, meeting-daemon's _fmt_id)."""
+    _fmt_id, amctl's _fmt_id)."""
     if not DB.exists():
         return "(none online)"
     try:
@@ -986,7 +1030,7 @@ def _read_installed_version() -> str | None:
 
     Priority order (stops at first hit):
     1. Wrapper script exec path — the most reliable indicator after a real install.
-       The wrapper's second line is: exec "<venv-py>" "<plugin-root>/bin/meeting-daemon"
+       The wrapper's second line is: exec "<venv-py>" "<plugin-root>/bin/amctl"
        The plugin root is a versioned cache dir like .../agent-meeting/0.8.0/...
     2. config.json plugin_version field.
     3. .bin-plugin-root sentinel (contains the plugin_bin path, version segment embedded).
@@ -1037,7 +1081,7 @@ def main():
         ensure_layout()       # base dirs first
         ensure_venv()         # venv must exist before wrappers reference its python
         ensure_zeroconf()
-        ensure_websockets()   # codex bridge daemon speaks WS to the codex app-server
+        ensure_websockets()   # machine-wide Codex broker uses WebSockets
 
         # Monotonic-upgrade guard: skip runtime rewrite if this session's plugin
         # version is older than what's already installed.
@@ -1070,8 +1114,8 @@ def main():
                     ensure_launchd()              # plist + KeepAlive — survives reboots
                 elif IS_WINDOWS:
                     ensure_windows_persistence()  # Startup launcher + MINUTE task + supervisor
-                elif not daemon_running():
-                    launch_daemon()               # Linux: session-bound for now
+                elif not amctl_running():
+                    launch_amctl()                 # Linux: session-bound for now
             elif IS_WINDOWS:
                 # Not a host anymore — tear down any persistence a prior host left.
                 remove_windows_persistence()

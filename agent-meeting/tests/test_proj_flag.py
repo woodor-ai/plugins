@@ -2,7 +2,7 @@
 """
 Focused test for the explicit --proj project-identity flow (v0.8.54+).
 
-Covers meeting_common's proj cache + derive_project fallback, no daemon needed:
+Covers meeting_common's proj cache + derive_project fallback, no central amctl needed:
   1. proj_cache_set() then derive_project() returns the cached proj for the
      same root (explicit declaration wins over folder-based derivation).
   2. With no cache and no git, derive_project() falls back to a home-relative

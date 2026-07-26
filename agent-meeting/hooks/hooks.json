@@ -1,5 +1,5 @@
 {
-  "description": "Meeting-room lifecycle: ensure data dir + venv, auto-launch daemon on host machine, inject context on SessionStart.",
+  "description": "Meeting-room lifecycle: ensure data dir + venv, auto-launch central amctl on host machine, inject context on SessionStart.",
   "hooks": {
     "SessionStart": [
       {
