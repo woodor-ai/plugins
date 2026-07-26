@@ -37,6 +37,11 @@ The proxy observes successful `thread/start`, `thread/resume`, and
 identity mapping current. There is no shared `runtime.json` and no Codex
 SessionStart registration hook.
 
+For a new launch the broker creates only the meeting lease and proxy listener;
+the TUI starts its own persisted Codex thread through `codex --remote`. The
+broker must not pre-create a thread and invoke `codex resume`, because a fresh
+thread has no rollout that the resume bootstrap can load.
+
 ## Components
 
 | File | Role |

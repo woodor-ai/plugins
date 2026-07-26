@@ -185,8 +185,8 @@ def ensure_broker():
     raise RuntimeError(f"Codex broker did not become healthy; see {LOGS_DIR / 'broker.log'}")
 
 
-def build_codex_launch_cmd(proxy_url, thread_id):
-    return ["codex", "resume", thread_id, "--remote", proxy_url]
+def build_codex_launch_cmd(proxy_url):
+    return ["codex", "--remote", proxy_url]
 
 
 DEFAULT_TITLE = "codex"
@@ -262,13 +262,11 @@ class Launcher:
         )
         log(
             f"registered {self.session['identity']} "
-            f"(thread={self.session['thread_id']}, shared app-server)"
+            "(shared app-server; TUI will create the thread)"
         )
 
     def run_codex(self):
-        command = build_codex_launch_cmd(
-            self.session["proxy_url"], self.session["thread_id"]
-        )
+        command = build_codex_launch_cmd(self.session["proxy_url"])
         pinner = TitlePinner(title_text(self.name, self.project, self.control_url))
         pinner.start()
         log(f"launching foreground: {' '.join(command)}")

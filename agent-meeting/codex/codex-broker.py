@@ -385,19 +385,6 @@ class Broker:
         if any(s.active and s.identity == identity for s in self.sessions.values()):
             raise ValueError(f"meeting identity {identity} is already active on this machine")
 
-        start_result = await self.app_call(
-            "thread/start",
-            {
-                "cwd": cwd,
-                "sessionStartSource": "startup",
-                "serviceName": f"agent-meeting:{launch_id}",
-            },
-        )
-        thread = start_result.get("thread") or {}
-        thread_id = thread.get("id")
-        if not thread_id:
-            raise RuntimeError("thread/start returned no thread id")
-
         saved_cursor = self.cursors.get(identity)
         session = Session(
             launch_id=launch_id,
@@ -405,11 +392,10 @@ class Broker:
             project=project,
             cwd=cwd,
             control_url=control_url,
-            thread_id=thread_id,
+            thread_id=None,
             cursor=int(saved_cursor or 0),
         )
         self.sessions[launch_id] = session
-        self.thread_to_launch[thread_id] = launch_id
         try:
             await self.start_session_proxy(session)
             await self.register_central(session)
@@ -422,13 +408,13 @@ class Broker:
             await self.stop_session(launch_id)
             raise
         log(
-            f"session started identity={session.identity} thread={thread_id} "
-            f"launch={launch_id} proxy={session.proxy_url}"
+            f"session started identity={session.identity} launch={launch_id} "
+            f"proxy={session.proxy_url}; waiting for TUI thread/start"
         )
         return {
             "launch_id": launch_id,
             "identity": session.identity,
-            "thread_id": thread_id,
+            "thread_id": None,
             "proxy_url": session.proxy_url,
         }
 
@@ -482,7 +468,10 @@ class Broker:
             return
         old_thread_id = session.thread_id
         session.thread_id = thread_id
-        if self.thread_to_launch.get(old_thread_id) == session.launch_id:
+        if (
+            old_thread_id
+            and self.thread_to_launch.get(old_thread_id) == session.launch_id
+        ):
             del self.thread_to_launch[old_thread_id]
         self.thread_to_launch[thread_id] = session.launch_id
         log(f"session {session.identity} moved to thread {thread_id}")

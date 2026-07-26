@@ -208,15 +208,10 @@ def test_proxy_thread_mapping_updates_identity_lookup():
 def test_launcher_always_connects_through_session_proxy():
     module = load(LAUNCHER_PATH, "codex_meeting_launcher")
 
-    command = module.build_codex_launch_cmd(
-        "ws://127.0.0.1:49152",
-        "thread-1",
-    )
+    command = module.build_codex_launch_cmd("ws://127.0.0.1:49152")
 
     assert command == [
         "codex",
-        "resume",
-        "thread-1",
         "--remote",
         "ws://127.0.0.1:49152",
     ]

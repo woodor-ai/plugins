@@ -196,6 +196,7 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
                 timeout=40,
             )
             assert not session.get("error"), session
+            assert session["thread_id"] is None
             parsed_proxy = urllib.parse.urlparse(session["proxy_url"])
             assert parsed_proxy.path == ""
             assert parsed_proxy.query == ""
@@ -208,6 +209,13 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
         moved_thread = asyncio.run(
             proxy_start_thread(sessions[1]["proxy_url"], tmp_path)
         )
+        active_session = request(
+            broker_base,
+            "GET",
+            "/session",
+            params={"launch_id": "launch-b"},
+        )
+        assert active_session["thread_id"] == moved_thread
         mapped = request(
             broker_base,
             "GET",
