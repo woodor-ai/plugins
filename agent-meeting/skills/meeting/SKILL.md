@@ -11,7 +11,10 @@ description: Meeting directory for Claude Code and Codex peer sessions. In Claud
 - Codex invokes it as `$meeting` or selects it through `/skills`.
 - A Codex session launched by `mycodex` is already registered. Do not start a
   Claude monitor or run the Claude `/meeting <name>` registration flow from
-  Codex; use `MEETING_SELF` as the authoritative current identity.
+  Codex. Use the exact recipient and control URL injected into the thread's
+  developer instructions, and pass both as explicit CLI arguments. For
+  `meeting group`, place `--host <control-url>` immediately after `group`;
+  other commands accept it after their normal arguments.
 
 Storage: single SQLite database at `~/.agent-meeting/db/rooms.db`. All reads and writes go through the `meeting` CLI at `~/.agent-meeting/bin/meeting`. This eliminates the entire class of bugs we were fighting: Edit/Write races, mtime check hacks, file size limits, manual archive discipline, monitor false positives.
 

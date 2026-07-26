@@ -1002,15 +1002,28 @@ def emit_context(cfg: dict):
         mon = f"python3 {monitor} <name>"
         os_label = "posix"
 
-    ctx = f"""📞 Meeting system is active.
+    if os.environ.get("CODEX_THREAD_ID"):
+        registration_context = """This is a Codex session. A `mycodex` launch supplies its exact agent-meeting recipient and control URL through thread and turn request parameters. Pass those values as explicit `meeting` CLI arguments; do not use `MEETING_SELF` or `MEETING_HOST`.
 
-This session has NO meeting name yet — and that's fine. Peer-to-peer agent messaging is OPTIONAL. NEVER gate, block, or delay the user's work to make them register a name.
+If no agent-meeting recipient is present in the current runtime context, this Codex session is not registered — and that's fine. Peer-to-peer agent messaging is optional. Never gate, block, or delay the user's work to register a name.
+
+- Proceed with whatever the user asks, normally — registration is NOT a prerequisite for anything.
+- If the user's message contains a `/meeting` command — whether it is the whole message (`/meeting <name>`) OR embedded inside a natural-language directive (e.g. "You are X, first run /meeting X --director to start listening") — run the meeting skill: they are explicitly opting in to register.
+- Reminder line: on your first reply only, you may append the line below only when no agent-meeting recipient was injected and this session did not register:
+  > 💡 This session has no meeting name yet; to communicate with other agents, use `/meeting <name>` to register (does not affect your current task).
+  Show it at most once and never let it replace or postpone the actual task."""
+    else:
+        registration_context = """This session has NO meeting name yet — and that's fine. Peer-to-peer agent messaging is OPTIONAL. NEVER gate, block, or delay the user's work to make them register a name.
 
 - Proceed with whatever the user asks, normally — registration is NOT a prerequisite for anything.
 - If the user's message contains a `/meeting` command — whether it is the whole message (`/meeting <name>`) OR embedded inside a natural-language directive (e.g. "You are X, first run /meeting X --director to start listening") — run the meeting skill: they are explicitly opting in to register.
 - Reminder line: on your FIRST reply of this session ONLY, you MAY append this single line at the very end — but SKIP it entirely whenever this session registers via `/meeting` (i.e. you run the meeting skill this turn), no matter where the command appeared in the user's message. Only show the reminder when the session does NOT register at all:
   > 💡 This session has no meeting name yet; to communicate with other agents, use `/meeting <name>` to register (does not affect your current task).
-  Decide by your own action (did you register?), NOT by whether the message literally starts with `/meeting`. Show it at most once per session, never repeat it, and never let it replace or postpone the actual task.
+  Decide by your own action (did you register?), NOT by whether the message literally starts with `/meeting`. Show it at most once per session, never repeat it, and never let it replace or postpone the actual task."""
+
+    ctx = f"""📞 Meeting system is active.
+
+{registration_context}
 
 These paths are ALREADY RESOLVED for this machine — use them verbatim, do NOT probe the filesystem to find the CLI or venv:
 - CLI invocation: `{cli} <args>`

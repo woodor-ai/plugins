@@ -193,6 +193,37 @@ def test_consuming_a_page_fetches_the_next_page(monkeypatch):
     assert list(session.pending) == [102]
 
 
+def test_broker_injected_turn_carries_runtime_context(monkeypatch):
+    module = load(BROKER_PATH, "codex_broker_injected_turn_context")
+    broker = module.Broker()
+    session = make_session(module)
+    session.pending[101] = {
+        "id": 101,
+        "sender_identity": "alice@tools",
+        "kind": "request",
+    }
+    calls = []
+
+    async def fake_app_call(method, params=None, timeout=30):
+        calls.append((method, params, timeout))
+        if method == "thread/read":
+            return {"thread": {"status": {"type": "idle"}}}
+        return {}
+
+    async def fake_fetch(_target):
+        return None
+
+    monkeypatch.setattr(broker, "app_call", fake_app_call)
+    monkeypatch.setattr(broker, "fetch_inbox", fake_fetch)
+
+    asyncio.run(broker.try_inject(session))
+
+    turn_params = next(params for method, params, _timeout in calls if method == "turn/start")
+    runtime = turn_params["additionalContext"]["agent-meeting-runtime"]
+    assert runtime["kind"] == "application"
+    assert "Agent-meeting recipient: plugins@tools" in runtime["value"]
+
+
 def test_proxy_thread_mapping_updates_identity_lookup():
     module = load(BROKER_PATH, "codex_broker_mapping")
     broker = module.Broker()
@@ -228,17 +259,69 @@ def test_proxy_forces_session_cwd_on_thread_lifecycle_requests(method):
 
     assert scoped["params"]["cwd"] == "/tmp/project"
     assert scoped["params"]["model"] == "gpt-5"
+    assert (
+        "Agent-meeting recipient: plugins@tools"
+        in scoped["params"]["developerInstructions"]
+    )
+    assert (
+        "Agent-meeting control: http://127.0.0.1:8765"
+        in scoped["params"]["developerInstructions"]
+    )
+    assert "--host http://127.0.0.1:8765" in scoped["params"]["developerInstructions"]
+    assert "place the `--host` option immediately after `group`" in (
+        scoped["params"]["developerInstructions"]
+    )
 
 
-def test_proxy_leaves_non_thread_request_cwd_unchanged():
-    module = load(BROKER_PATH, "codex_broker_turn_cwd")
+def test_proxy_preserves_existing_thread_developer_instructions():
+    module = load(BROKER_PATH, "codex_broker_developer_instructions")
+    broker = module.Broker()
+    session = make_session(module)
+
+    scoped = broker.scope_client_request(
+        session,
+        {
+            "id": 7,
+            "method": "thread/start",
+            "params": {"developerInstructions": "Keep the existing rule."},
+        },
+    )
+
+    instructions = scoped["params"]["developerInstructions"]
+    assert instructions.startswith("Keep the existing rule.\n\n")
+    assert "Agent-meeting recipient: plugins@tools" in instructions
+
+
+def test_proxy_adds_turn_runtime_context_without_changing_cwd():
+    module = load(BROKER_PATH, "codex_broker_turn_context")
     broker = module.Broker()
     session = make_session(module)
     request = {
         "id": 8,
         "method": "turn/start",
-        "params": {"threadId": "thread-1", "cwd": "/intentional/override"},
+        "params": {
+            "threadId": "thread-1",
+            "cwd": "/intentional/override",
+            "additionalContext": {
+                "existing": {"kind": "application", "value": "keep me"}
+            },
+        },
     }
+
+    scoped = broker.scope_client_request(session, request)
+
+    assert scoped["params"]["cwd"] == "/intentional/override"
+    assert scoped["params"]["additionalContext"]["existing"]["value"] == "keep me"
+    runtime = scoped["params"]["additionalContext"]["agent-meeting-runtime"]
+    assert runtime["kind"] == "application"
+    assert "Agent-meeting recipient: plugins@tools" in runtime["value"]
+
+
+def test_proxy_leaves_unrelated_request_unchanged():
+    module = load(BROKER_PATH, "codex_broker_unrelated_request")
+    broker = module.Broker()
+    session = make_session(module)
+    request = {"id": 9, "method": "thread/read", "params": {"threadId": "thread-1"}}
 
     assert broker.scope_client_request(session, request) is request
 
@@ -255,8 +338,8 @@ def test_launcher_always_connects_through_session_proxy():
     ]
 
 
-def test_launcher_exports_common_meeting_identity_and_host(monkeypatch):
-    module = load(LAUNCHER_PATH, "codex_meeting_environment")
+def test_launcher_does_not_export_meeting_identity_or_host(monkeypatch):
+    module = load(LAUNCHER_PATH, "codex_meeting_no_environment")
     launcher = module.Launcher(
         "alice",
         "proj",
@@ -278,17 +361,19 @@ def test_launcher_exports_common_meeting_identity_and_host(monkeypatch):
         def stop(self):
             pass
 
-    def fake_run(command, env):
+    def fake_run(command):
         observed["command"] = command
-        observed["env"] = env
 
     monkeypatch.setattr(module, "TitlePinner", FakePinner)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
     launcher.run_codex()
 
-    assert observed["env"]["MEETING_SELF"] == "alice@proj"
-    assert observed["env"]["MEETING_HOST"] == "http://10.0.0.114:8765"
+    assert observed["command"] == [
+        "codex",
+        "--remote",
+        "ws://127.0.0.1:49152",
+    ]
 
 
 def test_session_proxy_url_is_a_codex_compatible_host_port():

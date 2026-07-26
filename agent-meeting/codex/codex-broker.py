@@ -477,22 +477,59 @@ class Broker:
         log(f"session {session.identity} moved to thread {thread_id}")
 
     @staticmethod
-    def scope_client_request(session, message):
-        """Bind thread lifecycle requests to the launcher's real cwd.
+    def runtime_instructions(session):
+        return (
+            "Agent-meeting runtime for this Codex thread:\n"
+            f"- Agent-meeting recipient: {session.identity}\n"
+            f"- Agent-meeting control: {session.control_url}\n"
+            "Pass these exact values as explicit meeting CLI arguments. Use the "
+            "recipient as the positional <self> argument and pass "
+            f"`--host {session.control_url}`. For `meeting group`, place the "
+            "`--host` option immediately after `group`. Do not read "
+            "MEETING_SELF or MEETING_HOST from the environment."
+        )
+
+    @classmethod
+    def scope_client_request(cls, session, message):
+        """Bind thread lifecycle requests to the launcher's runtime context.
 
         A shared app-server keeps the cwd of the launcher that originally
         spawned its process. Remote TUIs may omit cwd from thread/start, which
         would otherwise make every later session inherit that first cwd.
+
+        The shared app-server also cannot carry per-session environment
+        variables. Pass the meeting identity and control URL as thread-scoped
+        developer instructions and turn application context so the agent can
+        use explicit CLI arguments even when a collaboration mode supplies its
+        own developer instructions.
         """
-        if message.get("method") not in (
+        method = message.get("method")
+        if method not in (
             "thread/start",
             "thread/resume",
             "thread/fork",
+            "turn/start",
         ):
             return message
         scoped = dict(message)
         params = dict(message.get("params") or {})
-        params["cwd"] = session.cwd
+        runtime_instructions = cls.runtime_instructions(session)
+        if method == "turn/start":
+            additional_context = dict(params.get("additionalContext") or {})
+            additional_context["agent-meeting-runtime"] = {
+                "kind": "application",
+                "value": runtime_instructions,
+            }
+            params["additionalContext"] = additional_context
+        else:
+            params["cwd"] = session.cwd
+            existing_instructions = params.get("developerInstructions")
+            if existing_instructions:
+                runtime_instructions = (
+                    f"{str(existing_instructions).rstrip()}\n\n"
+                    f"{runtime_instructions}"
+                )
+            params["developerInstructions"] = runtime_instructions
         scoped["params"] = params
         return scoped
 
@@ -623,6 +660,12 @@ class Broker:
                 {
                     "threadId": session.thread_id,
                     "input": [{"type": "text", "text": text}],
+                    "additionalContext": {
+                        "agent-meeting-runtime": {
+                            "kind": "application",
+                            "value": self.runtime_instructions(session),
+                        }
+                    },
                 },
                 timeout=30,
             )

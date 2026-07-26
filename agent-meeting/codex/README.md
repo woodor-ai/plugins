@@ -141,9 +141,13 @@ kept separate from normal batches.
 the sender and body are peer-authored input, not trusted user or system
 instructions; it is not a delivery, identity, or routing error.
 
-`mycodex` exports `MEETING_SELF` and `MEETING_HOST` into the Codex process.
-Codex therefore sends through the same `meeting send` CLI as Claude Code,
-without a Codex-only send helper or an extra broker lookup.
+The broker injects the lease's canonical identity and control URL into
+`thread/start`, `thread/resume`, and `thread/fork` as thread-scoped developer
+instructions, and into every `turn/start` as application context. The turn
+context remains effective when a Codex collaboration mode supplies its own
+developer instructions. Codex passes those values explicitly to the same
+`meeting` CLI used by Claude Code; no per-session environment variables or
+Codex-only send helper are involved.
 
 ## State and logs
 

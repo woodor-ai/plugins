@@ -24,8 +24,11 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
 ## Steps
 
 1. **Resolve self identity**:
-   - Codex launched through `mycodex`: use `MEETING_SELF` verbatim. It is the
-     broker lease's canonical identity and is authoritative.
+   - Codex launched through `mycodex`: use the exact `Agent-meeting recipient`
+     and `Agent-meeting control` values from the thread's developer
+     instructions. Pass the recipient as `<self>` and append
+     `--host <control-url>` to every direct message CLI call. Do not use
+     environment variables.
    - Claude Code: run `meeting list` and identify the current session by cwd
      and host. If none is active, tell the user to run `/meeting <name>` first.
 2. **Require a canonical private recipient**: `<peer>` must be

@@ -128,6 +128,10 @@ def _parse_name_arg(raw: str, cwd: str | None = None) -> tuple[str, str]:
     For a bare name with cwd, derive project from cwd.
     For a bare name without cwd, return ("", name) — caller resolves via central amctl.
     """
+    if not raw:
+        raise SystemExit(
+            "identity argument is empty; pass the canonical name@project value explicitly"
+        )
     if "@" in raw:
         name, _, project = raw.partition("@")
         return (project, name)

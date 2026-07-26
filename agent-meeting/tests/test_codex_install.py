@@ -268,11 +268,49 @@ def test_ensure_agents_md_posix_runs_runtime_wrappers_directly(tmp_path):
 
     text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
     cli = meeting_home / "bin" / "meeting"
-    assert f'"{cli}" send "$MEETING_SELF" X' in text
+    assert f'"{cli}" send NAME@PROJECT X' in text
+    assert "--host http://10.0.0.5:8765" in text
+    assert "MEETING_SELF" not in text
+    assert "MEETING_HOST" not in text
     assert f'"{cli}" list' in text
     assert "meeting-say" not in text
     assert "& \"" not in text
     assert str(mod._venv_python(meeting_home)) not in text
+
+
+def test_session_context_keeps_claude_unregistered_flow(tmp_path, monkeypatch, capsys):
+    meeting_home = tmp_path / "meeting"
+    plugin_root = _make_plugin_root(tmp_path)
+    meeting_home.mkdir()
+    mod = _load_bootstrap(meeting_home, plugin_root)
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.setattr(mod, "online_peers_str", lambda: "(none online)")
+
+    mod.emit_context({"is_host": False})
+
+    payload = json.loads(capsys.readouterr().out)
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    assert "This session has NO meeting name yet" in context
+    assert "thread-level developer instructions" not in context
+
+
+def test_session_context_defers_codex_identity_to_thread_params(
+    tmp_path, monkeypatch, capsys
+):
+    meeting_home = tmp_path / "meeting"
+    plugin_root = _make_plugin_root(tmp_path)
+    meeting_home.mkdir()
+    mod = _load_bootstrap(meeting_home, plugin_root)
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
+    monkeypatch.setattr(mod, "online_peers_str", lambda: "(none online)")
+
+    mod.emit_context({"is_host": False})
+
+    payload = json.loads(capsys.readouterr().out)
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    assert "A `mycodex` launch supplies its exact agent-meeting recipient" in context
+    assert "thread and turn request parameters" in context
+    assert "This session has NO meeting name yet" not in context
 
 
 def test_legacy_codex_registration_hook_is_removed_without_touching_others():
