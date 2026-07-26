@@ -7,15 +7,26 @@ convention required by install-codex.py.
 
 When called from the installed copy (via install-codex.py), __file__ points to the
 installed directory, so install-codex-hook.py is imported from the same installed
-copy and PICKUP_SCRIPT resolves to the install dir's handoff-pickup.py — not the
-plugins-src original.
+copy and PICKUP_SCRIPT resolves to the install dir's .codex-aware wrapper — not
+the plugins-src original.
 """
 import argparse
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+
+
+def _upsert_codex_instruction() -> None:
+    """Keep Codex's handoff instruction aligned with its .codex card path."""
+    bootstrap = HERE.parent / "bin" / "handoff-bootstrap.py"
+    spec = importlib.util.spec_from_file_location(f"handoff_bootstrap_{id(bootstrap)}", bootstrap)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    mod.upsert(codex_home / "AGENTS.md", mod.INJECT_TEXT_CODEX, mod.INJECT_VERSION)
 
 
 def _load_hook_installer():
@@ -33,6 +44,7 @@ def run_install(ctx: dict) -> None:
     """Install the handoff SessionStart hook into ~/.codex/config.toml."""
     mod = _load_hook_installer()
     mod.install(None)
+    _upsert_codex_instruction()
 
 
 def main():
@@ -49,6 +61,7 @@ def main():
         if project_path:
             project_path = str(Path(project_path).resolve())
         mod.install(project_path)
+        _upsert_codex_instruction()
 
 
 if __name__ == "__main__":

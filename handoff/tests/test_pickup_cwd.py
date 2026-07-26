@@ -11,12 +11,19 @@ import tempfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).parent.parent / "bin" / "handoff-pickup.py"
+CODEX_SCRIPT = Path(__file__).parent.parent / "codex" / "codex-handoff-pickup.py"
 
 
 def _write_card(base: Path, content: str) -> None:
     dot_claude = base / ".claude"
     dot_claude.mkdir(parents=True, exist_ok=True)
     (dot_claude / "handoff-pending.md").write_text(content, encoding="utf-8")
+
+
+def _write_codex_card(base: Path, content: str) -> None:
+    dot_codex = base / ".codex"
+    dot_codex.mkdir(parents=True, exist_ok=True)
+    (dot_codex / "handoff-pending.md").write_text(content, encoding="utf-8")
 
 
 def _run(stdin_payload: dict, env_project_dir: str) -> subprocess.CompletedProcess:
@@ -85,6 +92,28 @@ def test_fallback_to_env_when_no_stdin_cwd():
         # A 归档，B 原封不动
         assert not (dir_a / ".claude" / "handoff-pending.md").exists()
         assert (dir_b / ".claude" / "handoff-pending.md").exists()
+
+
+def test_codex_wrapper_uses_dot_codex_not_dot_claude():
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp) / "project"
+        project.mkdir()
+        _write_card(project, "claude-card")
+        _write_codex_card(project, "codex-card")
+
+        result = subprocess.run(
+            [sys.executable, str(CODEX_SCRIPT)],
+            input=json.dumps({"cwd": str(project)}),
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "codex-card" in result.stdout
+        assert "claude-card" not in result.stdout
+        assert not (project / ".codex" / "handoff-pending.md").exists()
+        assert (project / ".claude" / "handoff-pending.md").exists()
 
 
 if __name__ == "__main__":

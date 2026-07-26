@@ -51,13 +51,13 @@ import tomllib
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Locate handoff-pickup.py relative to this script
+# Locate Codex's .codex-aware pickup wrapper relative to this script
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-PICKUP_SCRIPT = (SCRIPT_DIR.parent / "bin" / "handoff-pickup.py").resolve()
+PICKUP_SCRIPT = (SCRIPT_DIR / "codex-handoff-pickup.py").resolve()
 
 if not PICKUP_SCRIPT.exists():
-    sys.exit(f"ERROR: handoff-pickup.py not found at {PICKUP_SCRIPT}")
+    sys.exit(f"ERROR: codex-handoff-pickup.py not found at {PICKUP_SCRIPT}")
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CONFIG_PATH = CODEX_HOME / "config.toml"
@@ -229,7 +229,7 @@ def ensure_hook_blocks(content: str) -> str:
 
 
 def remove_handoff_hook_blocks(content: str) -> str:
-    """Remove existing handoff [[hooks.SessionStart]] blocks."""
+    """Remove current and legacy handoff [[hooks.SessionStart]] blocks."""
     # Match each [[hooks.SessionStart]] section up to next section header or EOF
     pattern = re.compile(
         r'\[\[hooks\.SessionStart\]\][^\[]*'
@@ -238,7 +238,11 @@ def remove_handoff_hook_blocks(content: str) -> str:
     )
 
     def is_handoff_block(match: re.Match) -> bool:
-        return PICKUP_SCRIPT.name in match.group(0)
+        block = match.group(0)
+        # Before the .codex migration, Codex called the shared Claude pickup
+        # script directly. Match both forms so upgrading replaces, rather than
+        # duplicates, the four SessionStart hooks.
+        return PICKUP_SCRIPT.name in block or "handoff-pickup.py" in block
 
     result = pattern.sub(lambda m: "" if is_handoff_block(m) else m.group(0), content)
     return result

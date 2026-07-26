@@ -21,7 +21,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Version — bump ONLY when the injected text changes, not on every plugin bump
 # ---------------------------------------------------------------------------
-INJECT_VERSION = 1
+INJECT_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Text for ~/.claude/CLAUDE.md  (summary + pointer; no personal names)
@@ -75,7 +75,7 @@ or when the user has said "no handoff today" in this session.
 
 ### Handoff card format
 
-Write to `<cwd>/.claude/handoff-pending.md` (use the actual shell cwd, not the
+Write to `<cwd>/.codex/handoff-pending.md` (use the actual shell cwd, not the
 git root). Hard limit: ≤ 50 lines. Exactly 3 sections:
 
 ```

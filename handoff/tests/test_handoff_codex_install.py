@@ -15,6 +15,7 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = PLUGIN_ROOT / "codex" / "install-codex-hook.py"
+ENTRY_SCRIPT = PLUGIN_ROOT / "codex" / "install.py"
 
 
 def _load(codex_home: Path):
@@ -22,6 +23,16 @@ def _load(codex_home: Path):
     os.environ["CODEX_HOME"] = str(codex_home)
     spec = importlib.util.spec_from_file_location(
         f"handoff_codex_install_{codex_home.name}", SCRIPT
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_entry(codex_home: Path):
+    os.environ["CODEX_HOME"] = str(codex_home)
+    spec = importlib.util.spec_from_file_location(
+        f"handoff_codex_entry_{codex_home.name}", ENTRY_SCRIPT
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -100,6 +111,34 @@ def test_idempotent_reinstall_stays_valid_and_unduplicated(tmp_path):
     # Windows paths in the state keys survived re-write intact (no \\ collapse).
     for block in parsed["hooks"]["SessionStart"]:
         assert block["hooks"][0]["command"] == mod.HOOK_COMMAND
+
+
+def test_reinstall_replaces_legacy_direct_pickup_hooks(tmp_path):
+    mod = _load(tmp_path / "codex_home")
+    legacy = "python3 \"/old/handoff-pickup.py\""
+    old_blocks = "\n".join(
+        f'[[hooks.SessionStart]]\nmatcher = "{matcher}"\n\n'
+        f'[[hooks.SessionStart.hooks]]\ntype = "command"\ncommand = "{legacy}"\n'
+        for matcher in mod.MATCHERS
+    )
+    mod.CONFIG_PATH.parent.mkdir(parents=True)
+    mod.CONFIG_PATH.write_text(old_blocks, encoding="utf-8")
+
+    mod.install(None)
+
+    parsed = tomllib.loads(mod.CONFIG_PATH.read_text(encoding="utf-8"))
+    blocks = parsed["hooks"]["SessionStart"]
+    assert len(blocks) == len(mod.MATCHERS)
+    assert all(block["hooks"][0]["command"] == mod.HOOK_COMMAND for block in blocks)
+
+
+def test_codex_install_writes_dot_codex_handoff_instruction(tmp_path):
+    entry = _load_entry(tmp_path / "codex_home")
+    entry.run_install({})
+
+    text = (tmp_path / "codex_home" / "AGENTS.md").read_text(encoding="utf-8")
+    assert ".codex/handoff-pending.md" in text
+    assert ".claude/handoff-pending.md" not in text
 
 
 if __name__ == "__main__":

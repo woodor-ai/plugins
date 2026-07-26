@@ -1,0 +1,20 @@
+{
+  "name": "handoff",
+  "version": "0.5.4+codex.20260726063837",
+  "description": "Write a Codex session handoff card and automatically load it in the next session.",
+  "author": {
+    "name": "Woodor",
+    "url": "https://github.com/woodor-ai"
+  },
+  "homepage": "https://github.com/woodor-ai/plugins",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Woodor: Handoff",
+    "shortDescription": "Carry concise handoff cards between Codex sessions.",
+    "longDescription": "Write a concise session handoff card and automatically load it at the next session start.",
+    "developerName": "Woodor",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": "Use $handoff to leave a concise handoff card for the next Codex session."
+  }
+}

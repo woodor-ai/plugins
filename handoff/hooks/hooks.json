@@ -7,11 +7,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap-host.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\""
           }
         ]
       },
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\""
           }
         ]
       },
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\""
           }
         ]
       },
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\""
           }
         ]
       }

@@ -2,7 +2,7 @@
 """
 handoff plugin: SessionStart auto-pickup. Cross-platform (Windows / macOS / Linux).
 
-If <project>/.claude/handoff-pending.md exists, emit its content as
+If <project>/<handoff-dir>/handoff-pending.md exists, emit its content as
 additionalContext for the new session and atomically archive it under
 <project>/docs/handoff/archive/handoff-<timestamp>.md.
 
@@ -31,7 +31,11 @@ if not sys.stdin.isatty():
         pass
 
 PROJECT_DIR = Path(_stdin_cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-HANDOFF = PROJECT_DIR / ".claude" / "handoff-pending.md"
+# Claude Code uses .claude; Codex invokes this script through the small
+# codex-handoff-pickup.py wrapper, which selects .codex without changing the
+# Claude plugin's storage convention.
+HANDOFF_DIR = os.environ.get("HANDOFF_DIR", ".claude")
+HANDOFF = PROJECT_DIR / HANDOFF_DIR / "handoff-pending.md"
 
 if not HANDOFF.is_file():
     sys.exit(0)
