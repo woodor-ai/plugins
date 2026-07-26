@@ -345,6 +345,7 @@ def test_ensure_bin_on_path_posix_writes_rc(tmp_path, monkeypatch, capsys):
 def test_main_generates_mycodex_command_when_something_installed(tmp_path, monkeypatch):
     mod = _load()
     meeting_home = tmp_path / "meeting-home"
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("MEETING_HOME", str(meeting_home))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setattr(
@@ -365,6 +366,7 @@ def test_main_generates_mycodex_command_even_when_nothing_installed(tmp_path, mo
     already installed and they only wanted to update `handoff`)."""
     mod = _load()
     meeting_home = tmp_path / "meeting-home"
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("MEETING_HOME", str(meeting_home))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setattr(
@@ -388,6 +390,7 @@ def test_main_cleans_up_stale_codex_plugins(tmp_path, monkeypatch):
     (bin_dir / "codex-plugins.cmd").write_text("@echo off\r\n")
     (bin_dir / "codex-plugins.ps1").write_text("# old\n")
 
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("MEETING_HOME", str(meeting_home))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setattr(

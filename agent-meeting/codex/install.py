@@ -288,7 +288,9 @@ def _shell_rc_file() -> Path:
     """Pick the shell rc file to edit on POSIX. bash -> ~/.bashrc, everything
     else (incl. macOS default zsh) -> ~/.zshrc."""
     shell = os.environ.get("SHELL", "")
-    home = Path.home()
+    # Honor HOME so isolated installs/tests do not ever write the real user's
+    # shell configuration. In normal interactive use HOME is the user's home.
+    home = Path(os.environ.get("HOME") or Path.home())
     if shell.endswith("bash"):
         return home / ".bashrc"
     return home / ".zshrc"
