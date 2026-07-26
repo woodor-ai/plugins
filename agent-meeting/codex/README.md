@@ -42,6 +42,11 @@ the TUI starts its own persisted Codex thread through `codex --remote`. The
 broker must not pre-create a thread and invoke `codex resume`, because a fresh
 thread has no rollout that the resume bootstrap can load.
 
+The proxy also stamps the lease's launch directory onto `thread/start`,
+`thread/resume`, and `thread/fork`. Without that rewrite, a remote TUI that
+omits `cwd` inherits the shared app-server process directory—the directory of
+whichever `mycodex` invocation happened to start the broker first.
+
 ## Components
 
 | File | Role |

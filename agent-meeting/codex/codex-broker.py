@@ -476,6 +476,26 @@ class Broker:
         self.thread_to_launch[thread_id] = session.launch_id
         log(f"session {session.identity} moved to thread {thread_id}")
 
+    @staticmethod
+    def scope_client_request(session, message):
+        """Bind thread lifecycle requests to the launcher's real cwd.
+
+        A shared app-server keeps the cwd of the launcher that originally
+        spawned its process. Remote TUIs may omit cwd from thread/start, which
+        would otherwise make every later session inherit that first cwd.
+        """
+        if message.get("method") not in (
+            "thread/start",
+            "thread/resume",
+            "thread/fork",
+        ):
+            return message
+        scoped = dict(message)
+        params = dict(message.get("params") or {})
+        params["cwd"] = session.cwd
+        scoped["params"] = params
+        return scoped
+
     async def subscribe(self, session):
         parsed = urllib.parse.urlparse(session.control_url)
         ws_url = f"ws://{parsed.hostname}:{parsed.port or 80}/subscribe"
@@ -664,10 +684,11 @@ class Broker:
                     async for raw in client:
                         try:
                             message = json.loads(raw)
+                            message = self.scope_client_request(session, message)
                             method = message.get("method")
-                            params = message.get("params") or {}
                             if method in ("thread/start", "thread/fork", "thread/resume"):
                                 pending_thread_requests[message.get("id")] = method
+                            raw = json.dumps(message)
                         except Exception:
                             pass
                         await upstream.send(raw)

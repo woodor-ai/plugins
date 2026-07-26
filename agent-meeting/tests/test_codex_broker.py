@@ -205,6 +205,41 @@ def test_proxy_thread_mapping_updates_identity_lookup():
     assert asyncio.run(broker.identity_for_thread("thread-1")) == {}
 
 
+@pytest.mark.parametrize(
+    "method",
+    ["thread/start", "thread/resume", "thread/fork"],
+)
+def test_proxy_forces_session_cwd_on_thread_lifecycle_requests(method):
+    module = load(BROKER_PATH, f"codex_broker_cwd_{method.replace('/', '_')}")
+    broker = module.Broker()
+    session = make_session(module)
+
+    scoped = broker.scope_client_request(
+        session,
+        {
+            "id": 7,
+            "method": method,
+            "params": {"cwd": "/wrong/first-launcher", "model": "gpt-5"},
+        },
+    )
+
+    assert scoped["params"]["cwd"] == "/tmp/project"
+    assert scoped["params"]["model"] == "gpt-5"
+
+
+def test_proxy_leaves_non_thread_request_cwd_unchanged():
+    module = load(BROKER_PATH, "codex_broker_turn_cwd")
+    broker = module.Broker()
+    session = make_session(module)
+    request = {
+        "id": 8,
+        "method": "turn/start",
+        "params": {"threadId": "thread-1", "cwd": "/intentional/override"},
+    }
+
+    assert broker.scope_client_request(session, request) is request
+
+
 def test_launcher_always_connects_through_session_proxy():
     module = load(LAUNCHER_PATH, "codex_meeting_launcher")
 

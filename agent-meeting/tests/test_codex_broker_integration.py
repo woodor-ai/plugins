@@ -119,7 +119,7 @@ async def proxy_start_thread(proxy_url, cwd):
                 "serviceName": "agent-meeting:integration-proxy",
             },
         )
-        return (result.get("thread") or {})["id"]
+        return result.get("thread") or {}
 
 
 @pytest.mark.skipif(
@@ -206,9 +206,13 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
         assert shared["sessions"] == 2
         assert shared["appserver_url"] == health["appserver_url"]
 
-        moved_thread = asyncio.run(
-            proxy_start_thread(sessions[1]["proxy_url"], tmp_path)
+        wrong_cwd = tmp_path / "first-launcher-cwd"
+        wrong_cwd.mkdir()
+        moved = asyncio.run(
+            proxy_start_thread(sessions[1]["proxy_url"], wrong_cwd)
         )
+        moved_thread = moved["id"]
+        assert moved["cwd"] == str(tmp_path)
         active_session = request(
             broker_base,
             "GET",
