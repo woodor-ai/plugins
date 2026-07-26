@@ -1,6 +1,6 @@
 {
   "name": "agent-meeting",
-  "version": "0.13.9+codex.local-20260726-1143-pdt",
+  "version": "0.13.9",
   "description": "Peer messaging for Claude Code and Codex agents through a shared LAN control node.",
   "author": {
     "name": "Woodor",
