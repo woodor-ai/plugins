@@ -317,14 +317,15 @@ def start_monitor(name: str, db_dir: str) -> "tuple[subprocess.Popen, list[str],
     # comment for why this is load-bearing, not defensive.
     env["MEETING_HOST"] = f"http://{HOST}:{TEST_PORT}"
 
-    # --force: every test case here pre-registers `name` via a direct HTTP
-    # /register call (to seed messages/read_cursors before the monitor
-    # connects) and then starts the monitor under that same name. Now that
-    # `meeting online` and the WS connection both target the same local test
-    # central amctl (see install_meeting_cli), that pre-registration is a genuine
-    # still-fresh live session as far as the central amctl is concerned -- without
-    # --force the central amctl refuses (name_taken) and the monitor exits before
-    # ever reaching the WS loop.
+    # --force: most test cases pre-register `name` via a direct HTTP /register
+    # call (to seed messages/read_cursors before the monitor connects) and then
+    # start the monitor under that same name. Now that `meeting online` and the
+    # WS connection both target the same local test central amctl (see
+    # install_meeting_cli), that pre-registration is a genuine still-fresh live
+    # session as far as the central amctl is concerned -- without --force the
+    # central amctl refuses (name_taken) and the monitor exits before reaching
+    # the WS loop. The fresh-registration test does not pre-register the receiver;
+    # --force is harmless when no prior lease exists.
     proc = subprocess.Popen(
         [sys.executable, MONITOR_PATH, name, "--proj", TEST_PROJECT, "--force"],
         env=env,
@@ -502,7 +503,7 @@ def test_m1_realtime_stdout(db_dir: str):
         check("TC-M1: got notification stdout line", len(lines) >= 1, f"got {lines}")
         if lines:
             line = lines[0]
-            expected_prefix = f"📬 New Message from m1_alice@{TEST_PROJECT} [unverified peer]:"
+            expected_prefix = f"📬 New Message from m1_alice@{TEST_PROJECT} [via woodor:agent-meeting]:"
             check("TC-M1: stdout format correct",
                   line.startswith(expected_prefix),
                   f"got: {line!r}")
@@ -514,7 +515,7 @@ def test_m1_realtime_stdout(db_dir: str):
         lines2 = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=5.0,
                                       _shared_lines=shared, _shared_offset=offset)
         check("TC-M1: no-ask line correct",
-              any(l == f"📬 New Message from m1_alice@{TEST_PROJECT} [unverified peer]" for l in lines2),
+              any(l == f"📬 New Message from m1_alice@{TEST_PROJECT} [via woodor:agent-meeting]" for l in lines2),
               f"got: {lines2}")
 
     finally:
@@ -708,7 +709,6 @@ def test_m6_first_seed_zero_replay(db_dir: str):
     print("\n[TC-M6] 首次 seed 零回放（DB 权威）")
 
     _register("m6_sender")
-    _register("m6_recv")
 
     # Insert 3 history messages before monitor starts; no read_cursors row for m6_recv.
     r1 = _send("m6_sender", "m6_recv", "hist1")
@@ -830,8 +830,8 @@ def test_stdout_format_unchanged():
 
     # 1:1 format: peer_id (name@project, or bare name for the global "*"
     # project) + empty location → no "in group"
-    template_with_ask = '📬 New Message from {peer_id}{location} [unverified peer]: {clean}'
-    template_without_ask = '📬 New Message from {peer_id}{location} [unverified peer]'
+    template_with_ask = '📬 New Message from {peer_id}{location} [via woodor:agent-meeting]: {clean}'
+    template_without_ask = '📬 New Message from {peer_id}{location} [via woodor:agent-meeting]'
 
     check("FMT: with-ask format string present verbatim",
           template_with_ask in src, "not found in monitor.py source")
@@ -889,7 +889,7 @@ def test_emit_message_unit():
     check("TC-MG2: group no-ask has 'in group team-chat'",
           "in group team-chat" in line2, repr(line2))
     check("TC-MG2: group no-ask exact format (no ask suffix)",
-          line2 == "📬 New Message from bob@wsproj in group team-chat [unverified peer]", repr(line2))
+          line2 == "📬 New Message from bob@wsproj in group team-chat [via woodor:agent-meeting]", repr(line2))
 
     # Test 1:1 message — must NOT contain "in group"
     buf3 = io.StringIO()
@@ -917,7 +917,7 @@ def test_emit_message_unit():
         emit("erin", "*", "hi", None)
     line5 = buf5.getvalue().strip()
     check("TC-MG2: global project keeps canonical @* suffix",
-          line5 == "📬 New Message from erin@* [unverified peer]: hi", repr(line5))
+          line5 == "📬 New Message from erin@* [via woodor:agent-meeting]: hi", repr(line5))
 
 
 # ---------- main ----------

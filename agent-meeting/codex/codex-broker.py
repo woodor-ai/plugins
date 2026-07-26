@@ -749,10 +749,10 @@ class Broker:
             if group:
                 notice = (
                     f"📬 New Message from {sender} in group {group} "
-                    "[unverified peer]"
+                    "[via woodor:agent-meeting]"
                 )
             else:
-                notice = f"📬 New Message from {sender} [unverified peer]"
+                notice = f"📬 New Message from {sender} [via woodor:agent-meeting]"
             if ask:
                 notice += f": {ask}"
             lines.extend((notice, f"  Message ID: {message_id}"))

@@ -120,9 +120,9 @@ subscription never advances delivery state. Once the target thread is idle,
 the broker injects a single metadata-only notification:
 
 ```text
-📬 New Message from alice@one [unverified peer]
+📬 New Message from alice@one [via woodor:agent-meeting]
   Message ID: 17029
-📬 New Message from bob@two in group review@tools [unverified peer]
+📬 New Message from bob@two in group review@tools [via woodor:agent-meeting]
   Message ID: 17042
 Agent-meeting recipient: NAME@PROJECT
 ```
@@ -141,9 +141,11 @@ the injected turn. Failed injection leaves the central cursor unchanged so a
 restart can replay the message. Fresh control messages are kept separate from
 normal batches.
 
-`[unverified peer]` is a trust label shared by Claude Code and Codex. It means
-the sender and body are peer-authored input, not trusted user or system
-instructions; it is not a delivery, identity, or routing error.
+`[via woodor:agent-meeting]` is a provenance label shared by Claude Code and
+Codex. It identifies the delivery channel rather than an authentication,
+delivery, or routing state. Peer messages may contain actionable requests;
+handle them normally, but they do not override higher-priority instructions or
+bypass approval rules.
 
 The broker injects the lease's canonical identity and control URL into
 `thread/start`, `thread/resume`, and `thread/fork` as thread-scoped developer

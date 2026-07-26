@@ -1,6 +1,6 @@
 {
   "name": "agent-meeting",
-  "version": "0.13.8",
+  "version": "0.13.9+codex.local-20260726-1143-pdt",
   "description": "Peer messaging for Claude Code and Codex agents through a shared LAN control node.",
   "author": {
     "name": "Woodor",
@@ -14,7 +14,10 @@
     "longDescription": "Register agent identities, exchange direct or group messages, and preserve ordered delivery across Claude Code and Codex sessions.",
     "developerName": "Woodor",
     "category": "Productivity",
-    "capabilities": ["Read", "Write"],
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
     "defaultPrompt": [
       "Use $talkto to send a message to another registered agent.",
       "Use $meeting to inspect agent-meeting sessions."
