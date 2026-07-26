@@ -111,6 +111,11 @@ def _amctl_healthy(port: int = 8765, timeout: float = 1.0) -> bool:
 def _amctl_version_matches(expected: str, port: int = 8765) -> bool:
     """Return whether the live amctl is running the installed plugin version."""
     health = _amctl_health_info(port)
+    return _health_version_matches(health, expected)
+
+
+def _health_version_matches(health: dict, expected: str) -> bool:
+    """Return whether a health payload reports the expected plugin version."""
     return bool(
         health
         and (
@@ -118,6 +123,11 @@ def _amctl_version_matches(expected: str, port: int = 8765) -> bool:
             or str(health.get("version") or "") == expected
         )
     )
+
+
+def _health_instance_id(health: dict) -> str:
+    """Return the process instance identifier from a health payload."""
+    return str(health.get("instance_id") or "")
 
 
 if IS_MAC:
@@ -583,18 +593,20 @@ def ensure_launchd():
     LAUNCHD_PLIST.parent.mkdir(parents=True, exist_ok=True)
     _remove_pre_amctl_launchd_service()
 
-    amctl_path = PLUGIN_ROOT / "bin" / "amctl"
+    # launchd must depend only on the stable runtime path. The wrapper may be
+    # refreshed from either Claude's or Codex's plugin cache without changing
+    # the plist or restarting an otherwise healthy central service.
+    amctl_path = BIN_LINK / "amctl"
     if not amctl_path.exists():
         msg = f"central amctl script missing: {amctl_path}"
         log(msg)
         blog(msg)
         return
-    py = venv_python()
     log_file = TMP / "amctl.log"
 
     plist = {
         "Label": LAUNCHD_LABEL,
-        "ProgramArguments": [str(py), str(amctl_path), "--port", "8765"],
+        "ProgramArguments": [str(amctl_path), "--port", "8765"],
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(log_file),
@@ -624,7 +636,7 @@ def ensure_launchd():
                     return
                 time.sleep(0.5)
 
-        _ensure_launchd_locked(new_bytes, py, log_file)
+        _ensure_launchd_locked(new_bytes)
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)
         lock_file.close()
@@ -641,10 +653,96 @@ def _remove_pre_amctl_launchd_service():
         pass
 
 
-def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
+def _wait_launchd_stopped(
+    service_target: str,
+    old_health: dict,
+    total: float = 10.0,
+    interval: float = 0.25,
+) -> bool:
+    """Wait until launchd drops the job and the previous HTTP instance is gone."""
+    old_instance_id = _health_instance_id(old_health)
+    deadline = time.monotonic() + max(0.0, total)
+    consecutive_clear = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            listed = subprocess.run(
+                ["launchctl", "print", service_target],
+                capture_output=True,
+                timeout=max(0.001, remaining),
+            ).returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        health = _amctl_health_info(timeout=min(1.0, remaining))
+        if old_instance_id:
+            old_instance_present = (
+                bool(health)
+                and _health_instance_id(health) == old_instance_id
+            )
+        else:
+            # If the initial probe failed, absence of an instance id is not
+            # proof that no old process exists. Treat any healthy endpoint as
+            # occupied until the launchd job and endpoint are both stably gone.
+            old_instance_present = bool(health)
+        if not listed and not old_instance_present:
+            consecutive_clear += 1
+            if consecutive_clear >= 2:
+                return True
+        else:
+            consecutive_clear = 0
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(interval, remaining))
+
+
+def _wait_new_amctl(
+    expected_version: str,
+    old_instance_id: str,
+    total: float = 8.0,
+    interval: float = 0.25,
+    stable_checks: int = 2,
+) -> bool:
+    """Wait for one new, correctly versioned instance to stay healthy."""
+    candidate_id = ""
+    consecutive = 0
+    deadline = time.monotonic() + max(0.0, total)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        health = _amctl_health_info(timeout=min(1.0, remaining))
+        instance_id = _health_instance_id(health)
+        valid = bool(
+            instance_id
+            and instance_id != old_instance_id
+            and _health_version_matches(health, expected_version)
+        )
+        if valid:
+            if instance_id == candidate_id:
+                consecutive += 1
+            else:
+                candidate_id = instance_id
+                consecutive = 1
+            if consecutive >= stable_checks:
+                return True
+        else:
+            candidate_id = ""
+            consecutive = 0
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(interval, remaining))
+
+
+def _ensure_launchd_locked(new_bytes: bytes):
     """ensure_launchd 的实体逻辑；调用方持有跨进程文件锁后才能进入。"""
     global LAUNCHD_WARNING
-    import plistlib  # noqa: F811 — 此函数独立可调用，保留 import
 
     old_bytes = LAUNCHD_PLIST.read_bytes() if LAUNCHD_PLIST.exists() else b""
     plist_changed = new_bytes != old_bytes
@@ -667,20 +765,23 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
     ).returncode == 0
 
     expected_version = _read_plugin_version()
+    old_health = _amctl_health_info()
     if listed and not plist_changed:
-        health = _amctl_health_info()
-        if health and (
-            expected_version == "unknown"
-            or str(health.get("version") or "") == expected_version
+        if (
+            _health_version_matches(old_health, expected_version)
+            and _health_instance_id(old_health)
         ):
             log(f"launchd already manages {LAUNCHD_LABEL} (healthy)")
             return
-        if health:
-            blog(
-                "launchd amctl version mismatch "
-                f"(running={health.get('version') or 'unknown'}, "
-                f"installed={expected_version}), restarting"
-            )
+        if old_health:
+            if _health_version_matches(old_health, expected_version):
+                blog("launchd amctl has no instance_id, restarting")
+            else:
+                blog(
+                    "launchd amctl version mismatch "
+                    f"(running={old_health.get('version') or 'unknown'}, "
+                    f"installed={expected_version}), restarting"
+                )
         else:
             # A registered but unhealthy central amctl enters the self-heal path.
             blog("launchd listed but /health unreachable, entering self-heal path")
@@ -693,6 +794,15 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
 
     # Stop any session-bound central amctl so port 8765 is free.
     kill_bootstrap_amctl()
+    if not _wait_launchd_stopped(service_target, old_health):
+        warn = (
+            "central amctl did not stop cleanly; "
+            "refusing to start a second instance"
+        )
+        log(warn)
+        blog(f"FAIL: {warn}")
+        LAUNCHD_WARNING = warn
+        return
 
     def _do_bootstrap() -> bool:
         """执行 bootstrap，失败时降级到 legacy load -w。返回是否命令本身成功。"""
@@ -708,18 +818,10 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
         )
         return r2.returncode == 0
 
-    def _wait_healthy(total: float = 5.0, interval: float = 0.5) -> bool:
-        """轮询 /health，最多等 total 秒。"""
-        steps = int(total / interval)
-        for _ in range(steps):
-            if _amctl_version_matches(expected_version):
-                return True
-            time.sleep(interval)
-        return False
-
     # 首次 bootstrap
     _do_bootstrap()
-    if _wait_healthy():
+    previous_instance_id = _health_instance_id(old_health)
+    if _wait_new_amctl(expected_version, previous_instance_id):
         msg = f"launchd loaded {LAUNCHD_LABEL}（auto-start on boot，KeepAlive on）"
         log(msg)
         blog(msg)
@@ -728,10 +830,16 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
     # 自愈重试，最多 2 次
     for attempt in range(1, 3):
         blog(f"post-bootstrap central amctl unhealthy, self-heal retry #{attempt}")
+        retry_health = _amctl_health_info()
         subprocess.run(["launchctl", "bootout", service_target], capture_output=True)
-        time.sleep(1.5)
+        if not _wait_launchd_stopped(service_target, retry_health):
+            blog(f"self-heal retry #{attempt}: previous instance did not stop")
+            continue
         _do_bootstrap()
-        if _wait_healthy():
+        if _wait_new_amctl(
+            expected_version,
+            _health_instance_id(retry_health),
+        ):
             msg = f"launchd loaded {LAUNCHD_LABEL} (self-heal #{attempt} succeeded)"
             log(msg)
             blog(msg)

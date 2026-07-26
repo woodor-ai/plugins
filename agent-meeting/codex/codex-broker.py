@@ -52,7 +52,7 @@ HOME = Path.home()
 DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
 CODEX_DIR = DATA / "codex"
 LOGS_DIR = CODEX_DIR / "logs"
-STATE_FILE = CODEX_DIR / "broker-state.json"
+LEGACY_STATE_FILE = CODEX_DIR / "broker-state.json"
 CONFIG_FILE = DATA / "config.json"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
@@ -81,6 +81,10 @@ INJECT_POLL_S = 2.0
 CONTROL_STALE_S = 600
 
 
+class NameTakenError(RuntimeError):
+    pass
+
+
 def log(message):
     stamp = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     line = f"[codex-broker] {stamp} {message}"
@@ -92,14 +96,6 @@ def read_json(path, default=None):
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:
         return {} if default is None else default
-
-
-def atomic_write_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def auth_token():
@@ -244,12 +240,18 @@ class Session:
         self.cwd = cwd
         self.control_url = control_url.rstrip("/")
         self.thread_id = thread_id
-        self.cursor = int(cursor)
+        self.cursor = int(cursor) if cursor is not None else None
         self.pending = OrderedDict()
+        self.awaiting_ack = None
         self.subscription_task = None
         self.proxy_server = None
         self.proxy_port = None
+        self.proxy_clients = set()
         self.active = True
+        self.central_registered = False
+        self.central_error = None
+        self.central_register_task = None
+        self.delivery_lock = asyncio.Lock()
 
     @property
     def identity(self):
@@ -268,14 +270,13 @@ class Broker:
         self.appserver = AppServer()
         self.sessions = {}
         self.thread_to_launch = {}
-        self.cursors = read_json(STATE_FILE, {"cursors": {}}).get("cursors", {})
+        self.legacy_cursors = (
+            read_json(LEGACY_STATE_FILE, {"cursors": {}}).get("cursors") or {}
+        )
         self.stop_event = asyncio.Event()
         self.http_server = None
         self.scheduler_task = None
         self.supervisor_task = None
-
-    def persist(self):
-        atomic_write_json(STATE_FILE, {"cursors": self.cursors})
 
     async def app_call(self, method, params=None, timeout=30):
         ws_url = self.appserver.ws_url
@@ -309,13 +310,43 @@ class Broker:
                         "name": "agent_meeting_broker",
                         "title": "Agent Meeting Codex Broker",
                         "version": "1",
-                    }
+                    },
+                    "capabilities": {"experimentalApi": True},
                 },
             )
             await ws.send(json.dumps({"method": "initialized", "params": {}}))
             return await call(method, params)
 
-    async def register_central(self, session):
+    @staticmethod
+    def reconcile_central_cursor(session, central_cursor):
+        central_cursor = int(central_cursor)
+        if session.cursor is None:
+            session.cursor = central_cursor
+            return
+        if central_cursor == session.cursor:
+            return
+        if central_cursor < session.cursor:
+            raise RuntimeError(
+                "central cursor moved backwards "
+                f"({session.cursor} -> {central_cursor})"
+            )
+        if session.awaiting_ack:
+            through = max(session.awaiting_ack)
+            if central_cursor >= through:
+                for message_id in session.awaiting_ack:
+                    session.pending.pop(message_id, None)
+                session.awaiting_ack = None
+                session.cursor = central_cursor
+                return
+        if not session.pending and not session.awaiting_ack:
+            session.cursor = central_cursor
+            return
+        raise RuntimeError(
+            "central cursor diverged while messages were pending "
+            f"({session.cursor} -> {central_cursor})"
+        )
+
+    async def register_central(self, session, timeout=20):
         payload = {
             "project": session.project,
             "name": session.name,
@@ -327,13 +358,46 @@ class Broker:
             "instance": session.launch_id,
             "client_version": read_json(CONFIG_FILE).get("plugin_version"),
         }
-        result = await asyncio.to_thread(
-            http_json, "POST", session.control_url, "/register", payload
+        legacy_cursor = self.legacy_cursors.get(session.identity)
+        if legacy_cursor is None and session.project == "*":
+            legacy_cursor = self.legacy_cursors.get(session.name)
+        if legacy_cursor is not None:
+            payload["legacy_cursor"] = legacy_cursor
+        request_task = asyncio.create_task(
+            asyncio.to_thread(
+                http_json,
+                "POST",
+                session.control_url,
+                "/register",
+                payload,
+                None,
+                timeout,
+            )
         )
+        session.central_register_task = request_task
+        try:
+            # Cancelling the subscription must not discard the only handle to
+            # a worker-thread request that may still commit centrally.
+            result = await asyncio.shield(request_task)
+        finally:
+            if (
+                request_task.done()
+                and session.central_register_task is request_task
+            ):
+                session.central_register_task = None
         if result.get("error"):
+            if result.get("code") == "name_taken":
+                raise NameTakenError(result["error"])
             raise RuntimeError(result["error"])
+        session.central_registered = True
+        session.central_error = None
+        self.reconcile_central_cursor(session, result["cursor"])
+        return session.cursor
 
     async def unregister_central(self, session):
+        # Cancelling an asyncio.to_thread registration does not stop its worker
+        # thread. Always issue an instance-bound delete so a late commit cannot
+        # leave a ghost lease after the local session has stopped.
         await asyncio.to_thread(
             http_json,
             "POST",
@@ -345,31 +409,58 @@ class Broker:
                 "instance": session.launch_id,
             },
         )
+        session.central_registered = False
 
-    async def fetch_inbox(self, session, initial=False):
-        params = {
-            "project": session.project,
-            "name": session.name,
-            "since": session.cursor,
-            "limit": 500,
-        }
-        if initial:
-            params["initial"] = 1
-        result = await asyncio.to_thread(
-            http_json, "GET", session.control_url, "/inbox", None, params
-        )
-        if result.get("error"):
-            raise RuntimeError(result["error"])
-        high_water_mark = int(result.get("high_water_mark") or session.cursor)
-        if initial:
-            session.cursor = high_water_mark
-            self.cursors[session.identity] = session.cursor
-            self.persist()
-            return
-        for message in result.get("messages", []):
-            message_id = int(message["id"])
-            if message_id > session.cursor:
-                session.pending.setdefault(message_id, message)
+    async def fetch_inbox(self, session):
+        async with session.delivery_lock:
+            params = {
+                "project": session.project,
+                "name": session.name,
+                "instance": session.launch_id,
+                "limit": 500,
+            }
+            result = await asyncio.to_thread(
+                http_json, "GET", session.control_url, "/inbox", None, params
+            )
+            if result.get("error"):
+                raise RuntimeError(result["error"])
+            self.reconcile_central_cursor(session, result["cursor"])
+            for message in result.get("messages", []):
+                message_id = int(message["id"])
+                if message_id > session.cursor:
+                    session.pending.setdefault(message_id, message)
+
+    async def acknowledge(self, session, message_ids):
+        async with session.delivery_lock:
+            expected_cursor = session.cursor
+            through = max(message_ids)
+            result = await asyncio.to_thread(
+                http_json,
+                "POST",
+                session.control_url,
+                "/ack",
+                {
+                    "project": session.project,
+                    "name": session.name,
+                    "instance": session.launch_id,
+                    "expected_cursor": expected_cursor,
+                    "through": through,
+                },
+            )
+            if result.get("error"):
+                if result.get("code") == "cursor_conflict":
+                    current_cursor = int(result["cursor"])
+                    if current_cursor >= through:
+                        session.cursor = current_cursor
+                        return
+                    if current_cursor == expected_cursor:
+                        raise RuntimeError("ack outcome is not yet visible")
+                    raise RuntimeError(
+                        "central cursor advanced only partway through the batch "
+                        f"({expected_cursor} -> {current_cursor} < {through})"
+                    )
+                raise RuntimeError(result["error"])
+            session.cursor = int(result["cursor"])
 
     async def start_session(self, request):
         launch_id = str(request["launch_id"])
@@ -381,11 +472,10 @@ class Broker:
             raise ValueError("control_url must use http://")
         if launch_id in self.sessions:
             raise ValueError(f"launch {launch_id} already exists")
-        identity = name if project == "*" else f"{name}@{project}"
+        identity = f"{name}@{project}"
         if any(s.active and s.identity == identity for s in self.sessions.values()):
             raise ValueError(f"meeting identity {identity} is already active on this machine")
 
-        saved_cursor = self.cursors.get(identity)
         session = Session(
             launch_id=launch_id,
             name=name,
@@ -393,19 +483,26 @@ class Broker:
             cwd=cwd,
             control_url=control_url,
             thread_id=None,
-            cursor=int(saved_cursor or 0),
+            cursor=None,
         )
         self.sessions[launch_id] = session
         try:
             await self.start_session_proxy(session)
-            await self.register_central(session)
-            if saved_cursor is None:
-                await self.fetch_inbox(session, initial=True)
-            else:
+            try:
+                await self.register_central(session, timeout=2)
                 await self.fetch_inbox(session)
+            except NameTakenError:
+                await self.stop_session(launch_id, unregister=False)
+                raise
+            except Exception as exc:
+                session.central_error = str(exc)
+                log(
+                    f"central unavailable for {session.identity}; "
+                    f"starting local lease and retrying in background: {exc}"
+                )
             session.subscription_task = asyncio.create_task(self.subscribe(session))
         except Exception:
-            await self.stop_session(launch_id)
+            await self.stop_session(launch_id, unregister=False)
             raise
         log(
             f"session started identity={session.identity} launch={launch_id} "
@@ -418,7 +515,7 @@ class Broker:
             "proxy_url": session.proxy_url,
         }
 
-    async def stop_session(self, launch_id):
+    async def stop_session(self, launch_id, unregister=True):
         session = self.sessions.pop(launch_id, None)
         if session is None:
             return {"stopped": False}
@@ -427,6 +524,12 @@ class Broker:
             session.subscription_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await session.subscription_task
+        register_task = session.central_register_task
+        if register_task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await register_task
+            if session.central_register_task is register_task:
+                session.central_register_task = None
         if session.proxy_server is not None:
             session.proxy_server.close()
             await session.proxy_server.wait_closed()
@@ -435,7 +538,11 @@ class Broker:
         for thread_id, owner in list(self.thread_to_launch.items()):
             if owner == launch_id:
                 del self.thread_to_launch[thread_id]
-        await self.unregister_central(session)
+        if unregister:
+            try:
+                await self.unregister_central(session)
+            except Exception as exc:
+                log(f"central unregister {session.identity} failed: {exc}")
         log(f"session stopped identity={session.identity} launch={launch_id}")
         return {"stopped": True}
 
@@ -461,6 +568,8 @@ class Broker:
             "thread_id": session.thread_id,
             "identity": session.identity,
             "proxy_url": session.proxy_url,
+            "central_registered": session.central_registered,
+            "central_error": session.central_error,
         }
 
     async def update_thread(self, session, thread_id):
@@ -540,6 +649,8 @@ class Broker:
             "X-Meeting-Name": session.name,
             "X-Meeting-Project": session.project,
             "X-Meeting-Proto": "1",
+            "X-Meeting-Mode": "notify",
+            "X-Meeting-Instance": session.launch_id,
         }
         token = auth_token()
         if token:
@@ -559,11 +670,27 @@ class Broker:
                     await self.fetch_inbox(session)
                     async for raw in websocket:
                         message = json.loads(raw)
-                        if message.get("type") in ("msg", "caught_up"):
+                        if message.get("type") == "notify":
                             await self.fetch_inbox(session)
             except asyncio.CancelledError:
                 return
+            except NameTakenError as exc:
+                session.central_error = str(exc)
+                session.active = False
+                if session.proxy_server is not None:
+                    session.proxy_server.close()
+                    await session.proxy_server.wait_closed()
+                for client in list(session.proxy_clients):
+                    await client.close(
+                        code=1011,
+                        reason="meeting identity is already registered",
+                    )
+                log(
+                    f"central registration {session.identity} rejected: {exc}"
+                )
+                return
             except Exception as exc:
+                session.central_error = str(exc)
                 log(f"central subscription {session.identity} failed: {exc}")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
@@ -632,19 +759,36 @@ class Broker:
         lines.append(f"Agent-meeting recipient: {session.identity}")
         return selected, "\n".join(lines)
 
+    async def finish_ack(self, session):
+        selected = session.awaiting_ack
+        if not selected:
+            return True
+        try:
+            await self.acknowledge(session, selected)
+        except Exception as exc:
+            log(f"ack {session.identity} failed: {exc}")
+            return False
+        for message_id in selected:
+            session.pending.pop(message_id, None)
+        session.awaiting_ack = None
+        try:
+            await self.fetch_inbox(session)
+        except Exception as exc:
+            log(f"post-ack fetch {session.identity} failed: {exc}")
+        return True
+
     async def try_inject(self, session):
+        if session.awaiting_ack:
+            await self.finish_ack(session)
+            return
         if not session.pending or not session.thread_id:
             return
         selected, text = self.build_injection(session)
         if not selected:
             return
         if not text:
-            for message_id in selected:
-                session.pending.pop(message_id, None)
-            session.cursor = max(session.cursor, max(selected))
-            self.cursors[session.identity] = session.cursor
-            self.persist()
-            await self.fetch_inbox(session)
+            session.awaiting_ack = selected
+            await self.finish_ack(session)
             return
         try:
             read_result = await self.app_call(
@@ -672,12 +816,8 @@ class Broker:
         except Exception as exc:
             log(f"inject {session.identity} failed: {exc}")
             return
-        for message_id in selected:
-            session.pending.pop(message_id, None)
-        session.cursor = max(session.cursor, max(selected))
-        self.cursors[session.identity] = session.cursor
-        self.persist()
-        await self.fetch_inbox(session)
+        session.awaiting_ack = selected
+        await self.finish_ack(session)
         log(
             f"injected {len(selected)} message(s) into {session.identity} "
             f"thread={session.thread_id}"
@@ -724,6 +864,7 @@ class Broker:
             await client.close(code=1008, reason="inactive broker session")
             return
 
+        session.proxy_clients.add(client)
         pending_thread_requests = {}
         app_url = self.appserver.ws_url
         try:
@@ -769,6 +910,8 @@ class Broker:
                     task.result()
         except Exception as exc:
             log(f"proxy {session.identity} disconnected: {exc}")
+        finally:
+            session.proxy_clients.discard(client)
 
     def start_http(self):
         broker = self

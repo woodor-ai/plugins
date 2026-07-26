@@ -122,6 +122,65 @@ async def proxy_start_thread(proxy_url, cwd):
         return result.get("thread") or {}
 
 
+async def verify_experimental_context_gate(appserver_url):
+    websockets = pytest.importorskip("websockets")
+
+    async def call_with_capability(enabled):
+        async with websockets.connect(appserver_url, max_size=None) as websocket:
+            request_id = 1
+
+            async def call(method, params=None):
+                nonlocal request_id
+                current_id = request_id
+                request_id += 1
+                payload = {"id": current_id, "method": method}
+                if params is not None:
+                    payload["params"] = params
+                await websocket.send(json.dumps(payload))
+                while True:
+                    response = json.loads(
+                        await asyncio.wait_for(websocket.recv(), 15)
+                    )
+                    if response.get("id") == current_id:
+                        return response
+
+            initialize = {
+                "clientInfo": {
+                    "name": "agent_meeting_capability_test",
+                    "title": "Agent Meeting Capability Test",
+                    "version": "1",
+                }
+            }
+            if enabled:
+                initialize["capabilities"] = {"experimentalApi": True}
+            initialized = await call("initialize", initialize)
+            assert "error" not in initialized, initialized
+            await websocket.send(
+                json.dumps({"method": "initialized", "params": {}})
+            )
+            return await call(
+                "turn/start",
+                {
+                    "threadId": "agent-meeting-missing-thread",
+                    "input": [{"type": "text", "text": "capability probe"}],
+                    "additionalContext": {
+                        "agent-meeting-runtime": {
+                            "kind": "application",
+                            "value": "probe",
+                        }
+                    },
+                },
+            )
+
+    rejected = await call_with_capability(False)
+    accepted_by_gate = await call_with_capability(True)
+    rejected_text = json.dumps(rejected, ensure_ascii=False)
+    accepted_text = json.dumps(accepted_by_gate, ensure_ascii=False)
+
+    assert "experimentalApi" in rejected_text
+    assert "experimentalApi" not in accepted_text
+
+
 @pytest.mark.skipif(
     os.environ.get("RUN_CODEX_BROKER_INTEGRATION") != "1",
     reason="set RUN_CODEX_BROKER_INTEGRATION=1 for the live Codex integration",
@@ -179,6 +238,7 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
             _, stderr = broker_process.communicate(timeout=5)
             pytest.fail(f"broker did not start: {stderr}")
         assert health["appserver_url"] == f"ws://127.0.0.1:{app_port}"
+        asyncio.run(verify_experimental_context_gate(health["appserver_url"]))
 
         sessions = []
         for launch_id, name in (("launch-a", "alice"), ("launch-b", "bob")):

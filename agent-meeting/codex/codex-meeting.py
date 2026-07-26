@@ -280,7 +280,20 @@ class Launcher:
     def hold(self, stop_event):
         log("--no-codex: broker lease active; waiting for SIGINT/SIGTERM")
         while not stop_event.wait(0.5):
-            pass
+            try:
+                status = broker_request(
+                    "GET",
+                    "/session",
+                    params={"launch_id": self.launch_id},
+                    timeout=2,
+                )
+            except Exception:
+                continue
+            if not status.get("active", False):
+                raise RuntimeError(
+                    status.get("central_error")
+                    or "broker session became inactive"
+                )
 
     def teardown(self):
         if self.torn_down:

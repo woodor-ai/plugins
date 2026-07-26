@@ -11,7 +11,9 @@ then its module-level globals are monkey-patched to keep everything in tmp_path.
 import importlib.util
 import json
 import os
+import plistlib
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -569,6 +571,258 @@ def test_amctl_version_match_accepts_unknown_installed_version(tmp_path, monkeyp
     )
 
     assert mod._amctl_version_matches("unknown") is True
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="launchd test")
+def test_launchd_plist_uses_stable_wrapper_across_plugin_cache_roots(
+    tmp_path, monkeypatch
+):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root_a = _make_plugin_root(tmp_path / "claude-cache")
+    plugin_root_b = _make_plugin_root(tmp_path / "codex-cache")
+    _make_venv(meeting_home)
+
+    mod = _load_bootstrap(meeting_home, plugin_root_a)
+    mod.DATA = meeting_home
+    mod.BIN_LINK = meeting_home / "bin"
+    mod.VENV = meeting_home / "venv"
+    mod.PLUGIN_ROOT = plugin_root_a
+    mod.LAUNCHD_PLIST = tmp_path / "com.tommy.agent-meeting.amctl.plist"
+    mod.ensure_bin_wrappers()
+
+    expected_plist = {
+        "Label": mod.LAUNCHD_LABEL,
+        "ProgramArguments": [
+            str(mod.BIN_LINK / "amctl"),
+            "--port",
+            "8765",
+        ],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(mod.TMP / "amctl.log"),
+        "StandardErrorPath": str(mod.TMP / "amctl.log"),
+        "ProcessType": "Background",
+    }
+    mod.LAUNCHD_PLIST.write_bytes(plistlib.dumps(expected_plist))
+
+    commands = []
+
+    def fake_run(args, **_kwargs):
+        commands.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(mod, "_remove_pre_amctl_launchd_service", lambda: None)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        mod,
+        "_amctl_health_info",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "version": "0.8.39",
+            "instance_id": "running-instance",
+        },
+    )
+
+    mod.ensure_launchd()
+    mod.PLUGIN_ROOT = plugin_root_b
+    mod.ensure_bin_wrappers()
+    mod.ensure_launchd()
+
+    plist = plistlib.loads(mod.LAUNCHD_PLIST.read_bytes())
+    assert plist["ProgramArguments"] == [
+        str(mod.BIN_LINK / "amctl"),
+        "--port",
+        "8765",
+    ]
+    lifecycle_commands = [
+        command[1]
+        for command in commands
+        if command[:1] == ["launchctl"] and len(command) > 1
+    ]
+    assert "bootout" not in lifecycle_commands
+    assert "bootstrap" not in lifecycle_commands
+    assert "load" not in lifecycle_commands
+
+
+def test_wait_launchd_stopped_requires_old_health_instance_to_disappear(
+    tmp_path, monkeypatch
+):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    mod = _load_bootstrap(meeting_home, plugin_root)
+
+    listed = iter([True, False, False, False])
+    health = iter([
+        {"ok": True, "version": "0.8.39", "instance_id": "old-instance"},
+        {"ok": True, "version": "0.8.39", "instance_id": "old-instance"},
+        {},
+        {},
+    ])
+    probes = []
+
+    def fake_run(args, **_kwargs):
+        value = next(listed)
+        probes.append(("job", value))
+        return subprocess.CompletedProcess(args, 0 if value else 1, "", "")
+
+    def fake_health(*_args, **_kwargs):
+        value = next(health)
+        probes.append(("health", value.get("instance_id", "")))
+        return value
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "_amctl_health_info", fake_health)
+    clock = [0.0]
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        mod.time,
+        "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+
+    assert mod._wait_launchd_stopped(
+        "gui/501/com.tommy.agent-meeting.amctl",
+        {"ok": True, "version": "0.8.39", "instance_id": "old-instance"},
+        total=1.0,
+        interval=0.25,
+    )
+    assert probes == [
+        ("job", True),
+        ("health", "old-instance"),
+        ("job", False),
+        ("health", "old-instance"),
+        ("job", False),
+        ("health", ""),
+        ("job", False),
+        ("health", ""),
+    ]
+
+
+def test_wait_launchd_stopped_treats_health_as_old_when_initial_probe_failed(
+    tmp_path, monkeypatch
+):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    mod = _load_bootstrap(meeting_home, plugin_root)
+    listed = iter([False, False, False])
+    health = iter([
+        {"ok": True, "version": "0.8.39", "instance_id": "late-old"},
+        {},
+        {},
+    ])
+    clock = [0.0]
+
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda args, **_kwargs: subprocess.CompletedProcess(
+            args, 0 if next(listed) else 1, "", ""
+        ),
+    )
+    monkeypatch.setattr(mod, "_amctl_health_info", lambda **_kwargs: next(health))
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        mod.time,
+        "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+
+    assert mod._wait_launchd_stopped(
+        "gui/501/com.tommy.agent-meeting.amctl",
+        {},
+        total=0.75,
+        interval=0.25,
+    )
+
+
+def test_wait_new_amctl_rejects_old_and_requires_stable_new_instance(
+    tmp_path, monkeypatch
+):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    mod = _load_bootstrap(meeting_home, plugin_root)
+
+    health = iter([
+        {"ok": True, "version": "0.8.39", "instance_id": "old-instance"},
+        {"ok": True, "version": "0.8.38", "instance_id": "wrong-version"},
+        {"ok": True, "version": "0.8.39", "instance_id": "new-instance"},
+        {"ok": True, "version": "0.8.39", "instance_id": "new-instance"},
+    ])
+    probes = []
+
+    def fake_health(*_args, **_kwargs):
+        value = next(health)
+        probes.append(value["instance_id"])
+        return value
+
+    monkeypatch.setattr(mod, "_amctl_health_info", fake_health)
+    clock = [0.0]
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        mod.time,
+        "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+
+    assert mod._wait_new_amctl(
+        "0.8.39",
+        "old-instance",
+        total=1.0,
+        interval=0.25,
+        stable_checks=2,
+    )
+    assert probes == [
+        "old-instance",
+        "wrong-version",
+        "new-instance",
+        "new-instance",
+    ]
+
+
+def test_launchd_waits_include_probe_latency_in_deadline(tmp_path, monkeypatch):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    mod = _load_bootstrap(meeting_home, plugin_root)
+    clock = [0.0]
+
+    def fake_run(args, timeout, **_kwargs):
+        clock[0] += min(timeout, 0.6)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    def fake_health(*_args, timeout, **_kwargs):
+        clock[0] += timeout
+        return {}
+
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        mod.time,
+        "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "_amctl_health_info", fake_health)
+
+    assert not mod._wait_launchd_stopped(
+        "gui/501/com.tommy.agent-meeting.amctl",
+        {"ok": True, "instance_id": "old-instance"},
+        total=1.0,
+        interval=0.25,
+    )
+    assert clock[0] <= 1.0
+
+    clock[0] = 0.0
+    assert not mod._wait_new_amctl(
+        "0.8.39",
+        "old-instance",
+        total=1.0,
+        interval=0.25,
+    )
+    assert clock[0] <= 1.0
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX sentinel test")

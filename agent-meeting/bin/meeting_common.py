@@ -442,7 +442,7 @@ class WSSubscribeClient:
     BACKOFF_JITTER = 0.20
 
     def __init__(self, *, self_name, project, resolve_addr, read_token, on_text,
-                 on_connect=None, log=None):
+                 instance=None, on_connect=None, log=None):
         """
         resolve_addr: callable() -> (ip, port) | None. Called on every connect
             attempt; monitor.py uses a fresh-discovery closure so reconnects
@@ -451,6 +451,8 @@ class WSSubscribeClient:
             Called on every connect attempt.
         read_token: callable() -> str | None, the bearer token for Authorization.
         on_text: callable(msg: dict) -- called for every decoded JSON text frame.
+        instance: str | callable() | None -- lease instance to include in the
+            WebSocket handshake when the identity is already registered.
         on_connect: callable() | None -- called once per successful handshake,
             before entering the read loop (e.g. re-register, catch up cursors).
         log: callable(str) | None -- receives one-line diagnostic messages
@@ -462,6 +464,7 @@ class WSSubscribeClient:
         self.resolve_addr = resolve_addr
         self.read_token = read_token
         self.on_text = on_text
+        self.instance = instance
         self.on_connect = on_connect
         self.log = log or (lambda msg: None)
 
@@ -491,6 +494,9 @@ class WSSubscribeClient:
             f"X-Meeting-Project: {self.project()}",
             "X-Meeting-Proto: 1",
         ]
+        instance = self.instance() if callable(self.instance) else self.instance
+        if instance:
+            headers.append(f"X-Meeting-Instance: {instance}")
         if token:
             headers.append(f"Authorization: Bearer {token}")
 

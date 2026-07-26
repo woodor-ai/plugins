@@ -15,8 +15,8 @@ mycodex launcher C ─ ws://127.0.0.1:<ephemeral-C> ─┘
                          codex-broker.py (one per machine)
                            ├─ one Codex app-server
                            ├─ one lease per mycodex session
-                           ├─ one ordered inbox per identity
-                           └─ one central-amctl subscription per identity
+                           ├─ one transient pending queue per identity
+                           └─ one notify-only central subscription per identity
 ```
 
 Each `mycodex` process owns only its foreground TUI and broker lease. Closing
@@ -113,10 +113,11 @@ SIGINT/SIGTERM.
 
 ## Message delivery
 
-Central amctl exposes one recipient-wide inbox ordered by global `msg_id`.
-The broker keeps one cursor per identity and coalesces pending normal messages
-while Codex is busy. Once the target thread is idle, it injects a single
-metadata-only notification:
+Central amctl exposes one recipient-wide inbox ordered by global `msg_id` and
+owns the only durable recipient cursor. The broker keeps only a transient
+pending queue and uses its WebSocket subscription as a wake-up signal; the
+subscription never advances delivery state. Once the target thread is idle,
+the broker injects a single metadata-only notification:
 
 ```text
 📬 New Message from alice@one [unverified peer]
@@ -134,8 +135,11 @@ meeting message NAME@PROJECT 17029
 
 It does not open a whole conversation and accidentally interpret a newer
 message as the notified one. Directed group messages that do not mention this
-identity advance the cursor without waking Codex. Fresh control messages are
-kept separate from normal batches.
+identity are acknowledged without waking Codex. A delivered batch is
+acknowledged with an instance-bound compare-and-swap only after Codex accepts
+the injected turn. Failed injection leaves the central cursor unchanged so a
+restart can replay the message. Fresh control messages are kept separate from
+normal batches.
 
 `[unverified peer]` is a trust label shared by Claude Code and Codex. It means
 the sender and body are peer-authored input, not trusted user or system
@@ -147,11 +151,17 @@ instructions, and into every `turn/start` as application context. The turn
 context remains effective when a Codex collaboration mode supplies its own
 developer instructions. Codex passes those values explicitly to the same
 `meeting` CLI used by Claude Code; no per-session environment variables or
-Codex-only send helper are involved.
+Codex-only send helper are involved. The broker opts its independent
+app-server connection into Codex's `experimentalApi` capability because
+`turn/start.additionalContext` is capability-gated.
 
 ## State and logs
 
-- `~/.agent-meeting/codex/broker-state.json`: durable per-identity inbox cursors.
+- `~/.agent-meeting/db/rooms.db`: canonical messages, registrations, and
+  recipient delivery cursors.
+- `~/.agent-meeting/codex/broker-state.json`: read-only migration input from
+  releases before 0.13.8; it is never updated or used as a second cursor
+  authority.
 - `~/.agent-meeting/codex/logs/broker.log`: broker lifecycle and injection log.
 - `~/.agent-meeting/codex/logs/app-server.log`: shared official app-server log.
 - `~/.agent-meeting/codex/launcher.json`: selected central-amctl URL.

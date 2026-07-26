@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-26 · version 0.13.7
+Last updated: 2026-07-26 · version 0.13.8
 
 The runtime command is `~/.agent-meeting/bin/meeting`. On POSIX it is an
 executable shell wrapper that selects the agent-meeting virtualenv; on Windows
@@ -118,6 +118,9 @@ from central amctl:
 - amctl is the LAN-wide canonical message/control node.
 - codex-broker is a loopback-only machine service for local Codex sessions.
 - one codex-broker owns one shared official Codex app-server.
+- amctl's recipient cursor is the only durable delivery position; the broker
+  acknowledges it only after successful injection or intentional silent
+  consumption.
 
 See [`../codex/README.md`](../codex/README.md) for ports, lifecycle, ordered
 inbox semantics, and logs.
