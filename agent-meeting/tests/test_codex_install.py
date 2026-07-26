@@ -444,6 +444,43 @@ def test_legacy_launchd_install_migrates_missing_is_host_to_true(tmp_path):
     assert json.loads(config.read_text(encoding="utf-8"))["is_host"] is True
 
 
+def test_amctl_version_match_requires_live_installed_version(tmp_path, monkeypatch):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    mod = _load_bootstrap(meeting_home, plugin_root)
+
+    monkeypatch.setattr(
+        mod,
+        "_amctl_health_info",
+        lambda _port=8765, _timeout=1.0: {
+            "ok": True,
+            "version": "0.13.4",
+        },
+    )
+
+    assert mod._amctl_version_matches("0.13.4") is True
+    assert mod._amctl_version_matches("0.13.5") is False
+
+
+def test_amctl_version_match_accepts_unknown_installed_version(tmp_path, monkeypatch):
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    plugin_root = _make_plugin_root(tmp_path)
+    mod = _load_bootstrap(meeting_home, plugin_root)
+
+    monkeypatch.setattr(
+        mod,
+        "_amctl_health_info",
+        lambda _port=8765, _timeout=1.0: {
+            "ok": True,
+            "version": "legacy",
+        },
+    )
+
+    assert mod._amctl_version_matches("unknown") is True
+
+
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX sentinel test")
 def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
     """

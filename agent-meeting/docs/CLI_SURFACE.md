@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-26 · version 0.13.4
+Last updated: 2026-07-26 · version 0.13.5
 
 The runtime command is `~/.agent-meeting/bin/meeting`. On POSIX it is an
 executable shell wrapper that selects the agent-meeting virtualenv; on Windows

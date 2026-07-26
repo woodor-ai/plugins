@@ -89,15 +89,35 @@ def blog(msg: str):
         f.write(f"[{ts}] {msg}\n")
 
 
-def _amctl_healthy(port: int = 8765, timeout: float = 1.0) -> bool:
-    """Return whether the central amctl /health endpoint is available."""
+def _amctl_health_info(port: int = 8765, timeout: float = 1.0) -> dict:
+    """Return the central amctl health payload, or an empty dict."""
     try:
         with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/health", timeout=timeout
         ) as resp:
-            return 200 <= resp.status < 300
+            if not 200 <= resp.status < 300:
+                return {}
+            payload = json.loads(resp.read().decode("utf-8"))
+            return payload if payload.get("ok") else {}
     except Exception:
-        return False
+        return {}
+
+
+def _amctl_healthy(port: int = 8765, timeout: float = 1.0) -> bool:
+    """Return whether the central amctl /health endpoint is available."""
+    return bool(_amctl_health_info(port, timeout))
+
+
+def _amctl_version_matches(expected: str, port: int = 8765) -> bool:
+    """Return whether the live amctl is running the installed plugin version."""
+    health = _amctl_health_info(port)
+    return bool(
+        health
+        and (
+            expected == "unknown"
+            or str(health.get("version") or "") == expected
+        )
+    )
 
 
 if IS_MAC:
@@ -659,12 +679,24 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
         capture_output=True,
     ).returncode == 0
 
+    expected_version = _read_plugin_version()
     if listed and not plist_changed:
-        if _amctl_healthy():
+        health = _amctl_health_info()
+        if health and (
+            expected_version == "unknown"
+            or str(health.get("version") or "") == expected_version
+        ):
             log(f"launchd already manages {LAUNCHD_LABEL} (healthy)")
             return
-        # A registered but unhealthy central amctl enters the self-heal path.
-        blog("launchd listed but /health unreachable, entering self-heal path")
+        if health:
+            blog(
+                "launchd amctl version mismatch "
+                f"(running={health.get('version') or 'unknown'}, "
+                f"installed={expected_version}), restarting"
+            )
+        else:
+            # A registered but unhealthy central amctl enters the self-heal path.
+            blog("launchd listed but /health unreachable, entering self-heal path")
 
     if listed:
         subprocess.run(
@@ -693,7 +725,7 @@ def _ensure_launchd_locked(new_bytes: bytes, py: Path, log_file: Path):
         """轮询 /health，最多等 total 秒。"""
         steps = int(total / interval)
         for _ in range(steps):
-            if _amctl_healthy():
+            if _amctl_version_matches(expected_version):
                 return True
             time.sleep(interval)
         return False
@@ -1114,8 +1146,12 @@ def main():
                     ensure_launchd()              # plist + KeepAlive — survives reboots
                 elif IS_WINDOWS:
                     ensure_windows_persistence()  # Startup launcher + MINUTE task + supervisor
-                elif not amctl_running():
-                    launch_amctl()                 # Linux: session-bound for now
+                else:
+                    if amctl_running() and not _amctl_version_matches(version):
+                        log("restarting Linux amctl after plugin version change")
+                        kill_bootstrap_amctl()
+                    if not amctl_running():
+                        launch_amctl()             # Linux: session-bound for now
             elif IS_WINDOWS:
                 # Not a host anymore — tear down any persistence a prior host left.
                 remove_windows_persistence()

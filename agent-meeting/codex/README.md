@@ -87,7 +87,9 @@ in its virtual environment, writes `mycodex` and `meeting-say` wrappers, stores
 the selected central-amctl URL, removes the legacy Codex hook, and refreshes
 the agent-meeting instructions in `~/.codex/AGENTS.md`. It automatically uses
 an amctl found through mDNS, or a previously saved URL when that endpoint is
-still reachable. It prompts for a URL only when neither source is available.
+still reachable. It prompts for a URL only when neither source is available,
+and restarts a stale amctl process when its version differs from the installed
+plugin.
 
 ## Run
 
