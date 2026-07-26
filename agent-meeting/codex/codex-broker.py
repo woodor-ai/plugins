@@ -11,12 +11,16 @@ The broker exposes:
 
 * localhost HTTP on 127.0.0.1:8788 for launcher/session management and
   CODEX_THREAD_ID -> meeting identity lookup;
-* localhost WebSocket on 127.0.0.1:8789 as a session-aware proxy between each
-  Codex TUI and the shared app-server.
+* one ephemeral localhost WebSocket port per active session as a session-aware
+  proxy between that Codex TUI and the shared app-server.
 
 The proxy is load-bearing. It observes thread/start and thread/resume traffic,
 so /clear, /compact, resume, and fork can update the meeting identity mapping
 without a shared runtime.json or a SessionStart hook.
+
+Codex CLI accepts only ``ws://host:port`` for ``--remote`` (no URL path).
+Giving every lease its own loopback listener preserves session routing without
+creating another process or another app-server.
 """
 
 import argparse
@@ -50,11 +54,26 @@ CODEX_DIR = DATA / "codex"
 LOGS_DIR = CODEX_DIR / "logs"
 STATE_FILE = CODEX_DIR / "broker-state.json"
 CONFIG_FILE = DATA / "config.json"
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+
+
+def installed_plugin_version():
+    try:
+        manifest = json.loads(
+            (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        return str(manifest.get("version") or "unknown")
+    except Exception:
+        return "unknown"
+
+
+BROKER_VERSION = installed_plugin_version()
 
 API_HOST = "127.0.0.1"
 API_PORT = int(os.environ.get("MEETING_BROKER_API_PORT", "8788"))
 PROXY_HOST = "127.0.0.1"
-PROXY_PORT = int(os.environ.get("MEETING_BROKER_PROXY_PORT", "8789"))
 APP_PORT_FIRST = int(os.environ.get("MEETING_BROKER_APP_PORT_FIRST", "8792"))
 APP_PORT_LAST = int(os.environ.get("MEETING_BROKER_APP_PORT_LAST", "8841"))
 
@@ -228,11 +247,19 @@ class Session:
         self.cursor = int(cursor)
         self.pending = OrderedDict()
         self.subscription_task = None
+        self.proxy_server = None
+        self.proxy_port = None
         self.active = True
 
     @property
     def identity(self):
         return f"{self.name}@{self.project}"
+
+    @property
+    def proxy_url(self):
+        if self.proxy_port is None:
+            raise RuntimeError("session proxy is not running")
+        return f"ws://{PROXY_HOST}:{self.proxy_port}"
 
 
 class Broker:
@@ -381,23 +408,28 @@ class Broker:
             thread_id=thread_id,
             cursor=int(saved_cursor or 0),
         )
-        await self.register_central(session)
         self.sessions[launch_id] = session
         self.thread_to_launch[thread_id] = launch_id
-        if saved_cursor is None:
-            await self.fetch_inbox(session, initial=True)
-        else:
-            await self.fetch_inbox(session)
-        session.subscription_task = asyncio.create_task(self.subscribe(session))
+        try:
+            await self.start_session_proxy(session)
+            await self.register_central(session)
+            if saved_cursor is None:
+                await self.fetch_inbox(session, initial=True)
+            else:
+                await self.fetch_inbox(session)
+            session.subscription_task = asyncio.create_task(self.subscribe(session))
+        except Exception:
+            await self.stop_session(launch_id)
+            raise
         log(
             f"session started identity={session.identity} thread={thread_id} "
-            f"launch={launch_id}"
+            f"launch={launch_id} proxy={session.proxy_url}"
         )
         return {
             "launch_id": launch_id,
             "identity": session.identity,
             "thread_id": thread_id,
-            "proxy_url": f"ws://{PROXY_HOST}:{PROXY_PORT}/session/{launch_id}",
+            "proxy_url": session.proxy_url,
         }
 
     async def stop_session(self, launch_id):
@@ -409,6 +441,11 @@ class Broker:
             session.subscription_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await session.subscription_task
+        if session.proxy_server is not None:
+            session.proxy_server.close()
+            await session.proxy_server.wait_closed()
+            session.proxy_server = None
+            session.proxy_port = None
         for thread_id, owner in list(self.thread_to_launch.items()):
             if owner == launch_id:
                 del self.thread_to_launch[thread_id]
@@ -437,7 +474,7 @@ class Broker:
             "active": session.active,
             "thread_id": session.thread_id,
             "identity": session.identity,
-            "proxy_url": f"ws://{PROXY_HOST}:{PROXY_PORT}/session/{launch_id}",
+            "proxy_url": session.proxy_url,
         }
 
     async def update_thread(self, session, thread_id):
@@ -605,16 +642,29 @@ class Broker:
             log("shared Codex app-server exited; restarting")
             await asyncio.to_thread(self.appserver.start)
 
-    async def proxy(self, client):
-        path = client.request.path
-        prefix = "/session/"
-        if not path.startswith(prefix):
-            await client.close(code=1008, reason="invalid broker session path")
-            return
-        launch_id = path[len(prefix):].split("?", 1)[0]
-        session = self.sessions.get(launch_id)
-        if session is None or not session.active:
-            await client.close(code=1008, reason="unknown broker session")
+    async def start_session_proxy(self, session):
+        async def handler(client):
+            await self.proxy(session, client)
+
+        server = await websockets.serve(
+            handler,
+            PROXY_HOST,
+            0,
+            max_size=None,
+            compression=None,
+        )
+        try:
+            port = server.sockets[0].getsockname()[1]
+        except Exception:
+            server.close()
+            await server.wait_closed()
+            raise
+        session.proxy_server = server
+        session.proxy_port = port
+
+    async def proxy(self, session, client):
+        if not session.active:
+            await client.close(code=1008, reason="inactive broker session")
             return
 
         pending_thread_requests = {}
@@ -700,11 +750,12 @@ class Broker:
                         200 if appserver_ready else 503,
                         {
                             "ok": appserver_ready,
+                            "version": BROKER_VERSION,
                             "sessions": len(broker.sessions),
                             "appserver_url": (
                                 broker.appserver.ws_url if appserver_ready else None
                             ),
-                            "proxy_url": f"ws://{PROXY_HOST}:{PROXY_PORT}",
+                            "proxy_mode": "per-session-loopback-port",
                         },
                     )
                 if parsed.path == "/identity":
@@ -753,26 +804,19 @@ class Broker:
                 "the agent-meeting runtime is missing the websockets package; reinstall it"
             )
         self.loop = asyncio.get_running_loop()
-        # Claim both broker ports before starting the expensive app-server child.
-        # Concurrent mycodex launchers can race to spawn the broker; the loser now
-        # fails here without briefly creating a second app-server process.
+        # Claim the broker API port before starting the expensive app-server
+        # child. Concurrent mycodex launchers can race to spawn the broker; the
+        # loser fails here without briefly creating a second app-server process.
         self.start_http()
         try:
-            async with websockets.serve(
-                self.proxy,
-                PROXY_HOST,
-                PROXY_PORT,
-                max_size=None,
-                compression=None,
-            ):
-                await asyncio.to_thread(self.appserver.start)
-                log(
-                    f"broker ready api=http://{API_HOST}:{API_PORT} "
-                    f"proxy=ws://{PROXY_HOST}:{PROXY_PORT}"
-                )
-                self.scheduler_task = asyncio.create_task(self.scheduler())
-                self.supervisor_task = asyncio.create_task(self.supervise_appserver())
-                await self.stop_event.wait()
+            await asyncio.to_thread(self.appserver.start)
+            log(
+                f"broker ready api=http://{API_HOST}:{API_PORT} "
+                "proxy=per-session-loopback-port"
+            )
+            self.scheduler_task = asyncio.create_task(self.scheduler())
+            self.supervisor_task = asyncio.create_task(self.supervise_appserver())
+            await self.stop_event.wait()
         finally:
             for task in (self.scheduler_task, self.supervisor_task):
                 if task is not None:

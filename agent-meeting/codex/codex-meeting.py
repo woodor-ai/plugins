@@ -32,6 +32,7 @@ CODEX_DIR = DATA / "codex"
 LOGS_DIR = CODEX_DIR / "logs"
 LAUNCHER_JSON = CODEX_DIR / "launcher.json"
 BROKER_SCRIPT = Path(__file__).resolve().parent / "codex-broker.py"
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 BROKER_API_PORT = int(os.environ.get("MEETING_BROKER_API_PORT", "8788"))
 BROKER_BASE = f"http://127.0.0.1:{BROKER_API_PORT}"
 IS_WINDOWS = sys.platform.startswith("win")
@@ -96,10 +97,26 @@ def broker_request(method, path, body=None, params=None, timeout=45):
 
 
 def broker_healthy():
+    return bool(broker_status().get("ok"))
+
+
+def broker_status():
     try:
-        return bool(broker_request("GET", "/health", timeout=1).get("ok"))
+        return broker_request("GET", "/health", timeout=1)
     except Exception:
-        return False
+        return {}
+
+
+def installed_plugin_version():
+    try:
+        manifest = json.loads(
+            (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        return str(manifest.get("version") or "unknown")
+    except Exception:
+        return "unknown"
 
 
 def spawn_detached(command, log_path):
@@ -118,8 +135,31 @@ def spawn_detached(command, log_path):
 
 
 def ensure_broker():
-    if broker_healthy():
-        return
+    expected_version = installed_plugin_version()
+    status = broker_status()
+    if status.get("ok"):
+        running_version = str(status.get("version") or "pre-versioned")
+        if running_version == expected_version:
+            return
+        sessions = int(status.get("sessions") or 0)
+        if sessions:
+            raise RuntimeError(
+                "the running Codex broker is from agent-meeting "
+                f"{running_version}, but the installed plugin is {expected_version}; "
+                f"exit the {sessions} active mycodex session(s) before upgrading"
+            )
+        log(
+            f"restarting outdated Codex broker "
+            f"({running_version} -> {expected_version})"
+        )
+        broker_request("POST", "/shutdown", timeout=3)
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            if not broker_healthy():
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("outdated Codex broker did not stop")
     if not BROKER_SCRIPT.exists():
         raise RuntimeError(f"Codex broker not found at {BROKER_SCRIPT}")
     log("starting machine-wide Codex broker")

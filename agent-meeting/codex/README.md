@@ -8,10 +8,10 @@ sharing one machine-wide broker and one official Codex app-server.
 The process model is:
 
 ```text
-mycodex launcher A ─┐
-mycodex launcher B ─┼─ ws://127.0.0.1:8789/session/<launch>
-mycodex launcher C ─┘                  │
-                                      ▼
+mycodex launcher A ─ ws://127.0.0.1:<ephemeral-A> ─┐
+mycodex launcher B ─ ws://127.0.0.1:<ephemeral-B> ─┼─
+mycodex launcher C ─ ws://127.0.0.1:<ephemeral-C> ─┘
+                                                   ▼
                          codex-broker.py (one per machine)
                            ├─ one Codex app-server
                            ├─ one lease per mycodex session
@@ -23,12 +23,14 @@ Each `mycodex` process owns only its foreground TUI and broker lease. Closing
 one TUI unregisters that identity without stopping the broker, app-server, or
 other Codex sessions. The broker stays resident for later launches.
 
-The broker exposes two loopback-only endpoints:
+The broker exposes loopback-only endpoints:
 
 - `127.0.0.1:8788`: launcher lifecycle and
   `CODEX_THREAD_ID` → agent-meeting identity lookup.
-- `127.0.0.1:8789`: session-aware WebSocket proxy between Codex TUIs and the
-  shared app-server.
+- One OS-assigned temporary port per active TUI: a session-aware WebSocket
+  proxy to the shared app-server. These are listeners inside the broker, not
+  additional processes or app-servers. Codex requires a path-free
+  `ws://host:port` value for `--remote`.
 
 The proxy observes successful `thread/start`, `thread/resume`, and
 `thread/fork` responses, so `/clear`, resume, compact, and fork keep the

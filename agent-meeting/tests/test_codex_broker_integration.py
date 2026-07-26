@@ -129,7 +129,7 @@ async def proxy_start_thread(proxy_url, cwd):
 @pytest.mark.skipif(shutil.which("codex") is None, reason="codex is not installed")
 def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
     pytest.importorskip("websockets")
-    amctl_port, api_port, proxy_port, app_port = free_ports(4)
+    amctl_port, api_port, app_port = free_ports(3)
     meeting_home = tmp_path / "meeting-home"
     db_dir = meeting_home / "db"
     db_dir.mkdir(parents=True)
@@ -143,7 +143,6 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
             "MEETING_HOME": str(meeting_home),
             "CODEX_HOME": str(codex_home),
             "MEETING_BROKER_API_PORT": str(api_port),
-            "MEETING_BROKER_PROXY_PORT": str(proxy_port),
             "MEETING_BROKER_APP_PORT_FIRST": str(app_port),
             "MEETING_BROKER_APP_PORT_LAST": str(app_port),
         }
@@ -197,6 +196,9 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
                 timeout=40,
             )
             assert not session.get("error"), session
+            parsed_proxy = urllib.parse.urlparse(session["proxy_url"])
+            assert parsed_proxy.path == ""
+            assert parsed_proxy.query == ""
             sessions.append(session)
 
         shared = request(broker_base, "GET", "/health")

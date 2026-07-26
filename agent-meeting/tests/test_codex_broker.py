@@ -3,6 +3,9 @@ import importlib.util
 import time
 from collections import OrderedDict
 from pathlib import Path
+from urllib.parse import urlparse
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -206,7 +209,7 @@ def test_launcher_always_connects_through_session_proxy():
     module = load(LAUNCHER_PATH, "codex_meeting_launcher")
 
     command = module.build_codex_launch_cmd(
-        "ws://127.0.0.1:8789/session/launch-1",
+        "ws://127.0.0.1:49152",
         "thread-1",
     )
 
@@ -215,5 +218,80 @@ def test_launcher_always_connects_through_session_proxy():
         "resume",
         "thread-1",
         "--remote",
-        "ws://127.0.0.1:8789/session/launch-1",
+        "ws://127.0.0.1:49152",
     ]
+
+
+def test_session_proxy_url_is_a_codex_compatible_host_port():
+    module = load(BROKER_PATH, "codex_broker_proxy_url")
+    session = make_session(module)
+    session.proxy_port = 49152
+
+    parsed = urlparse(session.proxy_url)
+
+    assert session.proxy_url == "ws://127.0.0.1:49152"
+    assert parsed.path == ""
+    assert parsed.query == ""
+
+
+def test_launcher_refuses_to_restart_outdated_broker_with_active_sessions(
+    monkeypatch,
+):
+    module = load(LAUNCHER_PATH, "codex_meeting_active_upgrade")
+    monkeypatch.setattr(module, "installed_plugin_version", lambda: "0.13.1")
+    monkeypatch.setattr(
+        module,
+        "broker_status",
+        lambda: {"ok": True, "version": "0.13.0", "sessions": 2},
+    )
+
+    with pytest.raises(RuntimeError, match="exit the 2 active"):
+        module.ensure_broker()
+
+
+def test_launcher_restarts_idle_outdated_broker(monkeypatch):
+    module = load(LAUNCHER_PATH, "codex_meeting_idle_upgrade")
+    statuses = iter(
+        [
+            {"ok": True, "version": "0.13.0", "sessions": 0},
+            {},
+            {
+                "ok": True,
+                "version": "0.13.1",
+                "sessions": 0,
+                "appserver_url": "ws://127.0.0.1:8792",
+            },
+        ]
+    )
+    requests = []
+    spawned = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return None
+
+    def fake_request(method, path, body=None, params=None, timeout=45):
+        requests.append((method, path))
+        if method == "GET":
+            return {
+                "ok": True,
+                "version": "0.13.1",
+                "sessions": 0,
+                "appserver_url": "ws://127.0.0.1:8792",
+            }
+        return {"ok": True}
+
+    monkeypatch.setattr(module, "installed_plugin_version", lambda: "0.13.1")
+    monkeypatch.setattr(module, "broker_status", lambda: next(statuses))
+    monkeypatch.setattr(module, "broker_request", fake_request)
+    monkeypatch.setattr(
+        module,
+        "spawn_detached",
+        lambda command, log_path: spawned.append(command) or Process(),
+    )
+
+    module.ensure_broker()
+
+    assert ("POST", "/shutdown") in requests
+    assert spawned == [[module.venv_python(), str(module.BROKER_SCRIPT)]]
