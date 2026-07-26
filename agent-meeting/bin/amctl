@@ -351,6 +351,7 @@ def _is_group(conn, project: str, name: str) -> bool:
 # ---------- HTTP handlers ----------
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     timeout = 30
 
     def log_message(self, fmt, *args):
@@ -590,6 +591,7 @@ class Handler(BaseHTTPRequestHandler):
                     break
         finally:
             _ws_remove(sub)
+            self.close_connection = True
             sys.stderr.write(f"[ws] {project}/{name} disconnected\n")
 
     def _ws_send_backlog(self, sub: "Subscriber", cursor: int):

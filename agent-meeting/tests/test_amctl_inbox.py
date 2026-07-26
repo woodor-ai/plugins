@@ -123,6 +123,30 @@ def send(base, sender, recipient, body):
     return result["msg_id"]
 
 
+def test_subscribe_uses_http_11_websocket_handshake(amctl):
+    parsed = urllib.parse.urlparse(amctl)
+    with socket.create_connection((parsed.hostname, parsed.port), timeout=5) as sock:
+        sock.sendall(
+            (
+                "GET /subscribe HTTP/1.1\r\n"
+                f"Host: {parsed.hostname}:{parsed.port}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                "X-Meeting-Name: strict-client\r\n"
+                "X-Meeting-Project: proj\r\n"
+                "X-Meeting-Proto: 1\r\n"
+                "\r\n"
+            ).encode("ascii")
+        )
+        status_line = b""
+        while not status_line.endswith(b"\r\n"):
+            status_line += sock.recv(1)
+
+    assert status_line == b"HTTP/1.1 101 Switching Protocols\r\n"
+
+
 def test_inbox_orders_direct_and_group_messages_by_global_id(amctl):
     for name in ("alice", "bob", "carol"):
         register(amctl, name, f"instance-{name}")

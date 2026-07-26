@@ -9,8 +9,8 @@ Standalone use:                python install.py [--control-url URL]
 What run_install does (in order):
   1. Run session-bootstrap (builds ~/.agent-meeting: venv + zeroconf + websockets +
      bin/ wrappers including mycodex).
-  2. Discover LAN controls via `meeting controls --json`; prompt the user to confirm
-     or enter the control URL.
+  2. Discover LAN controls via `meeting controls --json`; automatically reuse a
+     discovered or previously saved reachable control URL.
   3. Write the control_url to launcher.json so bare `mycodex` needs no --control-url.
   4. Remove the obsolete per-session Codex register hook.
   5. Windows: force [windows] sandbox = "unelevated" in config.toml.
@@ -31,10 +31,17 @@ import os
 import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent          # <install>/agent-meeting/codex/
 PLUGIN_ROOT = HERE.parent                        # <install>/agent-meeting/
+BIN_DIR = PLUGIN_ROOT / "bin"
+if str(BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(BIN_DIR))
+
+import meeting_common
+
 BOOTSTRAP = PLUGIN_ROOT / "bin" / "session-bootstrap.py"
 HOOK_REMOVER = HERE / "remove-legacy-codex-hook.py"
 IS_WINDOWS = sys.platform.startswith("win")
@@ -296,6 +303,32 @@ def _write_launcher_defaults(meeting_home: Path, control_url: str):
     print(f"  saved default control_url -> {p}")
 
 
+def _read_launcher_control(meeting_home: Path) -> str:
+    """Read the previously selected control URL, if one exists."""
+    try:
+        return str(
+            json.loads(
+                (meeting_home / "codex" / "launcher.json").read_text(
+                    encoding="utf-8"
+                )
+            ).get("control_url")
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _control_healthy(control_url: str) -> bool:
+    """Return whether a saved control URL still points to a live amctl."""
+    try:
+        with urllib.request.urlopen(
+            control_url.rstrip("/") + "/health", timeout=2
+        ) as response:
+            return bool(json.loads(response.read().decode("utf-8")).get("ok"))
+    except Exception:
+        return False
+
+
 def _path_needs_entry(current_path: str, entry: str) -> bool:
     norm = os.path.normcase(entry.rstrip("\\/"))
     parts = [os.path.normcase(p.strip().rstrip("\\/")) for p in current_path.split(os.pathsep) if p.strip()]
@@ -420,17 +453,43 @@ def _discover_control(meeting_home: Path, vpy: Path) -> str:
     cli = meeting_home / "bin" / "meeting"
     if not cli.exists():
         return ""
-    kw = {"creationflags": 0x08000000} if IS_WINDOWS else {}
     try:
-        r = subprocess.run(
-            [str(vpy), str(cli), "controls", "--json"],
-            capture_output=True, text=True, timeout=10, **kw,
+        r = meeting_common.run_meeting_cli(
+            cli, "controls", "--json", python=vpy, timeout=10,
         )
-        if r.returncode != 0 or not r.stdout.strip():
+        if r.returncode != 0:
+            detail = (r.stderr or r.stdout or "").strip().splitlines()
+            suffix = f": {detail[-1]}" if detail else ""
+            print(f"  control discovery command failed (rc={r.returncode}){suffix}")
+            return ""
+        if not r.stdout.strip():
             return ""
         return _parse_controls(r.stdout)
-    except Exception:
+    except Exception as exc:
+        print(f"  control discovery command failed: {exc}")
         return ""
+
+
+def _select_control_url(
+    meeting_home: Path,
+    discovered: str,
+    override: str,
+    prompt,
+) -> str:
+    """Choose a control without prompting when a live answer is authoritative."""
+    if override:
+        print(f"  using explicit control URL: {override}")
+        return override
+    if discovered:
+        print(f"  using discovered control URL: {discovered}")
+        return discovered
+    saved = _read_launcher_control(meeting_home)
+    if saved and _control_healthy(saved):
+        print(f"  reusing saved reachable control URL: {saved}")
+        return saved
+    if saved:
+        print(f"  saved control URL is unreachable: {saved}")
+    return prompt("  control URL (http://x.x.x.x:8765)", "")
 
 
 def run_install(ctx: dict) -> None:
@@ -473,7 +532,12 @@ def run_install(ctx: dict) -> None:
     else:
         print("  no control found on LAN (zeroconf scan)")
 
-    control_url = prompt("  control URL (http://x.x.x.x:8765)", discovered)
+    control_url = _select_control_url(
+        meeting_home,
+        discovered,
+        str(ctx.get("control_url") or "").strip(),
+        prompt,
+    )
     if not control_url:
         print("  WARNING: no control URL set; re-run install or use --control-url with mycodex")
 
@@ -526,21 +590,19 @@ def main():
                     help="pre-fill the control URL prompt")
     args = ap.parse_args()
 
-    prefill = args.control_url
-
     def _cli_prompt(msg, default=""):
-        actual_default = prefill if ("control" in msg.lower() and prefill) else default
         try:
-            val = input(f"{msg} [{actual_default}]: " if actual_default else f"{msg}: ").strip()
+            val = input(f"{msg} [{default}]: " if default else f"{msg}: ").strip()
         except EOFError:
-            return actual_default
-        return val or actual_default
+            return default
+        return val or default
 
     ctx = {
         "install_dir": PLUGIN_ROOT,
         "plugins_src_dir": PLUGIN_ROOT.parent.parent,
         "prompt": _cli_prompt,
         "is_windows": IS_WINDOWS,
+        "control_url": args.control_url,
     }
     run_install(ctx)
 

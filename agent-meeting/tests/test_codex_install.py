@@ -121,6 +121,84 @@ def test_parse_controls_invalid_json():
     assert mod._parse_controls("not-json") == ""
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX shell wrapper test")
+def test_discover_control_runs_posix_runtime_wrapper_directly(tmp_path):
+    mod = _load_install()
+    meeting_home = tmp_path / "meeting-home"
+    cli = meeting_home / "bin" / "meeting"
+    cli.parent.mkdir(parents=True)
+    cli.write_text(
+        "#!/bin/sh\n"
+        "printf '[{\"ip\":\"10.0.0.114\",\"port\":8765,\"is_current\":true}]'\n",
+        encoding="utf-8",
+    )
+    cli.chmod(0o755)
+
+    assert mod._discover_control(
+        meeting_home, Path(sys.executable)
+    ) == "http://10.0.0.114:8765"
+
+
+def test_discover_control_reports_cli_failure(tmp_path, capsys):
+    mod = _load_install()
+    meeting_home = tmp_path / "meeting-home"
+    cli = meeting_home / "bin" / "meeting"
+    cli.parent.mkdir(parents=True)
+    cli.write_text(
+        "import sys\nprint('discovery exploded', file=sys.stderr)\nsys.exit(7)\n",
+        encoding="utf-8",
+    )
+
+    assert mod._discover_control(meeting_home, Path(sys.executable)) == ""
+    assert "control discovery command failed (rc=7): discovery exploded" in capsys.readouterr().out
+
+
+def test_select_control_uses_discovery_without_prompt(tmp_path):
+    mod = _load_install()
+
+    def unexpected_prompt(*_args):
+        pytest.fail("prompt must not run when mDNS discovery succeeded")
+
+    assert mod._select_control_url(
+        tmp_path,
+        "http://10.0.0.114:8765",
+        "",
+        unexpected_prompt,
+    ) == "http://10.0.0.114:8765"
+
+
+def test_select_control_reuses_saved_reachable_url(tmp_path, monkeypatch):
+    mod = _load_install()
+    launcher = tmp_path / "codex" / "launcher.json"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(
+        json.dumps({"control_url": "http://10.0.0.114:8765"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_control_healthy", lambda _url: True)
+
+    def unexpected_prompt(*_args):
+        pytest.fail("prompt must not run when saved control is reachable")
+
+    assert mod._select_control_url(
+        tmp_path, "", "", unexpected_prompt
+    ) == "http://10.0.0.114:8765"
+
+
+def test_select_control_prefers_explicit_override(tmp_path):
+    mod = _load_install()
+
+    def unexpected_prompt(*_args):
+        pytest.fail("prompt must not run for an explicit override")
+
+    assert mod._select_control_url(
+        tmp_path,
+        "http://10.0.0.114:8765",
+        "http://10.0.0.99:9000",
+        unexpected_prompt,
+    ) == "http://10.0.0.99:9000"
+
+
 # ---------------------------------------------------------------------------
 # _ensure_agents_md refresh branch — regression for the Windows-path bad-escape
 # crash (re.sub was passed `block` as a raw replacement string; a Windows venv

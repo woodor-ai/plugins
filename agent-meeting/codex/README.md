@@ -85,7 +85,9 @@ python <repo>/install-codex.py
 The installer builds `~/.agent-meeting`, installs `zeroconf` and `websockets`
 in its virtual environment, writes `mycodex` and `meeting-say` wrappers, stores
 the selected central-amctl URL, removes the legacy Codex hook, and refreshes
-the agent-meeting instructions in `~/.codex/AGENTS.md`.
+the agent-meeting instructions in `~/.codex/AGENTS.md`. It automatically uses
+an amctl found through mDNS, or a previously saved URL when that endpoint is
+still reachable. It prompts for a URL only when neither source is available.
 
 ## Run
 
