@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import subprocess
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -10,7 +11,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BROKER_PATH = ROOT / "codex" / "codex-broker.py"
+BROKER_PATH = ROOT / "codex" / "am_codexd.py"
 LAUNCHER_PATH = ROOT / "codex" / "codex-meeting.py"
 
 
@@ -192,6 +193,26 @@ def test_global_identity_cannot_start_twice_on_same_broker():
                 }
             )
         )
+
+
+def test_shutdown_refuses_active_sessions_and_closes_the_start_gate_atomically():
+    module = load(BROKER_PATH, "am_codexd_atomic_shutdown")
+    broker = module.Broker()
+
+    async def run():
+        session = make_session(module)
+        broker.sessions[session.launch_id] = session
+        with pytest.raises(ValueError, match="1 mycodex session"):
+            await broker.request_shutdown()
+        assert broker.accepting_sessions is True
+
+        broker.sessions.clear()
+        assert await broker.request_shutdown() == {"ok": True}
+        assert broker.accepting_sessions is False
+        with pytest.raises(ValueError, match="shutting down"):
+            await broker.start_session({})
+
+    asyncio.run(run())
 
 
 def test_register_and_fetch_use_only_central_cursor(monkeypatch):
@@ -859,64 +880,72 @@ def test_session_proxy_url_is_a_codex_compatible_host_port():
     assert parsed.query == ""
 
 
-def test_launcher_refuses_to_restart_outdated_broker_with_active_sessions(
-    monkeypatch,
-):
-    module = load(LAUNCHER_PATH, "codex_meeting_active_upgrade")
-    monkeypatch.setattr(module, "installed_plugin_version", lambda: "0.13.1")
-    monkeypatch.setattr(
-        module,
-        "broker_status",
-        lambda: {"ok": True, "version": "0.13.0", "sessions": 2},
-    )
-
-    with pytest.raises(RuntimeError, match="exit the 2 active"):
-        module.ensure_broker()
-
-
-def test_launcher_restarts_idle_outdated_broker(monkeypatch):
-    module = load(LAUNCHER_PATH, "codex_meeting_idle_upgrade")
-    statuses = iter(
-        [
-            {"ok": True, "version": "0.13.0", "sessions": 0},
-            {},
-            {
-                "ok": True,
-                "version": "0.13.1",
-                "sessions": 0,
-                "appserver_url": "ws://127.0.0.1:8792",
-            },
-        ]
-    )
+def test_launcher_activates_daemon_before_requesting_a_session(monkeypatch):
+    module = load(LAUNCHER_PATH, "codex_meeting_daemon_update")
+    commands = []
     requests = []
-    spawned = []
 
-    class Process:
-        @staticmethod
-        def poll():
-            return None
-
-    def fake_request(method, path, body=None, params=None, timeout=45):
-        requests.append((method, path))
-        if method == "GET":
-            return {
-                "ok": True,
-                "version": "0.13.1",
-                "sessions": 0,
-                "appserver_url": "ws://127.0.0.1:8792",
-            }
-        return {"ok": True}
-
-    monkeypatch.setattr(module, "installed_plugin_version", lambda: "0.13.1")
-    monkeypatch.setattr(module, "broker_status", lambda: next(statuses))
-    monkeypatch.setattr(module, "broker_request", fake_request)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **_kwargs: (
+            commands.append(command)
+            or subprocess.CompletedProcess(command, 0, "am-codexd is already up to date\n", "")
+        ),
+    )
     monkeypatch.setattr(
         module,
-        "spawn_detached",
-        lambda command, log_path: spawned.append(command) or Process(),
+        "broker_request",
+        lambda method, path, **_kwargs: (
+            requests.append((method, path))
+            or {"ok": True, "version": "0.14.0", "sessions": 0}
+        ),
     )
 
-    module.ensure_broker()
+    module.ensure_daemon()
 
-    assert ("POST", "/shutdown") in requests
-    assert spawned == [[module.venv_python(), str(module.BROKER_SCRIPT)]]
+    assert commands == [
+        [module.venv_python(), str(module.DAEMON_COMMAND), "update"]
+    ]
+    assert requests == [("GET", "/health")]
+
+
+def test_launcher_surfaces_daemon_update_failure(monkeypatch):
+    module = load(LAUNCHER_PATH, "codex_meeting_daemon_update_failure")
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "ERROR: cannot update while 2 mycodex sessions are active\n",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="2 mycodex sessions"):
+        module.ensure_daemon()
+
+
+def test_launcher_rejects_a_healthy_daemon_from_the_wrong_version(monkeypatch):
+    module = load(LAUNCHER_PATH, "codex_meeting_daemon_version_mismatch")
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    monkeypatch.setattr(
+        module,
+        "broker_request",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "version": "0.13.9",
+            "sessions": 0,
+        },
+    )
+    monkeypatch.setattr(module, "installed_plugin_version", lambda: "0.14.0")
+
+    with pytest.raises(RuntimeError, match="running 0.13.9, installed 0.14.0"):
+        module.ensure_daemon()

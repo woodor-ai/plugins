@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Launch one live Codex session through the machine-wide agent-meeting broker.
+Launch one live Codex session through the machine-wide am-codexd daemon.
 
-The launcher owns only the foreground TUI lease. The broker owns the shared
+The launcher owns only the foreground TUI lease. The daemon owns the shared
 Codex app-server, central meeting subscriptions, ordered message queues, and
 thread mappings. Exiting one launcher releases one lease and never stops the
-broker or app-server.
+daemon or app-server.
 """
 
 import argparse
@@ -29,10 +29,9 @@ from urllib.parse import urlparse
 HOME = Path.home()
 DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
 CODEX_DIR = DATA / "codex"
-LOGS_DIR = CODEX_DIR / "logs"
 LAUNCHER_JSON = CODEX_DIR / "launcher.json"
-BROKER_SCRIPT = Path(__file__).resolve().parent / "codex-broker.py"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+DAEMON_COMMAND = PLUGIN_ROOT / "bin" / "am-codexd"
 BROKER_API_PORT = int(os.environ.get("MEETING_BROKER_API_PORT", "8788"))
 BROKER_BASE = f"http://127.0.0.1:{BROKER_API_PORT}"
 IS_WINDOWS = sys.platform.startswith("win")
@@ -73,6 +72,18 @@ def venv_python():
     return str(candidate if candidate.exists() else Path(sys.executable))
 
 
+def installed_plugin_version():
+    try:
+        manifest = json.loads(
+            (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        return str(manifest.get("version") or "unknown")
+    except Exception:
+        return "unknown"
+
+
 def broker_request(method, path, body=None, params=None, timeout=45):
     url = BROKER_BASE + path
     if params:
@@ -96,93 +107,29 @@ def broker_request(method, path, body=None, params=None, timeout=45):
     return json.loads(raw.decode("utf-8")) if raw else {}
 
 
-def broker_healthy():
-    return bool(broker_status().get("ok"))
-
-
-def broker_status():
-    try:
-        return broker_request("GET", "/health", timeout=1)
-    except Exception:
-        return {}
-
-
-def installed_plugin_version():
-    try:
-        manifest = json.loads(
-            (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        return str(manifest.get("version") or "unknown")
-    except Exception:
-        return "unknown"
-
-
-def spawn_detached(command, log_path):
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_file = open(log_path, "a", encoding="utf-8")
-    kwargs = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": log_file,
-        "stderr": subprocess.STDOUT,
-    }
-    if IS_WINDOWS:
-        kwargs["creationflags"] = 0x08000000 | 0x00000200
-    else:
-        kwargs["start_new_session"] = True
-    return subprocess.Popen(command, **kwargs)
-
-
-def ensure_broker():
-    expected_version = installed_plugin_version()
-    status = broker_status()
-    if status.get("ok"):
-        running_version = str(status.get("version") or "pre-versioned")
-        if running_version == expected_version:
-            return
-        sessions = int(status.get("sessions") or 0)
-        if sessions:
-            raise RuntimeError(
-                "the running Codex broker is from agent-meeting "
-                f"{running_version}, but the installed plugin is {expected_version}; "
-                f"exit the {sessions} active mycodex session(s) before upgrading"
-            )
-        log(
-            f"restarting outdated Codex broker "
-            f"({running_version} -> {expected_version})"
-        )
-        broker_request("POST", "/shutdown", timeout=3)
-        deadline = time.monotonic() + 12
-        while time.monotonic() < deadline:
-            if not broker_healthy():
-                break
-            time.sleep(0.1)
-        else:
-            raise RuntimeError("outdated Codex broker did not stop")
-    if not BROKER_SCRIPT.exists():
-        raise RuntimeError(f"Codex broker not found at {BROKER_SCRIPT}")
-    log("starting machine-wide Codex broker")
-    process = spawn_detached(
-        [venv_python(), str(BROKER_SCRIPT)],
-        LOGS_DIR / "broker.log",
+def ensure_daemon():
+    if not DAEMON_COMMAND.exists():
+        raise RuntimeError(f"am-codexd command not found at {DAEMON_COMMAND}")
+    result = subprocess.run(
+        [venv_python(), str(DAEMON_COMMAND), "update"],
+        capture_output=True,
+        text=True,
     )
-    deadline = time.monotonic() + 25
-    while time.monotonic() < deadline:
-        if broker_healthy():
-            status = broker_request("GET", "/health")
-            log(
-                "broker ready "
-                f"(app-server={status.get('appserver_url')}, sessions={status.get('sessions')})"
-            )
-            return
-        if process.poll() is not None:
-            raise RuntimeError(
-                f"Codex broker exited during startup (rc={process.returncode}); "
-                f"see {LOGS_DIR / 'broker.log'}"
-            )
-        time.sleep(0.25)
-    raise RuntimeError(f"Codex broker did not become healthy; see {LOGS_DIR / 'broker.log'}")
+    detail = (result.stderr or result.stdout or "").strip()
+    if result.returncode != 0:
+        raise RuntimeError(detail or "am-codexd update failed")
+    status = broker_request("GET", "/health", timeout=2)
+    if not status.get("ok"):
+        raise RuntimeError("am-codexd is not healthy after update")
+    expected = installed_plugin_version()
+    running = str(status.get("version") or "unknown")
+    if running != expected:
+        raise RuntimeError(
+            f"am-codexd version mismatch after update: "
+            f"running {running}, installed {expected}"
+        )
+    if detail:
+        log(detail)
 
 
 def build_codex_launch_cmd(proxy_url):
@@ -248,7 +195,7 @@ class Launcher:
         self.torn_down = False
 
     def setup(self):
-        ensure_broker()
+        ensure_daemon()
         self.session = broker_request(
             "POST",
             "/session/start",
@@ -278,7 +225,7 @@ class Launcher:
             pinner.stop()
 
     def hold(self, stop_event):
-        log("--no-codex: broker lease active; waiting for SIGINT/SIGTERM")
+        log("--no-codex: daemon lease active; waiting for SIGINT/SIGTERM")
         while not stop_event.wait(0.5):
             try:
                 status = broker_request(
@@ -292,7 +239,7 @@ class Launcher:
             if not status.get("active", False):
                 raise RuntimeError(
                     status.get("central_error")
-                    or "broker session became inactive"
+                    or "daemon session became inactive"
                 )
 
     def teardown(self):
@@ -308,7 +255,7 @@ class Launcher:
                     {"launch_id": self.launch_id},
                     timeout=20,
                 )
-                log(f"released {self.session['identity']} (broker remains running)")
+                log(f"released {self.session['identity']} (am-codexd remains running)")
             except Exception as exc:
                 log(f"session release failed: {exc}")
 

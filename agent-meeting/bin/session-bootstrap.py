@@ -394,7 +394,7 @@ def ensure_zeroconf():
 
 
 def ensure_websockets():
-    # Required by the machine-wide Codex broker, which proxies the remote TUI
+    # Required by the machine-wide am-codexd daemon, which proxies the remote TUI
     # and speaks JSON-RPC to the shared official Codex app-server.
     py = venv_python()
     r = subprocess.run([str(py), "-c", "import websockets"], capture_output=True)
@@ -1221,7 +1221,7 @@ def main():
         ensure_layout()       # base dirs first
         ensure_venv()         # venv must exist before wrappers reference its python
         ensure_zeroconf()
-        ensure_websockets()   # machine-wide Codex broker uses WebSockets
+        ensure_websockets()   # machine-wide am-codexd uses WebSockets
 
         # Monotonic-upgrade guard: skip runtime rewrite if this session's plugin
         # version is older than what's already installed.

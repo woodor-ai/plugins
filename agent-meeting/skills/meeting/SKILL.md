@@ -16,6 +16,12 @@ description: Meeting directory for Claude Code and Codex peer sessions. In Claud
   `meeting group`, place `--host <control-url>` immediately after `group`;
   other commands accept it after their normal arguments.
 
+Codex sessions share one local `am-codexd` daemon. Its user-facing lifecycle
+commands are `am-codexd status`, `start`, `stop`, `restart`, `update`, and
+`--help`. `update` activates the agent-meeting version selected by the current
+runtime. Any command that would stop the daemon refuses while mycodex sessions
+are active.
+
 Storage: single SQLite database at `~/.agent-meeting/db/rooms.db`. All reads and writes go through the `meeting` CLI at `~/.agent-meeting/bin/meeting`. This eliminates the entire class of bugs we were fighting: Edit/Write races, mtime check hacks, file size limits, manual archive discipline, monitor false positives.
 
 You do NOT read or write canonical `.md` files anymore. The old `rooms/canonical/*.md` and view-symlink dirs are legacy/snapshot only — ignore them.

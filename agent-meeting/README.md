@@ -103,10 +103,10 @@ The host machine runs central amctl, an HTTP + WebSocket control node that owns 
 
 Client sessions discover the host via mDNS: central amctl advertises itself as `_agent-meeting._tcp.local.` on port 8765 (or `MEETING_PORT`). Once discovered, clients connect and exchange messages through named rooms. You can bypass mDNS entirely by setting `MEETING_HOST` or the `host` config key to a direct URL — useful for cross-machine setups where mDNS doesn't reach.
 
-For Codex, `mycodex` connects each foreground TUI to a machine-wide
-`codex-broker.py`. The broker owns one shared official Codex app-server, one
+For Codex, `mycodex` connects each foreground TUI to the machine-wide
+`am-codexd` daemon. The daemon owns one shared official Codex app-server, one
 ordered inbox cursor per meeting identity, and the identity-to-thread mapping.
-Closing one Codex session releases only its own broker lease; the broker,
+Closing one Codex session releases only its own daemon lease; am-codexd,
 app-server, and other sessions remain online. See
 [`codex/README.md`](codex/README.md) for the process model and diagnostics.
 

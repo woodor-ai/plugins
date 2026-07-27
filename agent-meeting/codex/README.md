@@ -1,7 +1,7 @@
 # agent-meeting × Codex
 
 This integration lets local Codex sessions participate in agent-meeting while
-sharing one machine-wide broker and one official Codex app-server.
+sharing one machine-wide `am-codexd` daemon and one official Codex app-server.
 
 ## Architecture
 
@@ -12,16 +12,16 @@ mycodex launcher A ─ ws://127.0.0.1:<ephemeral-A> ─┐
 mycodex launcher B ─ ws://127.0.0.1:<ephemeral-B> ─┼─
 mycodex launcher C ─ ws://127.0.0.1:<ephemeral-C> ─┘
                                                    ▼
-                         codex-broker.py (one per machine)
+                           am-codexd (one per machine)
                            ├─ one Codex app-server
                            ├─ one lease per mycodex session
                            ├─ one transient pending queue per identity
                            └─ one notify-only central subscription per identity
 ```
 
-Each `mycodex` process owns only its foreground TUI and broker lease. Closing
-one TUI unregisters that identity without stopping the broker, app-server, or
-other Codex sessions. The broker stays resident for later launches.
+Each `mycodex` process owns only its foreground TUI and daemon lease. Closing
+one TUI unregisters that identity without stopping am-codexd, app-server, or
+other Codex sessions. The daemon stays resident for later launches.
 
 The broker exposes loopback-only endpoints:
 
@@ -51,7 +51,8 @@ whichever `mycodex` invocation happened to start the broker first.
 
 | File | Role |
 |---|---|
-| `codex-broker.py` | Persistent machine-level broker and shared app-server owner |
+| `am-codexd` | Persistent machine-level daemon and shared app-server owner |
+| `am_codexd.py` | Daemon implementation |
 | `codex-meeting.py` | Thin `mycodex` launcher; acquires and releases one broker lease |
 | `remove-legacy-codex-hook.py` | Installer migration that removes the obsolete registration hook |
 | `install.py` | Codex installer integration |
@@ -111,6 +112,21 @@ mycodex <name> --proj PROJECT --no-codex
 This acquires a broker lease without opening the TUI and holds it until
 SIGINT/SIGTERM.
 
+Manage the shared daemon directly:
+
+```sh
+am-codexd status
+am-codexd start
+am-codexd stop
+am-codexd restart
+am-codexd update
+am-codexd --help
+```
+
+`update` restarts an idle daemon onto the agent-meeting version selected by the
+current runtime. Commands that would stop the daemon refuse while mycodex
+sessions are active.
+
 ## Message delivery
 
 Central amctl exposes one recipient-wide inbox ordered by global `msg_id` and
@@ -164,11 +180,11 @@ app-server connection into Codex's `experimentalApi` capability because
 - `~/.agent-meeting/codex/broker-state.json`: read-only migration input from
   releases before 0.13.8; it is never updated or used as a second cursor
   authority.
-- `~/.agent-meeting/codex/logs/broker.log`: broker lifecycle and injection log.
+- `~/.agent-meeting/codex/logs/am-codexd.log`: daemon lifecycle and injection log.
 - `~/.agent-meeting/codex/logs/app-server.log`: shared official app-server log.
 - `~/.agent-meeting/codex/launcher.json`: selected central-amctl URL.
 
-The broker deliberately does not reuse a stray app-server found on another
+The daemon deliberately does not reuse a stray app-server found on another
 port; it owns its child process and can restart it safely.
 
 ## Limitations

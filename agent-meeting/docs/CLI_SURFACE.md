@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-26 · version 0.13.9
+Last updated: 2026-07-27 · version 0.14.0
 
 The runtime command is `~/.agent-meeting/bin/meeting`. On POSIX it is an
 executable shell wrapper that selects the agent-meeting virtualenv; on Windows
@@ -48,7 +48,7 @@ Common options:
 - `show`: `--limit`, `--host`.
 - `turn` and `delete`: `--host`.
 
-`message` is the Codex broker's precise-read path. A notification carrying
+`message` is am-codexd's precise-read path. A notification carrying
 `msg_id=17029` must be followed by `meeting message SELF 17029`; opening a
 whole conversation can expose later messages and lead to the wrong task being
 handled.
@@ -110,17 +110,32 @@ names so both services cannot run at once.
 `members`, `delete`, and `charter`. Group messages use the same `send`,
 `read`, and `show` commands as direct messages.
 
-## Codex-only local broker
+## Codex-only local daemon
 
-`mycodex` starts or reuses `codex/codex-broker.py`. This broker is distinct
-from central amctl:
+`mycodex` starts or reuses `am-codexd`. This daemon is distinct from central
+amctl:
 
 - amctl is the LAN-wide canonical message/control node.
-- codex-broker is a loopback-only machine service for local Codex sessions.
-- one codex-broker owns one shared official Codex app-server.
-- amctl's recipient cursor is the only durable delivery position; the broker
+- am-codexd is a loopback-only machine daemon for local Codex sessions.
+- one am-codexd owns one shared official Codex app-server.
+- amctl's recipient cursor is the only durable delivery position; am-codexd
   acknowledges it only after successful injection or intentional silent
   consumption.
+
+The lifecycle command is:
+
+```text
+am-codexd status
+am-codexd start
+am-codexd stop
+am-codexd restart
+am-codexd update
+am-codexd --help
+```
+
+`update` activates the agent-meeting version selected by the current runtime.
+`stop`, `restart`, and a version-changing `update` refuse to interrupt active
+mycodex sessions.
 
 See [`../codex/README.md`](../codex/README.md) for ports, lifecycle, ordered
 inbox semantics, and logs.

@@ -18,7 +18,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 AMCTL = ROOT / "bin" / "amctl"
-BROKER = ROOT / "codex" / "codex-broker.py"
+BROKER = ROOT / "codex" / "am_codexd.py"
 
 
 def free_ports(count):

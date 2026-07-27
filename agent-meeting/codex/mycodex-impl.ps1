@@ -31,7 +31,10 @@ $ErrorActionPreference = "Stop"
 $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }
 $BinDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $MeetingHome = if ($env:MEETING_HOME) { $env:MEETING_HOME } else { Split-Path -Parent $BinDir }
-$AmCodexMeeting = Join-Path $CodexHome "plugins\agent-meeting\codex\codex-meeting.py"
+$SourceStamp = Join-Path $MeetingHome ".bin-plugin-root"
+$PluginBin = if (Test-Path $SourceStamp) { (Get-Content $SourceStamp -TotalCount 1).Trim() } else { "" }
+$PluginRoot = if ($PluginBin) { Split-Path -Parent $PluginBin } else { "" }
+$AmCodexMeeting = if ($PluginRoot) { Join-Path $PluginRoot "codex\codex-meeting.py" } else { "" }
 $Vpy = Join-Path $MeetingHome "venv\Scripts\python.exe"
 
 if ($RestArgs.Count -gt 0 -and $RestArgs[0] -eq "--update") {
@@ -70,7 +73,7 @@ if ($RestArgs.Count -gt 0 -and $RestArgs[0] -eq "--update") {
     exit $LASTEXITCODE
 }
 
-if (-not (Test-Path $Vpy) -or -not (Test-Path $AmCodexMeeting)) {
+if (-not $PluginBin -or -not (Test-Path $Vpy) -or -not (Test-Path $AmCodexMeeting)) {
     Write-Error "mycodex: agent-meeting is not installed - run 'mycodex --update' to install it, then retry."
     exit 1
 }

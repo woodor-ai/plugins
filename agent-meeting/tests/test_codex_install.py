@@ -395,6 +395,7 @@ def _make_plugin_root(base: Path) -> Path:
     (pr / ".claude-plugin").mkdir(parents=True)
     (pr / "bin" / "meeting").write_text("#!/bin/sh\necho meeting\n")
     (pr / "bin" / "amctl").write_text("#!/bin/sh\necho central amctl\n")
+    (pr / "bin" / "am-codexd").write_text("#!/usr/bin/env python3\n")
     (pr / "bin" / "monitor.py").write_text("print('monitor-v1')\n")
     (pr / "codex" / "codex-meeting.py").write_text("# stub\n")
     (pr / "codex" / "mycodex-posix.sh").write_text("#!/bin/sh\necho mycodex-stub\n")
@@ -430,7 +431,26 @@ def test_mycodex_wrapper_generated_posix(tmp_path):
 
     bin_dir = meeting_home / "bin"
     assert (bin_dir / "mycodex").exists(), "mycodex wrapper missing"
+    assert (bin_dir / "am-codexd").exists(), "am-codexd wrapper missing"
     assert not (bin_dir / "codex-meeting").exists(), "old codex-meeting should be absent"
+
+
+def test_posix_mycodex_uses_active_plugin_stamp():
+    wrapper = (
+        Path(__file__).resolve().parents[1] / "codex" / "mycodex-posix.sh"
+    ).read_text(encoding="utf-8")
+
+    assert ".bin-plugin-root" in wrapper
+    assert 'plugins/agent-meeting/codex/codex-meeting.py' not in wrapper
+
+
+def test_windows_mycodex_uses_active_plugin_stamp():
+    wrapper = (
+        Path(__file__).resolve().parents[1] / "codex" / "mycodex-impl.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert ".bin-plugin-root" in wrapper
+    assert 'plugins\\agent-meeting\\codex\\codex-meeting.py' not in wrapper
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX wrapper test")

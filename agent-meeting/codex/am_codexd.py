@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Machine-wide agent-meeting broker for Codex.
+Machine-wide agent-meeting daemon for Codex.
 
-One broker owns one Codex app-server and multiplexes every local mycodex
+One daemon owns one Codex app-server and multiplexes every local mycodex
 session onto separate Codex threads. It also replaces the old per-session
 codex-bridge process: each meeting identity has its own central subscription,
 ordered inbox cursor, pending batch, and Codex injection target.
@@ -23,7 +23,6 @@ Giving every lease its own loopback listener preserves session routing without
 creating another process or another app-server.
 """
 
-import argparse
 import asyncio
 import contextlib
 import json
@@ -69,7 +68,7 @@ def installed_plugin_version():
         return "unknown"
 
 
-BROKER_VERSION = installed_plugin_version()
+DAEMON_VERSION = installed_plugin_version()
 
 API_HOST = "127.0.0.1"
 API_PORT = int(os.environ.get("MEETING_BROKER_API_PORT", "8788"))
@@ -87,7 +86,7 @@ class NameTakenError(RuntimeError):
 
 def log(message):
     stamp = time.strftime("%Y-%m-%d %H:%M:%S %Z")
-    line = f"[codex-broker] {stamp} {message}"
+    line = f"[am-codexd] {stamp} {message}"
     print(line, flush=True)
 
 
@@ -274,6 +273,7 @@ class Broker:
             read_json(LEGACY_STATE_FILE, {"cursors": {}}).get("cursors") or {}
         )
         self.stop_event = asyncio.Event()
+        self.accepting_sessions = True
         self.http_server = None
         self.scheduler_task = None
         self.supervisor_task = None
@@ -308,7 +308,7 @@ class Broker:
                 {
                     "clientInfo": {
                         "name": "agent_meeting_broker",
-                        "title": "Agent Meeting Codex Broker",
+                        "title": "Agent Meeting Codex Daemon",
                         "version": "1",
                     },
                     "capabilities": {"experimentalApi": True},
@@ -463,6 +463,8 @@ class Broker:
             session.cursor = int(result["cursor"])
 
     async def start_session(self, request):
+        if not self.accepting_sessions:
+            raise ValueError("am-codexd is shutting down")
         launch_id = str(request["launch_id"])
         name = str(request["name"])
         project = str(request["project"])
@@ -545,6 +547,16 @@ class Broker:
                 log(f"central unregister {session.identity} failed: {exc}")
         log(f"session stopped identity={session.identity} launch={launch_id}")
         return {"stopped": True}
+
+    async def request_shutdown(self):
+        if self.sessions:
+            raise ValueError(
+                f"cannot stop am-codexd while {len(self.sessions)} "
+                "mycodex session(s) are active"
+            )
+        self.accepting_sessions = False
+        self.stop_event.set()
+        return {"ok": True}
 
     async def identity_for_thread(self, thread_id):
         launch_id = self.thread_to_launch.get(thread_id)
@@ -861,7 +873,7 @@ class Broker:
 
     async def proxy(self, session, client):
         if not session.active:
-            await client.close(code=1008, reason="inactive broker session")
+            await client.close(code=1008, reason="inactive daemon session")
             return
 
         session.proxy_clients.add(client)
@@ -951,7 +963,8 @@ class Broker:
                         200 if appserver_ready else 503,
                         {
                             "ok": appserver_ready,
-                            "version": BROKER_VERSION,
+                            "version": DAEMON_VERSION,
+                            "pid": os.getpid(),
                             "sessions": len(broker.sessions),
                             "appserver_url": (
                                 broker.appserver.ws_url if appserver_ready else None
@@ -981,9 +994,8 @@ class Broker:
                         result = self.invoke(broker.stop_session(str(body["launch_id"])))
                         return self.send_json(200, result)
                     if self.path == "/shutdown":
-                        self.send_json(200, {"ok": True})
-                        broker.loop.call_soon_threadsafe(broker.stop_event.set)
-                        return
+                        result = self.invoke(broker.request_shutdown())
+                        return self.send_json(200, result)
                     self.send_json(404, {"error": "not found"})
                 except (ValueError, KeyError) as exc:
                     self.send_json(409, {"error": str(exc)})
@@ -994,7 +1006,7 @@ class Broker:
         self.http_server = ThreadingHTTPServer((API_HOST, API_PORT), Handler)
         thread = threading.Thread(
             target=self.http_server.serve_forever,
-            name="codex-broker-http",
+            name="am-codexd-http",
             daemon=True,
         )
         thread.start()
@@ -1012,7 +1024,7 @@ class Broker:
         try:
             await asyncio.to_thread(self.appserver.start)
             log(
-                f"broker ready api=http://{API_HOST}:{API_PORT} "
+                f"daemon ready api=http://{API_HOST}:{API_PORT} "
                 "proxy=per-session-loopback-port"
             )
             self.scheduler_task = asyncio.create_task(self.scheduler())
@@ -1028,12 +1040,10 @@ class Broker:
                 self.http_server.shutdown()
                 self.http_server.server_close()
             await asyncio.to_thread(self.appserver.stop)
-            log("broker stopped")
+            log("daemon stopped")
 
 
-def main():
-    parser = argparse.ArgumentParser(prog="codex-broker")
-    parser.parse_args()
+def serve():
     broker = Broker()
 
     async def run():
@@ -1052,4 +1062,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    serve()
