@@ -1,16 +1,33 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-28 · version 0.15.1
+Last updated: 2026-07-28 · version 0.15.3
 
 The runtime command is `~/.agent-meeting/bin/meeting`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
 pip-generated `~/.agent-meeting/bin/meeting.exe` console launcher. The same
-rule applies to `am-msgd`, `mycodex`, and `am-codexd`.
+rule applies to `am-msgd`, `am-update`, `mycodex`, and `am-codexd`.
 
 Claude Code exposes the workflows as `/imagent` and `/talkto`. Codex loads the
 same skills from the native plugin and exposes them through `/skills` or
 `$imagent` and `$talkto`; Codex does not create top-level slash commands from
 skill names.
+
+## Distribution update
+
+`am-update` is the only public distribution updater. It refreshes the public
+release checkout, creates and atomically selects one immutable host runtime,
+then updates each installed integration. It does not use cachebuster version
+suffixes: public releases use their normal semantic version.
+
+```text
+am-update
+am-update --target claude-code
+am-update --target codex
+am-update --check
+```
+
+`mycodex` is a session launcher only. `mycodex --update` exits with a migration
+message and does not perform installation work.
 
 ## User-facing commands
 

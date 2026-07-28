@@ -905,7 +905,10 @@ def emit_context(cfg: dict):
             monitor_script=monitor_command,
             python_executable=venv_python(),
             is_windows=IS_WINDOWS,
-            is_codex_thread=bool(os.environ.get("CODEX_THREAD_ID")),
+            is_codex_thread=bool(
+                os.environ.get("CODEX_THREAD_ID")
+                or os.environ.get("AGENT_MEETING_CODEX_RUNTIME")
+            ),
             launchd_warning=LAUNCHD_WARNING,
             online_peers=online_peers_str(),
             standalone_commands=active_monitor.exists(),

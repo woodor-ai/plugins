@@ -52,6 +52,39 @@ try:
 except ImportError:
     websockets = None
 
+
+# The central am-msgd is a LAN or private-overlay control plane.  System proxy
+# discovery is unsuitable here: it can route private control traffic through a
+# local proxy, and recent ``websockets`` releases require the optional
+# ``python-socks`` package before they can even connect to that proxy.  Keep
+# this traffic direct, matching the meeting CLI and Claude subscription client.
+CENTRAL_HTTP_PROXY_HANDLER = urllib.request.ProxyHandler({})
+CENTRAL_HTTP_OPENER = urllib.request.build_opener(CENTRAL_HTTP_PROXY_HANDLER)
+
+
+def codex_app_server_environment(base_environment=None):
+    """Mark the shared app-server as a mycodex-managed Codex runtime.
+
+    Codex runs the agent-meeting SessionStart hook in the app-server process.
+    It does not provide a per-thread identifier to that hook, so preserve an
+    explicit runtime marker for the hook to distinguish this path from a
+    standalone Claude Code session.
+    """
+    environment = dict(os.environ if base_environment is None else base_environment)
+    environment["AGENT_MEETING_CODEX_RUNTIME"] = "1"
+    return environment
+
+
+def central_websocket_options(headers):
+    """Return transport options for a direct central-hub subscription."""
+    return {
+        "additional_headers": headers,
+        "max_size": None,
+        "ping_interval": 5,
+        "ping_timeout": 15,
+        "proxy": None,
+    }
+
 if sys.platform.startswith("win"):
     from mycodex.operating_systems.windows import codex_background_process
 else:
@@ -126,7 +159,7 @@ def http_json(method, base_url, path, body=None, params=None, timeout=20):
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with CENTRAL_HTTP_OPENER.open(request, timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
         raw = exc.read()
@@ -190,6 +223,7 @@ class AppServer:
         kwargs = codex_background_process.detached_popen_options(
             self.log_file
         )
+        kwargs["env"] = codex_app_server_environment()
         self.process = subprocess.Popen(
             ["codex", "app-server", "--listen", ws_url],
             **kwargs,
@@ -591,10 +625,7 @@ class Broker:
                 await self.register_central(session)
                 async with websockets.connect(
                     ws_url,
-                    additional_headers=headers,
-                    max_size=None,
-                    ping_interval=5,
-                    ping_timeout=15,
+                    **central_websocket_options(headers),
                 ) as websocket:
                     backoff = 1.0
                     await self.fetch_inbox(session)

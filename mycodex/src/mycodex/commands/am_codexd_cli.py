@@ -193,7 +193,7 @@ def restart():
     start()
 
 
-def update():
+def update(*, defer_if_active: bool = False):
     info = status_info()
     expected = installed_version()
     if not info:
@@ -216,6 +216,12 @@ def update():
             return
     sessions = int(info.get("sessions") or 0)
     if sessions:
+        if defer_if_active:
+            print(
+                f"deferring am-codexd update from {running} to {expected} while "
+                f"{sessions} mycodex session(s) are active"
+            )
+            return
         raise RuntimeError(
             f"cannot update am-codexd from {running} to {expected} while "
             f"{sessions} mycodex session(s) are active"
@@ -238,9 +244,14 @@ def build_parser():
     subparsers.add_parser("start", help="start the daemon")
     subparsers.add_parser("stop", help="stop the daemon when no sessions are active")
     subparsers.add_parser("restart", help="restart the daemon")
-    subparsers.add_parser(
+    update_parser = subparsers.add_parser(
         "update",
         help="activate the currently installed agent-meeting version",
+    )
+    update_parser.add_argument(
+        "--defer-if-active",
+        action="store_true",
+        help="leave an active daemon running and apply the update later",
     )
     return parser
 
@@ -261,7 +272,7 @@ def main(argv=None):
         "start": start,
         "stop": stop,
         "restart": restart,
-        "update": update,
+        "update": lambda: update(defer_if_active=args.defer_if_active),
     }
     try:
         actions[args.command]()

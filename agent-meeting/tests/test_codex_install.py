@@ -351,7 +351,9 @@ def test_session_context_defers_codex_identity_to_thread_params(
     plugin_root = _make_plugin_root(tmp_path)
     meeting_home.mkdir()
     mod = _load_bootstrap(meeting_home, plugin_root)
-    monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
+    # The shared Codex app-server has no per-thread environment variable.  A
+    # mycodex launch supplies this persistent runtime marker instead.
+    monkeypatch.setenv("AGENT_MEETING_CODEX_RUNTIME", "1")
     monkeypatch.setattr(mod, "online_peers_str", lambda: "(none online)")
 
     mod.emit_context({"is_host": False})

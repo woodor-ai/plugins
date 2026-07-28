@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Register this repository with Codex and install agent-meeting."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -11,15 +12,105 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
+def marketplace_is_registered(codex: str, marketplace: str) -> bool | None:
+    """Return whether a marketplace is registered, or ``None`` if unknown.
+
+    A failed marketplace upgrade commonly means that its Git fetch timed out.
+    It must not be treated as evidence that the marketplace needs adding again:
+    doing so can attempt to replace an existing Git source with this local
+    checkout.  A failed or malformed listing is kept distinct so the caller
+    can preserve the original upgrade error rather than taking that risk.
+    """
+    listed = subprocess.run(
+        [codex, "plugin", "marketplace", "list", "--json"],
+        capture_output=True,
+        text=True,
+    )
+    if listed.returncode != 0:
+        return None
+    try:
+        marketplaces = json.loads(listed.stdout)["marketplaces"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return any(item.get("name") == marketplace for item in marketplaces)
+
+
+def plugin_is_installed(codex: str, plugin_id: str) -> bool | None:
+    """Return whether a plugin is installed, or ``None`` if unknown."""
+    listed = subprocess.run(
+        [codex, "plugin", "list", "--json"],
+        capture_output=True,
+        text=True,
+    )
+    if listed.returncode != 0:
+        return None
+    try:
+        payload = json.loads(listed.stdout)
+        plugins = payload.get("installed") or payload.get("plugins") or []
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return any(
+        plugin.get("pluginId") == plugin_id and plugin.get("installed")
+        for plugin in plugins
+    )
+
+
+def installed_plugin_version(codex: str, plugin_id: str) -> str | None:
+    """Return an installed plugin's version, if Codex can report one."""
+    listed = subprocess.run(
+        [codex, "plugin", "list", "--json"],
+        capture_output=True,
+        text=True,
+    )
+    if listed.returncode != 0:
+        return None
+    try:
+        payload = json.loads(listed.stdout)
+        plugins = payload.get("installed") or payload.get("plugins") or []
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    for plugin in plugins:
+        if plugin.get("pluginId") == plugin_id and plugin.get("installed"):
+            version = plugin.get("version")
+            return str(version) if version else None
+    return None
+
+
+def source_plugin_version() -> str | None:
+    """Return the plugin version bundled with this checkout."""
+    manifest = REPOSITORY_ROOT / "agent-meeting/.codex-plugin/plugin.json"
+    try:
+        version = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return str(version) if version else None
+
+
 def main() -> int:
     codex = os.environ.get("CODEX_BIN") or shutil.which("codex")
     if not codex:
         print("ERROR: codex CLI not found", file=sys.stderr)
         return 1
+    plugin_id = "agent-meeting@woodor"
+    installed_version = installed_plugin_version(codex, plugin_id)
+    bundled_version = source_plugin_version()
+    if installed_version and installed_version == bundled_version:
+        print(
+            f"Codex plugin already matches version {bundled_version}; "
+            "skipping marketplace refresh."
+        )
+        return 0
+    print("Refreshing Codex marketplace: woodor...", flush=True)
     updated = subprocess.run(
         [codex, "plugin", "marketplace", "upgrade", "woodor"]
     )
     if updated.returncode != 0:
+        print(
+            "Marketplace refresh failed; checking its existing registration...",
+            flush=True,
+        )
+        if marketplace_is_registered(codex, "woodor") is not False:
+            return updated.returncode
         added = subprocess.run(
             [
                 codex,
@@ -31,8 +122,11 @@ def main() -> int:
         )
         if added.returncode != 0:
             return added.returncode
+    if plugin_is_installed(codex, plugin_id) is True:
+        print("Codex plugin already installed; skipping redundant reinstall.")
+        return 0
     return subprocess.run(
-        [codex, "plugin", "add", "agent-meeting@woodor"]
+        [codex, "plugin", "add", plugin_id]
     ).returncode
 
 

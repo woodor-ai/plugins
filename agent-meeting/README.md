@@ -27,6 +27,22 @@ migrates supported legacy artifacts, then registers the matching native plugin
 marketplace. Windows uses pip-generated `.exe` console launchers and prefers
 the Python `py -3` launcher.
 
+## Update
+
+Use the single stable updater after an initial installation:
+
+```sh
+am-update
+```
+
+It fetches the public release, installs one new immutable host runtime, then
+refreshes the installed Claude Code and Codex integrations. `am-update` only
+targets clients detected on the machine; use `am-update --target claude-code`
+or `am-update --target codex` to select one explicitly, and `am-update --check`
+to inspect the current state. A Codex runtime switch refuses to interrupt active
+`mycodex` sessions. `mycodex` launches sessions only; `mycodex --update` is no
+longer an update path.
+
 The existing Codex bootstrap remains supported:
 
 ```sh

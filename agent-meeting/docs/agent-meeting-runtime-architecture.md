@@ -1,6 +1,6 @@
 # agent-meeting / mycodex 运行时架构
 
-版本：0.15.1
+版本：0.15.3
 
 更新时间：2026-07-28
 
@@ -190,6 +190,14 @@ mycodex
 
 `am-codexd` 绑定 `127.0.0.1`，拥有一个共享 app-server。存在活动 lease 时，
 会中断会话的 stop/restart/update 继续被拒绝。
+
+## 6.1 统一更新入口
+
+`am-update` 是唯一的发布更新入口，属于 `agent-meeting` 核心 runtime，而非
+`mycodex`。它从公开仓库获取纯语义版本的 release，安装并原子切换新的共享 runtime，
+再分别刷新已安装的 Claude Code 和 Codex adapter。Claude Code 只在下一个会话读取
+新的 hook；Codex 的 daemon 切换仍会在存在活动 lease 时拒绝执行。`mycodex` 只负责
+启动 Codex 会话，`mycodex --update` 不再承担更新职责。
 
 ## 7. OS 运行态
 

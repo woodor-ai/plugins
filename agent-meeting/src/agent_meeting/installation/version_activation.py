@@ -9,7 +9,13 @@ import sys
 from pathlib import Path
 
 
-PUBLIC_COMMANDS = ("meeting", "am-msgd", "mycodex", "am-codexd")
+PUBLIC_COMMANDS = (
+    "meeting",
+    "am-msgd",
+    "am-update",
+    "mycodex",
+    "am-codexd",
+)
 RUNTIME_COMMANDS = PUBLIC_COMMANDS + (
     "am-session-monitor",
     "am-statusline",

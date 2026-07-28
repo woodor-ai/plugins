@@ -21,8 +21,80 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.15.1"
+    assert mycodex.__version__ == "0.15.3"
     assert mycodex.__version__ == agent_meeting.__version__
+
+
+def test_codex_app_server_environment_marks_mycodex_runtime(monkeypatch):
+    from mycodex.codex_session_broker import broker_process
+
+    monkeypatch.delenv("AGENT_MEETING_CODEX_RUNTIME", raising=False)
+    environment = broker_process.codex_app_server_environment({"KEEP": "yes"})
+
+    assert environment == {
+        "KEEP": "yes",
+        "AGENT_MEETING_CODEX_RUNTIME": "1",
+    }
+
+
+def test_daemon_update_defers_when_a_session_is_active(monkeypatch, capsys):
+    from mycodex.commands import am_codexd_cli
+
+    monkeypatch.setattr(
+        am_codexd_cli,
+        "status_info",
+        lambda: {"version": "0.15.2", "sessions": 1, "ok": True},
+    )
+    monkeypatch.setattr(am_codexd_cli, "installed_version", lambda: "0.15.1")
+
+    assert am_codexd_cli.main(["update", "--defer-if-active"]) == 0
+    assert capsys.readouterr().out == (
+        "deferring am-codexd update from 0.15.2 to 0.15.1 while "
+        "1 mycodex session(s) are active\n"
+    )
+
+
+def test_central_hub_transports_bypass_system_proxies(monkeypatch):
+    import urllib.request
+
+    from mycodex.codex_session_broker import broker_process
+
+    options = broker_process.central_websocket_options({"X-Test": "yes"})
+    assert options["proxy"] is None
+    assert options["additional_headers"] == {"X-Test": "yes"}
+
+    assert isinstance(
+        broker_process.CENTRAL_HTTP_PROXY_HANDLER,
+        urllib.request.ProxyHandler,
+    )
+    assert broker_process.CENTRAL_HTTP_PROXY_HANDLER.proxies == {}
+
+    captured = {}
+
+    class Response:
+        def read(self):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_open(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(broker_process.CENTRAL_HTTP_OPENER, "open", fake_open)
+
+    assert broker_process.http_json(
+        "GET", "http://100.82.70.77:8765", "/health", timeout=3
+    ) == {"ok": True}
+    assert captured == {
+        "url": "http://100.82.70.77:8765/health",
+        "timeout": 3,
+    }
 
 
 def test_session_lease_has_canonical_identity_and_proxy_url():
@@ -119,76 +191,11 @@ def test_meeting_inbox_renderer_uses_provenance_without_message_body():
     assert "private full body" not in text
 
 
-def test_mycodex_update_uses_versioned_macos_installer(
-    tmp_path,
-    monkeypatch,
-):
+def test_mycodex_update_is_deprecated(capsys):
     from mycodex.commands import mycodex_cli
 
-    codex_home = tmp_path / "codex"
-    checkout = codex_home / "plugins-src"
-    (checkout / ".git").mkdir(parents=True)
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setattr(mycodex_cli.shutil, "which", lambda name: "/usr/bin/git")
-    commands = []
-
-    def fake_run(command, **_kwargs):
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(mycodex_cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(mycodex_cli.sys, "platform", "darwin")
-
-    assert mycodex_cli.main(["update"]) == 0
-    assert commands[0] == [
-        "/usr/bin/git",
-        "-C",
-        str(checkout),
-        "pull",
-        "--ff-only",
-    ]
-    assert commands[1] == [
-        "/bin/sh",
-        str(checkout / "installers" / "codex" / "install-on-macos.sh"),
-    ]
-
-
-def test_windows_update_invokes_powershell_installer(
-    tmp_path,
-    monkeypatch,
-):
-    from mycodex.commands import mycodex_cli
-
-    monkeypatch.setattr(
-        mycodex_cli.shutil,
-        "which",
-        lambda name: (
-            r"C:\Program Files\PowerShell\7\pwsh.exe"
-            if name == "pwsh"
-            else None
-        ),
-    )
-
-    command = mycodex_cli._platform_installer_command(
-        tmp_path,
-        ["--non-interactive"],
-        is_windows=True,
-    )
-
-    assert command[:6] == [
-        r"C:\Program Files\PowerShell\7\pwsh.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(
-            tmp_path
-            / "installers"
-            / "codex"
-            / "install-on-windows.ps1"
-        ),
-    ]
-    assert command[-1] == "--non-interactive"
+    assert mycodex_cli.main(["update"]) == 2
+    assert "has moved to am-update" in capsys.readouterr().err
 
 
 def test_windows_background_process_policy_uses_detached_flags(tmp_path):

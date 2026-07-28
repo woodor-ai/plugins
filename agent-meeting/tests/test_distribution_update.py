@@ -1,0 +1,218 @@
+import sys
+from pathlib import Path
+
+import pytest
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PLUGIN_ROOT / "src"
+
+
+@pytest.fixture(autouse=True)
+def add_source_root(monkeypatch):
+    monkeypatch.syspath_prepend(str(SRC_ROOT))
+
+
+def test_detect_targets_uses_client_directories(tmp_path, monkeypatch):
+    from agent_meeting.installation.distribution_update import (
+        TARGET_CLAUDE_CODE,
+        TARGET_CODEX,
+        detect_targets,
+    )
+
+    monkeypatch.setattr("shutil.which", lambda _command: None)
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".codex").mkdir()
+
+    assert detect_targets(home=tmp_path) == (TARGET_CLAUDE_CODE, TARGET_CODEX)
+
+
+def test_install_release_runs_shared_runtime_once_and_selected_adapters(tmp_path):
+    from agent_meeting.installation.distribution_update import (
+        TARGET_CLAUDE_CODE,
+        TARGET_CODEX,
+        install_release,
+    )
+
+    commands = []
+    source_root = tmp_path / "plugins"
+    for project in ("agent-meeting", "mycodex"):
+        manifest = source_root / project / "pyproject.toml"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            "[project]\nversion = \"0.15.3\"\n",
+            encoding="utf-8",
+        )
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+
+    install_release(
+        source_root=source_root,
+        meeting_home=tmp_path / "meeting",
+        targets=(TARGET_CLAUDE_CODE, TARGET_CODEX),
+        run=fake_run,
+    )
+
+    assert commands == [
+        [
+            sys.executable,
+            str(source_root / "installers/shared/install-agent-meeting-package.py"),
+        ],
+        [
+            sys.executable,
+            str(source_root / "installers/shared/migrate-agent-meeting-legacy-layout.py"),
+        ],
+        [
+            sys.executable,
+            str(source_root / "installers/shared/register-claude-marketplace.py"),
+        ],
+        [str(tmp_path / "meeting/bin/am-configure-codex-user-environment")],
+        [
+            sys.executable,
+            str(source_root / "installers/shared/register-codex-marketplace.py"),
+        ],
+        [str(tmp_path / "meeting/bin/am-codexd"), "update", "--defer-if-active"],
+    ]
+
+
+def test_refresh_checkout_fast_forwards_existing_public_checkout(tmp_path):
+    from agent_meeting.installation.distribution_update import (
+        CHECKOUT_REFRESH_TIMEOUT_SECONDS,
+        refresh_checkout,
+    )
+
+    checkout = tmp_path / "plugins"
+    (checkout / ".git").mkdir(parents=True)
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+
+    assert refresh_checkout(
+        checkout=checkout,
+        repository="https://example.test/plugins.git",
+        run=fake_run,
+    ) == checkout
+    assert commands == [
+        (
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "pull",
+                "--ff-only",
+                "origin",
+                "main",
+            ],
+            {"check": True, "timeout": CHECKOUT_REFRESH_TIMEOUT_SECONDS},
+        )
+    ]
+
+
+def test_refresh_checkout_kills_the_complete_git_process_group_on_timeout(
+    tmp_path, monkeypatch
+):
+    import subprocess
+
+    from agent_meeting.installation import distribution_update
+
+    class StalledGit:
+        pid = 1234
+        returncode = None
+
+        def __init__(self):
+            self.communicate_calls = 0
+
+        def communicate(self, *, timeout=None):
+            self.communicate_calls += 1
+            if self.communicate_calls == 1:
+                raise subprocess.TimeoutExpired(["git"], timeout)
+            return "", ""
+
+    killed = []
+    monkeypatch.setattr(
+        distribution_update.subprocess,
+        "Popen",
+        lambda *args, **kwargs: StalledGit(),
+    )
+    monkeypatch.setattr(distribution_update.os, "killpg", lambda pid, signal: killed.append((pid, signal)))
+
+    with pytest.raises(RuntimeError, match="timed out after"):
+        distribution_update.refresh_checkout(
+            checkout=tmp_path / "plugins",
+            repository="https://example.test/plugins.git",
+        )
+
+    assert killed == [
+        (1234, distribution_update.signal.SIGKILL),
+        (1234, distribution_update.signal.SIGKILL),
+        (1234, distribution_update.signal.SIGKILL),
+    ]
+
+
+def test_refresh_checkout_reports_each_retry_attempt(tmp_path, capsys):
+    from agent_meeting.installation import distribution_update
+
+    attempts = 0
+
+    def flaky_run(_command, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("temporary network failure")
+
+    assert distribution_update.refresh_checkout(
+        checkout=tmp_path / "plugins",
+        repository="https://example.test/plugins.git",
+        run=flaky_run,
+    ) == tmp_path / "plugins"
+    assert capsys.readouterr().out.splitlines() == [
+        "Retrying agent-meeting checkout refresh (2/3) after: temporary network failure",
+        "Retrying agent-meeting checkout refresh (3/3) after: temporary network failure",
+    ]
+
+
+def test_release_version_rejects_local_cachebuster_suffix(tmp_path):
+    from agent_meeting.installation.distribution_update import release_version
+
+    for project, version in (
+        ("agent-meeting", "0.15.3+codex.local"),
+        ("mycodex", "0.15.3+codex.local"),
+    ):
+        manifest = tmp_path / project / "pyproject.toml"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(f"[project]\nversion = \"{version}\"\n", encoding="utf-8")
+
+    import pytest
+
+    with pytest.raises(ValueError, match="must not use local cachebuster"):
+        release_version(tmp_path)
+
+
+def test_am_update_check_reports_runtime_and_detected_targets(
+    tmp_path, monkeypatch, capsys
+):
+    from agent_meeting.commands import am_update_cli
+
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    (meeting_home / "active-runtime.json").write_text(
+        '{"version": "0.15.3"}', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        am_update_cli.distribution_update,
+        "default_meeting_home",
+        lambda: meeting_home,
+    )
+    monkeypatch.setattr(
+        am_update_cli.distribution_update,
+        "detect_targets",
+        lambda: ("claude-code",),
+    )
+
+    assert am_update_cli.main(["--check"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "active runtime: 0.15.3",
+        "installed targets: claude-code",
+    ]

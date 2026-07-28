@@ -1,6 +1,6 @@
 {
   "name": "agent-meeting",
-  "version": "0.15.1",
+  "version": "0.15.3",
   "description": "Peer messaging for Claude Code and Codex agents. SQLite-backed with LAN discovery, the central am-msgd session/message hub, and the machine-wide am-codexd daemon.",
   "author": {
     "name": "Woodor",
