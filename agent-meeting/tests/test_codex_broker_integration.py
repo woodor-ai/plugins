@@ -17,7 +17,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AMCTL = ROOT / "bin" / "amctl"
+AM_MSGD = ROOT / "bin" / "am-msgd"
 BROKER = ROOT / "codex" / "am_codexd.py"
 
 
@@ -188,7 +188,7 @@ async def verify_experimental_context_gate(appserver_url):
 @pytest.mark.skipif(shutil.which("codex") is None, reason="codex is not installed")
 def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
     pytest.importorskip("websockets")
-    amctl_port, api_port, app_port = free_ports(3)
+    am_msgd_port, api_port, app_port = free_ports(3)
     meeting_home = tmp_path / "meeting-home"
     db_dir = meeting_home / "db"
     db_dir.mkdir(parents=True)
@@ -206,14 +206,14 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
             "MEETING_BROKER_APP_PORT_LAST": str(app_port),
         }
     )
-    amctl_process = subprocess.Popen(
+    am_msgd_process = subprocess.Popen(
         [
             sys.executable,
-            str(AMCTL),
+            str(AM_MSGD),
             "--bind",
             "127.0.0.1",
             "--port",
-            str(amctl_port),
+            str(am_msgd_port),
             "--no-mdns",
         ],
         env=env,
@@ -223,8 +223,8 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
     )
     broker_process = None
     try:
-        amctl_base = f"http://127.0.0.1:{amctl_port}"
-        assert wait_for_health(amctl_base, amctl_process, timeout=10)
+        am_msgd_base = f"http://127.0.0.1:{am_msgd_port}"
+        assert wait_for_health(am_msgd_base, am_msgd_process, timeout=10)
         broker_process = subprocess.Popen(
             [sys.executable, str(BROKER)],
             env=env,
@@ -251,7 +251,7 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
                     "name": name,
                     "project": "proj",
                     "cwd": str(tmp_path),
-                    "control_url": amctl_base,
+                    "control_url": am_msgd_base,
                 },
                 timeout=40,
             )
@@ -314,4 +314,4 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
                 broker_process.wait(timeout=12)
             except Exception:
                 terminate(broker_process)
-        terminate(amctl_process)
+        terminate(am_msgd_process)

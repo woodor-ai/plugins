@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Identity regression suite for amctl composite-key schema.
+Identity regression suite for am-msgd composite-key schema.
 
 Covers:
   TC1  - cross-project isolation (same name, different projects)
@@ -36,7 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-TEST_PORT = 8797  # distinct port to avoid collision with live central amctl (8765) or other test (8799)
+TEST_PORT = 8797  # distinct port to avoid collision with live central am-msgd (8765) or other test (8799)
 HOST = "127.0.0.1"
 
 # ---------- DB bootstrap (new composite-key schema) ----------
@@ -113,14 +113,14 @@ def init_db(home_dir: str):
     conn.close()
 
 
-# ---------- central amctl lifecycle ----------
+# ---------- central am-msgd lifecycle ----------
 
-def start_amctl(home_dir: str) -> subprocess.Popen:
-    amctl_path = os.path.join(os.path.dirname(__file__), "..", "bin", "amctl")
+def start_am_msgd(home_dir: str) -> subprocess.Popen:
+    am_msgd_path = os.path.join(os.path.dirname(__file__), "..", "bin", "am-msgd")
     env = os.environ.copy()
     env["MEETING_HOME"] = home_dir
     proc = subprocess.Popen(
-        [sys.executable, amctl_path, f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, am_msgd_path, f"--port={TEST_PORT}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -133,8 +133,8 @@ def start_amctl(home_dir: str) -> subprocess.Popen:
         except Exception:
             if proc.poll() is not None:
                 _, err = proc.communicate()
-                raise RuntimeError(f"Central amctl exited early:\n{err.decode()}")
-    raise RuntimeError("Central amctl did not start within 10s")
+                raise RuntimeError(f"Central am-msgd exited early:\n{err.decode()}")
+    raise RuntimeError("Central am-msgd did not start within 10s")
 
 
 # ---------- HTTP helpers ----------
@@ -790,7 +790,7 @@ def test_tc11_global_priority_over_scoped():
               f"got project={candidates[0]['project']}")
 
     # Also verify explicit SuperUser@projA still resolves correctly (direct @project path, not via /resolve)
-    # (resolve endpoint only does bare-name; @project is handled by CLI splitting, not central amctl)
+    # (resolve endpoint only does bare-name; @project is handled by CLI splitting, not central am-msgd)
 
 
 # ---------- TC12: _derive_project sanitizes basename=='*' ----------
@@ -1100,7 +1100,7 @@ def test_tc19_register_instance_aware(home_dir: str):
 
     now = time.time()
 
-    # (a) 同 instance 重连 → 永远放行，即使心跳刚更新也不受影响 (central amctl 重启后
+    # (a) 同 instance 重连 → 永远放行，即使心跳刚更新也不受影响 (central am-msgd 重启后
     # monitor 重连场景，必须保住).
     _set_session(home_dir, "tc19p", "sess-a", instance="inst-A", last_seen=now)
     r = _http("/register", "POST",
@@ -1184,13 +1184,13 @@ def test_tc20_codex_instance_semantics(home_dir: str):
 # ---------- TC21: two-step registration self-rejects (0.9.0 regression pin) ----------
 
 def test_tc21_two_step_registration_self_rejects(home_dir: str):
-    """TC21: locks down the 0.9.0 `/meeting <name>` regression this fix removes the cause
+    """TC21: locks down the 0.9.0 `/imagent <name>` regression this fix removes the cause
     of. The old skill flow did a standalone `meeting online` (no --instance) as its own
     step, then installed the monitor which immediately re-registered with its own freshly-
-    generated `--instance` uuid. The central amctl sees that as a DIFFERENT live process (existing
+    generated `--instance` uuid. The central am-msgd sees that as a DIFFERENT live process (existing
     instance=None != incoming uuid, heartbeat still fresh) and refuses it — the session
     rejected its own registration. This test proves that shape still self-rejects at the
-    central amctl level (so nobody reintroduces the two-step flow believing it's harmless), and
+    central am-msgd level (so nobody reintroduces the two-step flow believing it's harmless), and
     proves the fixed shape — monitor is the SOLE registrant, one call with its own instance,
     no prior bare `online` — succeeds cleanly on a free name."""
     print("\n[TC21] 两步注册自拒回归钉子 + monitor 独立注册验证")
@@ -1230,7 +1230,7 @@ def main():
 
     try:
         init_db(home_dir)
-        proc = start_amctl(home_dir)
+        proc = start_am_msgd(home_dir)
 
         try:
             test_tc1_cross_project_isolation(home_dir)

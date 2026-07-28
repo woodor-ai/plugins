@@ -3,10 +3,10 @@
 WS PR3 integration tests — monitor.py WS client.
 
 Tests the monitor's full WS behavior including cursor=-1 sentinel seeding
-introduced in PR3. Never touches the live central amctl on 8765.
+introduced in PR3. Never touches the live central am-msgd on 8765.
 
-Schema/API note: the central amctl's identity model is (project, name) composite
-key (see amctl docstring "DEPLOY NOTE"). monitor.py normally derives
+Schema/API note: the central am-msgd's identity model is a (project, name)
+composite key. monitor.py normally derives
 its own project from cwd via meeting_common.derive_project(), but that
 derivation depends on cache state under the real ~/.agent-meeting home (an
 explicit --proj declared for this repo root on the host machine wins over
@@ -18,10 +18,10 @@ the test.
 Test cases:
   TC-M1: monitor 连上后能收到实时消息并打出正确的通知 stdout 行
   TC-M2: 带游标连入能补未读（backlog replay）
-  TC-M3: server ping → monitor 回 masked pong（central amctl 不报协议错、连接不掉）
-  TC-M4: 杀掉测试 central amctl → monitor 退避重连 → 重启 central amctl → monitor 重连并按游标补发
+  TC-M3: server ping → monitor 回 masked pong（central am-msgd 不报协议错、连接不掉）
+  TC-M4: 杀掉测试 central am-msgd → monitor 退避重连 → 重启 central am-msgd → monitor 重连并按游标补发
   TC-M5: host 解析每次重连都重跑 controls 解析（mock controls 验证调用次数）
-  TC-M6: 首启 cursor=-1 播种 — central amctl 回 caught_up(max)，monitor 不收历史消息
+  TC-M6: 首启 cursor=-1 播种 — central am-msgd 回 caught_up(max)，monitor 不收历史消息
 
 Usage:
     python3 agent-meeting/tests/test_ws_monitor.py
@@ -50,7 +50,16 @@ LOG_PATH = "/tmp/ws-pr2-test.log"
 
 BIN_DIR = os.path.join(os.path.dirname(__file__), "..", "bin")
 MONITOR_PATH = os.path.join(BIN_DIR, "monitor.py")
-AMCTL_PATH = os.path.join(BIN_DIR, "amctl")
+MONITOR_IMPLEMENTATION_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "src",
+    "agent_meeting",
+    "ai_platforms",
+    "claude_code",
+    "session_message_monitor.py",
+)
+AM_MSGD_PATH = os.path.join(BIN_DIR, "am-msgd")
 
 # Fixed literal, not derived from cwd (mirrors test_ws.py's TEST_PROJECT).
 # monitor.py is launched with --proj TEST_PROJECT (see start_monitor) so its
@@ -168,7 +177,7 @@ class WSClient:
             pass
 
 
-# ---------- central amctl lifecycle ----------
+# ---------- central am-msgd lifecycle ----------
 
 def _http(path: str, method="GET", body=None, port: int = TEST_PORT) -> dict:
     url = f"http://{HOST}:{port}{path}"
@@ -267,7 +276,7 @@ def _read_db_cursor(db_dir: str, member_name: str, project: str = TEST_PROJECT) 
 def _set_db_cursor(db_dir: str, member_name: str, cursor: int, project: str = TEST_PROJECT):
     """Insert/update a read_cursors row directly (test setup helper).
 
-    Uses WAL mode and isolation_level=None to match central amctl connection settings.
+    Uses WAL mode and isolation_level=None to match central am-msgd connection settings.
     """
     db_path = os.path.join(db_dir, "db", "rooms.db")
     conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
@@ -280,11 +289,11 @@ def _set_db_cursor(db_dir: str, member_name: str, cursor: int, project: str = TE
     conn.close()
 
 
-def start_amctl(db_dir: str, port: int = TEST_PORT) -> subprocess.Popen:
+def start_am_msgd(db_dir: str, port: int = TEST_PORT) -> subprocess.Popen:
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
     proc = subprocess.Popen(
-        [sys.executable, AMCTL_PATH, f"--port={port}", "--no-mdns"],
+        [sys.executable, AM_MSGD_PATH, f"--port={port}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -297,8 +306,8 @@ def start_amctl(db_dir: str, port: int = TEST_PORT) -> subprocess.Popen:
         except Exception:
             if proc.poll() is not None:
                 out, err = proc.communicate()
-                raise RuntimeError(f"Central amctl exited early:\n{err.decode()}")
-    raise RuntimeError("Central amctl did not start in time")
+                raise RuntimeError(f"Central am-msgd exited early:\n{err.decode()}")
+    raise RuntimeError("Central am-msgd did not start in time")
 
 
 # ---------- monitor process helpers ----------
@@ -320,10 +329,10 @@ def start_monitor(name: str, db_dir: str) -> "tuple[subprocess.Popen, list[str],
     # --force: most test cases pre-register `name` via a direct HTTP /register
     # call (to seed messages/read_cursors before the monitor connects) and then
     # start the monitor under that same name. Now that `meeting online` and the
-    # WS connection both target the same local test central amctl (see
+    # WS connection both target the same local test central am-msgd (see
     # install_meeting_cli), that pre-registration is a genuine still-fresh live
-    # session as far as the central amctl is concerned -- without --force the
-    # central amctl refuses (name_taken) and the monitor exits before reaching
+    # session as far as the central am-msgd is concerned -- without --force the
+    # central am-msgd refuses (name_taken) and the monitor exits before reaching
     # the WS loop. The fresh-registration test does not pre-register the receiver;
     # --force is harmless when no prior lease exists.
     proc = subprocess.Popen(
@@ -418,11 +427,11 @@ def check(name: str, cond: bool, detail: str = ""):
 
 # ---------- meeting CLI install ----------
 # monitor.py invokes `<MEETING_HOME>/bin/meeting online|offline|controls` as a
-# subprocess. That real CLI resolves which central amctl to talk to via its own
+# subprocess. That real CLI resolves which central am-msgd to talk to via its own
 # `_resolve_host()` -- env MEETING_HOST first, then user-pinned config, then
 # LIVE mDNS/LAN DISCOVERY as a fallback. MEETING_HOME only redirects local
 # file paths (db, config.json, pidfiles); it does nothing to stop that mDNS
-# fallback from finding a real central amctl elsewhere on the LAN and registering
+# fallback from finding a real central am-msgd elsewhere on the LAN and registering
 # this test's throwaway session names against it (see docs/contracts/
 # 0.10.0-composite-key-identity.md 阶段 3, incident 2026-07-22). So every subprocess
 # that runs this installed CLI MUST also get MEETING_HOST set in its env
@@ -451,6 +460,18 @@ def install_meeting_cli(db_dir: str, counter_file: str | None = None) -> str:
     real_path = os.path.join(bin_dir, "meeting-real")
     shutil.copy2(os.path.join(BIN_DIR, "meeting"), real_path)
     shutil.copy2(os.path.join(BIN_DIR, "meeting_common.py"), os.path.join(bin_dir, "meeting_common.py"))
+    # The 0.15 source-tree entrypoint resolves its packaged implementation
+    # through the activation stamp when it is copied outside agent-meeting/.
+    # Point this isolated test layout back at the checkout source without
+    # forwarding any command to the user's installed runtime.
+    with open(
+        os.path.join(db_dir, ".bin-plugin-root"),
+        "w",
+        encoding="utf-8",
+    ) as activation:
+        activation.write(
+            os.path.abspath(BIN_DIR) + "\n0.15.0\n"
+        )
     os.chmod(real_path, 0o755)
 
     stub_path = os.path.join(bin_dir, "meeting")
@@ -535,7 +556,7 @@ def test_m2_backlog_replay(db_dir: str):
     r2 = _send("m2_sender", "m2_recv", "b")
     r3 = _send("m2_sender", "m2_recv", "c")
 
-    # Pre-set read_cursors to r1 so central amctl treats msg1 as already delivered.
+    # Pre-set read_cursors to r1 so central am-msgd treats msg1 as already delivered.
     _set_db_cursor(db_dir, "m2_recv", r1["msg_id"])
 
     proc, shared, offset = start_monitor("m2_recv", db_dir)
@@ -553,7 +574,7 @@ def test_m2_backlog_replay(db_dir: str):
 
 
 def test_m3_ping_pong(db_dir: str):
-    """TC-M3: server ping → monitor 回 masked pong（central amctl 不报协议错、连接不掉）"""
+    """TC-M3: server ping → monitor 回 masked pong（central am-msgd 不报协议错、连接不掉）"""
     print("\n[TC-M3] server ping → monitor masked pong")
 
     _register("m3_user")
@@ -566,11 +587,11 @@ def test_m3_ping_pong(db_dir: str):
 
     proc, shared, offset = start_monitor("m3_user", db_dir)
     try:
-        # Let monitor connect and sit for 8s — central amctl pings every 4s.
-        # If monitor doesn't pong properly, central amctl will remove the connection.
+        # Let monitor connect and sit for 8s — central am-msgd pings every 4s.
+        # If monitor doesn't pong properly, central am-msgd will remove the connection.
         time.sleep(8.0)
 
-        # After 8s (2 central amctl ping cycles), send a message from m3_other (not self)
+        # After 8s (2 central am-msgd ping cycles), send a message from m3_other (not self)
         # so the self-echo suppression does not filter it out.
         _send("m3_other", "m3_user", "still alive")
         lines = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=5.0,
@@ -578,9 +599,9 @@ def test_m3_ping_pong(db_dir: str):
         check("TC-M3: monitor still alive after ping cycles",
               len(lines) >= 1, f"got {lines}")
 
-        # Also verify central amctl is still healthy
+        # Also verify central am-msgd is still healthy
         health = _http("/health")
-        check("TC-M3: central amctl still healthy", health.get("ok") is True)
+        check("TC-M3: central am-msgd still healthy", health.get("ok") is True)
 
     finally:
         proc.terminate()
@@ -588,9 +609,9 @@ def test_m3_ping_pong(db_dir: str):
 
 
 def test_m4_reconnect_backlog(db_dir: str):
-    """TC-M4: 杀掉 central amctl → monitor 退避重连 → 重启 central amctl → monitor 重连并补发"""
-    global _amctl_proc
-    print("\n[TC-M4] central amctl 重启 + monitor 重连补发")
+    """TC-M4: 杀掉 central am-msgd → monitor 退避重连 → 重启 central am-msgd → monitor 重连并补发"""
+    global _am_msgd_proc
+    print("\n[TC-M4] central am-msgd 重启 + monitor 重连补发")
 
     _register("m4_sender")
     _register("m4_recv")
@@ -598,7 +619,7 @@ def test_m4_reconnect_backlog(db_dir: str):
     # Establish baseline — send 1 msg, pre-set cursor, start monitor.
     r0 = _send("m4_sender", "m4_recv", "before")
 
-    # Pre-set read_cursors so central amctl starts monitor past r0.
+    # Pre-set read_cursors so central am-msgd starts monitor past r0.
     _set_db_cursor(db_dir, "m4_recv", r0["msg_id"])
 
     proc, shared, offset = start_monitor("m4_recv", db_dir)
@@ -606,11 +627,11 @@ def test_m4_reconnect_backlog(db_dir: str):
         # Wait for monitor to connect
         time.sleep(2.5)
 
-        # Kill the central amctl
-        _amctl_proc.terminate()
-        _amctl_proc.wait(timeout=5)
+        # Kill the central am-msgd
+        _am_msgd_proc.terminate()
+        _am_msgd_proc.wait(timeout=5)
 
-        # While central amctl is down, send 2 more messages directly into DB
+        # While central am-msgd is down, send 2 more messages directly into DB
         db_path = os.path.join(db_dir, "db", "rooms.db")
         conn = sqlite3.connect(db_path, timeout=10)
         now = int(time.time())
@@ -632,11 +653,11 @@ def test_m4_reconnect_backlog(db_dir: str):
         # Give monitor time to detect disconnect and start backing off
         time.sleep(3.0)
 
-        # Restart central amctl on same port with same DB
-        _amctl_proc = start_amctl(db_dir, TEST_PORT)
+        # Restart central am-msgd on same port with same DB
+        _am_msgd_proc = start_am_msgd(db_dir, TEST_PORT)
 
         # Monitor should reconnect and get the 2 missed messages as backlog.
-        # Central amctl reads read_cursors (=r0) and replays everything after it.
+        # Central am-msgd reads read_cursors (=r0) and replays everything after it.
         lines = collect_stdout_lines(proc, "📬 New Message", count=2, timeout=40.0,
                                      _shared_lines=shared, _shared_offset=offset)
         check("TC-M4: received 2 missed msgs after reconnect",
@@ -649,7 +670,7 @@ def test_m4_reconnect_backlog(db_dir: str):
 
 def test_m5_host_reresolution(db_dir: str):
     """TC-M5: 重连时重跑 controls 解析（验证调用次数 >1）"""
-    global _amctl_proc
+    global _am_msgd_proc
     print("\n[TC-M5] 重连时重解析 host (controls 调用计数)")
 
     import tempfile as _tempfile
@@ -672,15 +693,15 @@ def test_m5_host_reresolution(db_dir: str):
         # Let monitor connect (1st controls call)
         time.sleep(2.5)
 
-        # Kill central amctl to force a reconnect
-        _amctl_proc.terminate()
-        _amctl_proc.wait(timeout=5)
+        # Kill central am-msgd to force a reconnect
+        _am_msgd_proc.terminate()
+        _am_msgd_proc.wait(timeout=5)
 
         # Give monitor a moment to detect disconnect
         time.sleep(2.0)
 
-        # Restart central amctl
-        _amctl_proc = start_amctl(db_dir, TEST_PORT)
+        # Restart central am-msgd
+        _am_msgd_proc = start_am_msgd(db_dir, TEST_PORT)
 
         # Wait for monitor to reconnect (triggers 2nd+ controls call)
         time.sleep(5.0)
@@ -704,7 +725,7 @@ def test_m5_host_reresolution(db_dir: str):
 
 
 def test_m6_first_seed_zero_replay(db_dir: str):
-    """TC-M6: 新成员无 read_cursors 行 — central amctl 首次 seed 到 MAX，monitor 零历史回放，
+    """TC-M6: 新成员无 read_cursors 行 — central am-msgd 首次 seed 到 MAX，monitor 零历史回放，
     read_cursors 落行，后续实时消息正常投递。"""
     print("\n[TC-M6] 首次 seed 零回放（DB 权威）")
 
@@ -748,7 +769,7 @@ def test_m6_first_seed_zero_replay(db_dir: str):
 
 def test_mg1_group_notification(db_dir: str):
     """TC-MG1: 群消息 → monitor 打出通知行（group 字段 non-None）。"""
-    global _amctl_proc
+    global _am_msgd_proc
     print("\n[TC-MG1] 群消息 → monitor 通知")
 
     _register("mg1_sender")
@@ -825,7 +846,7 @@ def test_stdout_format_unchanged():
     """Verify the exact stdout format strings match what monitor.py emits."""
     print("\n[TC-FMT] stdout 行格式逐字一致")
 
-    with open(MONITOR_PATH, encoding="utf-8") as f:
+    with open(MONITOR_IMPLEMENTATION_PATH, encoding="utf-8") as f:
         src = f.read()
 
     # 1:1 format: peer_id (name@project, or bare name for the global "*"
@@ -851,7 +872,7 @@ def test_emit_message_unit():
     mod = importlib.util.load_from_spec = None  # won't use this path
 
     # Import _emit_message by exec-ing just that function from source
-    with open(MONITOR_PATH, encoding="utf-8") as f:
+    with open(MONITOR_IMPLEMENTATION_PATH, encoding="utf-8") as f:
         src = f.read()
 
     ns: dict = {}
@@ -866,7 +887,14 @@ def test_emit_message_unit():
             break
         end += 1
     func_src = "\n".join(lines[start:end])
-    exec(compile(func_src, MONITOR_PATH, "exec"), ns)
+    exec(
+        compile(
+            func_src,
+            MONITOR_IMPLEMENTATION_PATH,
+            "exec",
+        ),
+        ns,
+    )
     emit = ns["_emit_message"]
 
     # Test group message
@@ -922,11 +950,11 @@ def test_emit_message_unit():
 
 # ---------- main ----------
 
-_amctl_proc: subprocess.Popen = None  # type: ignore[assignment]
+_am_msgd_proc: subprocess.Popen = None  # type: ignore[assignment]
 
 
 def main():
-    global _amctl_proc
+    global _am_msgd_proc
 
     log = open(LOG_PATH, "w")
     log.write(f"WS PR2 test run: {time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
@@ -938,8 +966,8 @@ def main():
         print(f"[setup] test DB: {tmp}")
 
         install_meeting_cli(tmp)
-        _amctl_proc = start_amctl(tmp, TEST_PORT)
-        print(f"[setup] central amctl pid={_amctl_proc.pid} port={TEST_PORT}")
+        _am_msgd_proc = start_am_msgd(tmp, TEST_PORT)
+        print(f"[setup] central am-msgd pid={_am_msgd_proc.pid} port={TEST_PORT}")
 
         try:
             test_stdout_format_unchanged()
@@ -954,8 +982,8 @@ def main():
             test_ms1_self_echo_suppressed(tmp)
         finally:
             try:
-                _amctl_proc.terminate()
-                _amctl_proc.wait(timeout=5)
+                _am_msgd_proc.terminate()
+                _am_msgd_proc.wait(timeout=5)
             except Exception:
                 pass
 

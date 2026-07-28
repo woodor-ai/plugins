@@ -2,7 +2,7 @@
 """
 Test suite for migrations/0.10.0-apply-identity-remap.py.
 
-Self-contained (stdlib only, no central amctl). Builds a temp SQLite DB with the
+Self-contained (stdlib only, no central am-msgd). Builds a temp SQLite DB with the
 composite-key schema (same shape as test_identity_regression.py /
 test_migration_canonical_project.py plus a groups table with a 'charter'
 column, matching the real rooms.db), seeds rows that exercise every

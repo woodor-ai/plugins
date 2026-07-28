@@ -1,14 +1,15 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-27 · version 0.14.0
+Last updated: 2026-07-28 · version 0.15.1
 
 The runtime command is `~/.agent-meeting/bin/meeting`. On POSIX it is an
-executable shell wrapper that selects the agent-meeting virtualenv; on Windows
-call the extensionless Python script with the virtualenv Python.
+atomic symlink to the selected immutable runtime; on Windows it is the
+pip-generated `~/.agent-meeting/bin/meeting.exe` console launcher. The same
+rule applies to `am-msgd`, `mycodex`, and `am-codexd`.
 
-Claude Code exposes the workflows as `/meeting` and `/talkto`. Codex loads the
+Claude Code exposes the workflows as `/imagent` and `/talkto`. Codex loads the
 same skills from the native plugin and exposes them through `/skills` or
-`$meeting` and `$talkto`; Codex does not create top-level slash commands from
+`$imagent` and `$talkto`; Codex does not create top-level slash commands from
 skill names.
 
 ## User-facing commands
@@ -17,17 +18,17 @@ The Claude Code skill exposes:
 
 | Slash command | CLI operation |
 |---|---|
-| `/meeting <name>` | Start a named session monitor |
-| `/meeting list` | `meeting list` plus `meeting controls` |
-| `/meeting rename <new>` | `meeting rename` and monitor restart |
-| `/meeting stop [name]` | `meeting stop` |
-| `/meeting delete <peer>` | `meeting delete` after confirmation |
-| `/meeting setup amctl [status\|stop\|restart]` | `meeting amctl` |
-| `/meeting setup token [value\|clear]` | `meeting token` |
-| `/meeting setup telemetry on\|off\|status` | `meeting telemetry` |
+| `/imagent <name>` | Start a named session monitor |
+| `/imagent list` | `meeting list` plus `meeting controls` |
+| `/imagent rename <new>` | `meeting rename` and monitor restart |
+| `/imagent stop [name]` | `meeting stop` |
+| `/imagent delete <peer>` | `meeting delete` after confirmation |
+| `/imagent setup am-msgd [status\|stop\|restart]` | `meeting am-msgd` |
+| `/imagent setup token [value\|clear]` | `meeting token` |
+| `/imagent setup telemetry on\|off\|status` | `meeting telemetry` |
 
 Reserved session names include `list`, `delete`, `rename`, `stop`, `setup`,
-`help`, `controls`, `amctl`, `telemetry`, and `token`.
+`help`, `controls`, `am-msgd`, `telemetry`, and `token`.
 
 ## Message commands
 
@@ -80,13 +81,18 @@ Identity options:
 
 ## Central control
 
-`amctl` is the central agent-meeting control node. It owns
+`am-msgd` is the central agent-meeting session/message hub. It owns
 `~/.agent-meeting/db/rooms.db`, exposes HTTP and WebSocket APIs, and advertises
 `_agent-meeting._tcp.local.` through mDNS.
 
+Version 0.15.0 renamed this process and command from `amctl` to `am-msgd`
+because it owns sessions and message delivery rather than merely controlling
+another service. The old name is removed during upgrade and is not a second
+runtime entrypoint.
+
 | Command | Purpose |
 |---|---|
-| `meeting amctl [status\|stop\|restart]` | Manage the local central node |
+| `meeting am-msgd [status\|stop\|restart]` | Manage the local central node |
 | `meeting controls [--json]` | Discover central nodes |
 | `meeting host [URL\|clear]` | Inspect or pin a central URL |
 | `meeting token [VALUE\|clear]` | Manage bearer authentication |
@@ -94,10 +100,10 @@ Identity options:
 | `meeting prune` | Prune stale session rows without deleting messages |
 | `meeting projcache [list\|clear]` | Manage local authoritative-project cache |
 
-The executable is `bin/amctl`:
+The executable is `bin/am-msgd`:
 
 ```text
-amctl [--port 8765] [--bind 0.0.0.0] [--no-mdns]
+am-msgd [--port 8765] [--bind 0.0.0.0] [--no-mdns]
 ```
 
 The former `meeting-daemon` executable and `meeting daemon` command have no
@@ -113,12 +119,12 @@ names so both services cannot run at once.
 ## Codex-only local daemon
 
 `mycodex` starts or reuses `am-codexd`. This daemon is distinct from central
-amctl:
+am-msgd:
 
-- amctl is the LAN-wide canonical message/control node.
+- am-msgd is the LAN-wide canonical session/message hub.
 - am-codexd is a loopback-only machine daemon for local Codex sessions.
 - one am-codexd owns one shared official Codex app-server.
-- amctl's recipient cursor is the only durable delivery position; am-codexd
+- am-msgd's recipient cursor is the only durable delivery position; am-codexd
   acknowledges it only after successful injection or intentional silent
   consumption.
 

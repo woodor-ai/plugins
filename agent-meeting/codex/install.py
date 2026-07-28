@@ -85,9 +85,27 @@ def _run_bootstrap(cmd, env, label):
 
 
 def _venv_python(meeting_home: Path) -> Path:
+    active_runtime = meeting_home / "active-runtime.json"
+    try:
+        payload = json.loads(active_runtime.read_text(encoding="utf-8"))
+        runtime = Path(payload["runtime"])
+        if runtime.is_dir() and not (runtime / ".installing").exists():
+            if IS_WINDOWS:
+                return runtime / "venv" / "Scripts" / "python.exe"
+            return runtime / "venv" / "bin" / "python"
+    except Exception:
+        pass
     if IS_WINDOWS:
         return meeting_home / "venv" / "Scripts" / "python.exe"
     return meeting_home / "venv" / "bin" / "python"
+
+
+def _meeting_command(meeting_home: Path) -> Path:
+    if IS_WINDOWS:
+        executable = meeting_home / "bin" / "meeting.exe"
+        if executable.exists():
+            return executable
+    return meeting_home / "bin" / "meeting"
 
 
 _AGENTS_BEGIN = "<!-- agent-meeting:begin (auto-managed by agent-meeting/codex/install.py) -->"
@@ -203,13 +221,16 @@ def _prompt_full_auto(codex_home: Path) -> None:
 def _ensure_agents_md(codex_home: Path, meeting_home: Path, control: str):
     """Append (or refresh) the agent-meeting usage block in ~/.codex/AGENTS.md. Idempotent."""
     vpy = _venv_python(meeting_home)
-    cli = meeting_home / "bin" / "meeting"
+    cli = _meeting_command(meeting_home)
     ctrl = control or "http://<your-mac-tailnet-ip>:8765"
     if IS_WINDOWS:
-        cli_command = f'& "{vpy}" "{cli}"'
+        cli_command = (
+            f'& "{cli}"'
+            if cli.suffix.lower() == ".exe"
+            else f'& "{vpy}" "{cli}"'
+        )
         message_command = (
-            f'& "{vpy}" "{cli}" message NAME@PROJECT N '
-            f'--host {ctrl}'
+            f'{cli_command} message NAME@PROJECT N --host {ctrl}'
         )
         quoting_note = (
             "Put the body in **single quotes** (PowerShell treats them literally — safe for "
@@ -332,7 +353,7 @@ def _read_launcher_control(meeting_home: Path) -> str:
 
 
 def _control_healthy(control_url: str) -> bool:
-    """Return whether a saved control URL still points to a live amctl."""
+    """Return whether a saved control URL still points to a live am-msgd."""
     try:
         with urllib.request.urlopen(
             control_url.rstrip("/") + "/health", timeout=2
@@ -463,12 +484,16 @@ def _parse_controls(json_str: str) -> str:
 
 def _discover_control(meeting_home: Path, vpy: Path) -> str:
     """Query the LAN for agent-meeting controls. Returns the best URL or ''."""
-    cli = meeting_home / "bin" / "meeting"
+    cli = _meeting_command(meeting_home)
     if not cli.exists():
         return ""
     try:
         r = meeting_common.run_meeting_cli(
-            cli, "controls", "--json", python=vpy, timeout=10,
+            cli,
+            "controls",
+            "--json",
+            python=None if cli.suffix.lower() == ".exe" else vpy,
+            timeout=10,
         )
         if r.returncode != 0:
             detail = (r.stderr or r.stdout or "").strip().splitlines()
@@ -515,7 +540,13 @@ def run_install(ctx: dict) -> None:
         lambda msg, default="": (input(f"{msg} [{default}]: " if default else f"{msg}: ").strip() or default)
     )
 
-    for p in (BOOTSTRAP, HOOK_REMOVER):
+    bootstrap_runtime = ctx.get("bootstrap_runtime", True)
+    required_paths = (
+        (BOOTSTRAP, HOOK_REMOVER)
+        if bootstrap_runtime
+        else (HOOK_REMOVER,)
+    )
+    for p in required_paths:
         if not p.exists():
             sys.exit(f"install: required file missing: {p}")
 
@@ -530,8 +561,15 @@ def run_install(ctx: dict) -> None:
     print(f"  runtime     : {meeting_home}")
     print(f"  codex config: {codex_home}")
 
-    # 1. bootstrap runtime (venv + zeroconf + websockets + bin/ wrappers incl. mycodex)
-    _run_bootstrap([sys.executable, str(BOOTSTRAP)], env, "bootstrap ~/.agent-meeting runtime")
+    # Compatibility installers still bootstrap the pre-0.15 layout. The new
+    # four-dimensional installers activate an immutable runtime first and call
+    # this entry point with bootstrap_runtime=False.
+    if bootstrap_runtime:
+        _run_bootstrap(
+            [sys.executable, str(BOOTSTRAP)],
+            env,
+            "bootstrap ~/.agent-meeting runtime",
+        )
 
     vpy = _venv_python(meeting_home)
     if not vpy.exists():

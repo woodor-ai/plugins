@@ -22,6 +22,26 @@ def load(path, name):
     return module
 
 
+@pytest.mark.parametrize("path", [BROKER_PATH, LAUNCHER_PATH])
+def test_codex_components_read_only_the_codex_manifest(path, tmp_path):
+    module = load(path, f"codex_manifest_{path.stem}")
+    plugin_root = tmp_path / "agent-meeting"
+    for manifest_dir, version in (
+        (".claude-plugin", "9.9.9"),
+        (".codex-plugin", "0.15.0"),
+    ):
+        directory = plugin_root / manifest_dir
+        directory.mkdir(parents=True)
+        (directory / "plugin.json").write_text(
+            json.dumps({"name": "agent-meeting", "version": version}),
+            encoding="utf-8",
+        )
+
+    module.PLUGIN_ROOT = plugin_root
+
+    assert module.installed_plugin_version() == "0.15.0"
+
+
 def make_session(module):
     return module.Session(
         launch_id="launch-1",
@@ -898,7 +918,11 @@ def test_launcher_activates_daemon_before_requesting_a_session(monkeypatch):
         "broker_request",
         lambda method, path, **_kwargs: (
             requests.append((method, path))
-            or {"ok": True, "version": "0.14.0", "sessions": 0}
+            or {
+                "ok": True,
+                "version": module.installed_plugin_version(),
+                "sessions": 0,
+            }
         ),
     )
 
@@ -908,6 +932,37 @@ def test_launcher_activates_daemon_before_requesting_a_session(monkeypatch):
         [module.venv_python(), str(module.DAEMON_COMMAND), "update"]
     ]
     assert requests == [("GET", "/health")]
+
+
+def test_packaged_launcher_executes_windows_console_entrypoint_directly(
+    monkeypatch,
+    tmp_path,
+):
+    module = load(LAUNCHER_PATH, "codex_meeting_packaged_daemon_update")
+    module.__package__ = "mycodex.launcher"
+    module.DAEMON_COMMAND = tmp_path / "am-codexd.exe"
+    module.DAEMON_COMMAND.write_bytes(b"launcher")
+    commands = []
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **_kwargs: (
+            commands.append(command)
+            or subprocess.CompletedProcess(command, 0, "", "")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "broker_request",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "version": module.installed_plugin_version(),
+        },
+    )
+
+    module.ensure_daemon()
+
+    assert commands == [[str(module.DAEMON_COMMAND), "update"]]
 
 
 def test_launcher_surfaces_daemon_update_failure(monkeypatch):

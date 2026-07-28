@@ -154,7 +154,7 @@ def run_interactive(plugins_src: Path, codex_home: Path, prompt_fn=None) -> dict
     return {"installed": installed, "skipped": skipped}
 
 
-def _install_native_plugins(installed: list) -> None:
+def _install_native_plugins(installed: list, marketplace_root: Path) -> None:
     """Register selected Codex-native plugin bundles from the woodor marketplace."""
     native = [
         name
@@ -167,6 +167,12 @@ def _install_native_plugins(installed: list) -> None:
     if not codex:
         print("  WARNING: codex CLI not found; native plugin skills were not installed")
         return
+    marketplace_file = marketplace_root / ".agents" / "plugins" / "marketplace.json"
+    if not marketplace_file.is_file():
+        print(
+            f"  WARNING: Codex marketplace manifest not found: {marketplace_file}"
+        )
+        return
 
     refreshed = subprocess.run(
         [codex, "plugin", "marketplace", "upgrade", "woodor"],
@@ -174,9 +180,24 @@ def _install_native_plugins(installed: list) -> None:
         text=True,
     )
     if refreshed.returncode != 0:
-        detail = (refreshed.stderr or refreshed.stdout or "").strip()
-        print(f"  WARNING: could not refresh the woodor plugin marketplace: {detail}")
-        return
+        registered = subprocess.run(
+            [
+                codex,
+                "plugin",
+                "marketplace",
+                "add",
+                str(marketplace_root.resolve()),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if registered.returncode != 0:
+            detail = (registered.stderr or registered.stdout or "").strip()
+            print(
+                "  WARNING: could not register the woodor plugin marketplace: "
+                f"{detail}"
+            )
+            return
 
     for name in native:
         result = subprocess.run(
@@ -192,6 +213,8 @@ def _install_native_plugins(installed: list) -> None:
 
 
 _STALE_CODEX_PLUGINS_NAMES = (
+    "amctl",
+    "amctl.cmd",
     "codex-plugins",
     "codex-plugins.cmd",
     "codex-plugins.ps1",
@@ -272,6 +295,34 @@ def _ensure_bin_on_path(bin_dir: Path) -> None:
     mod._ensure_path_entry(bin_dir)
 
 
+def _install_versioned_agent_meeting_runtime(
+    installed: list,
+    meeting_home: Path,
+) -> bool:
+    """Activate the packaged 0.15+ host runtime after legacy plugin copying.
+
+    The root installer remains the compatibility entrypoint for installing
+    multiple Codex plugins. When agent-meeting was selected, its runtime must
+    nevertheless be owned by the same versioned installer used by the native
+    Codex and Claude Code flows.
+    """
+    if not any(name == "agent-meeting" for name, _path in installed):
+        return False
+    shared_installers = HERE / "installers" / "shared"
+    environment = os.environ.copy()
+    environment["MEETING_HOME"] = str(meeting_home)
+    for script_name in (
+        "install-agent-meeting-package.py",
+        "migrate-agent-meeting-legacy-layout.py",
+    ):
+        subprocess.run(
+            [sys.executable, str(shared_installers / script_name)],
+            check=True,
+            env=environment,
+        )
+    return True
+
+
 def main():
     codex_home = Path(os.environ.get("CODEX_HOME") or str(_default_codex_home()))
 
@@ -281,7 +332,17 @@ def main():
     print()
 
     result = run_interactive(HERE, codex_home)
-    _install_native_plugins(result["installed"])
+    meeting_home = Path(
+        os.environ.get("MEETING_HOME")
+        or str(_default_meeting_home())
+    )
+    versioned_agent_meeting = (
+        _install_versioned_agent_meeting_runtime(
+            result["installed"],
+            meeting_home,
+        )
+    )
+    _install_native_plugins(result["installed"], HERE)
 
     print()
     print("=== summary ===")
@@ -297,9 +358,9 @@ def main():
     # mycodex is dropped unconditionally — independent of which plugins were
     # selected above — so `mycodex --update` always works, even on a machine
     # that has never installed agent-meeting.
-    meeting_home = Path(os.environ.get("MEETING_HOME") or str(_default_meeting_home()))
     bin_dir = meeting_home / "bin"
-    _generate_mycodex_command(HERE, bin_dir)
+    if not versioned_agent_meeting:
+        _generate_mycodex_command(HERE, bin_dir)
     _cleanup_stale_codex_plugins(meeting_home, bin_dir)
     _ensure_bin_on_path(bin_dir)
     print()

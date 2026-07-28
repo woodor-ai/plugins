@@ -1,10 +1,12 @@
 {
   "name": "agent-meeting",
-  "version": "0.14.0",
-  "description": "Peer messaging for Claude Code and Codex agents. SQLite-backed with LAN discovery, central amctl routing, and the machine-wide am-codexd daemon.",
+  "version": "0.15.1",
+  "description": "Peer messaging for Claude Code and Codex agents. SQLite-backed with LAN discovery, the central am-msgd session/message hub, and the machine-wide am-codexd daemon.",
   "author": {
     "name": "Woodor",
     "url": "https://github.com/woodor-ai"
   },
-  "homepage": "https://github.com/woodor-ai/plugins"
+  "homepage": "https://github.com/woodor-ai/plugins",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prune regression suite for amctl's /prune endpoint (phase 4 cleanup).
+Prune regression suite for am-msgd's /prune endpoint (phase 4 cleanup).
 
 Covers:
   TC1 - dry run does not delete
@@ -29,7 +29,7 @@ import urllib.request
 TEST_PORT = 8801  # distinct port, not used by any other test file
 HOST = "127.0.0.1"
 
-# ---------- DB bootstrap (must match bin/amctl's _SCHEMA) ----------
+# ---------- DB bootstrap (must match bin/am-msgd's _SCHEMA) ----------
 
 _SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -103,19 +103,19 @@ def init_db(home_dir: str):
     conn.close()
 
 
-# ---------- central amctl lifecycle ----------
+# ---------- central am-msgd lifecycle ----------
 
-def start_amctl(home_dir: str) -> subprocess.Popen:
-    amctl_path = os.path.join(os.path.dirname(__file__), "..", "bin", "amctl")
+def start_am_msgd(home_dir: str) -> subprocess.Popen:
+    am_msgd_path = os.path.join(os.path.dirname(__file__), "..", "bin", "am-msgd")
     env = os.environ.copy()
-    # Both MUST be set: MEETING_HOME so the central amctl owns our temp DB, and
+    # Both MUST be set: MEETING_HOME so the central am-msgd owns our temp DB, and
     # MEETING_HOST so nothing in this process's own code path (none here,
     # but kept as a hard rule per the isolation incident) can fall back to
-    # discovering/registering against a real production central amctl.
+    # discovering/registering against a real production central am-msgd.
     env["MEETING_HOME"] = home_dir
     env["MEETING_HOST"] = f"http://{HOST}:{TEST_PORT}"
     proc = subprocess.Popen(
-        [sys.executable, amctl_path, f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, am_msgd_path, f"--port={TEST_PORT}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -128,8 +128,8 @@ def start_amctl(home_dir: str) -> subprocess.Popen:
         except Exception:
             if proc.poll() is not None:
                 _, err = proc.communicate()
-                raise RuntimeError(f"Central amctl exited early:\n{err.decode()}")
-    raise RuntimeError("Central amctl did not start within 10s")
+                raise RuntimeError(f"Central am-msgd exited early:\n{err.decode()}")
+    raise RuntimeError("Central am-msgd did not start within 10s")
 
 
 # ---------- HTTP helpers ----------
@@ -340,7 +340,7 @@ def main():
 
     try:
         init_db(home_dir)
-        proc = start_amctl(home_dir)
+        proc = start_am_msgd(home_dir)
 
         try:
             test_tc1_dry_run_no_delete(home_dir)
