@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+PUBLIC_REPOSITORY = "https://github.com/woodor-ai/plugins.git"
 
 
 def marketplace_is_registered(codex: str, marketplace: str) -> bool | None:
@@ -86,6 +87,45 @@ def source_plugin_version() -> str | None:
     return str(version) if version else None
 
 
+def register_local_marketplace(codex: str, marketplace: str) -> int:
+    """Use the already-refreshed updater checkout when Git upgrade fails."""
+    registered = marketplace_is_registered(codex, marketplace)
+    if registered is None:
+        return 1
+    if registered:
+        removed = subprocess.run(
+            [codex, "plugin", "marketplace", "remove", marketplace]
+        )
+        if removed.returncode != 0:
+            return removed.returncode
+    added = subprocess.run(
+        [
+            codex,
+            "plugin",
+            "marketplace",
+            "add",
+            str(REPOSITORY_ROOT),
+        ]
+    )
+    if added.returncode == 0:
+        return 0
+    if registered:
+        print(
+            "Local marketplace registration failed; restoring its Git source...",
+            flush=True,
+        )
+        subprocess.run(
+            [
+                codex,
+                "plugin",
+                "marketplace",
+                "add",
+                PUBLIC_REPOSITORY,
+            ]
+        )
+    return added.returncode
+
+
 def main() -> int:
     codex = os.environ.get("CODEX_BIN") or shutil.which("codex")
     if not codex:
@@ -106,22 +146,12 @@ def main() -> int:
     )
     if updated.returncode != 0:
         print(
-            "Marketplace refresh failed; checking its existing registration...",
+            "Marketplace refresh failed; using the refreshed local checkout...",
             flush=True,
         )
-        if marketplace_is_registered(codex, "woodor") is not False:
-            return updated.returncode
-        added = subprocess.run(
-            [
-                codex,
-                "plugin",
-                "marketplace",
-                "add",
-                str(REPOSITORY_ROOT),
-            ]
-        )
-        if added.returncode != 0:
-            return added.returncode
+        registered = register_local_marketplace(codex, "woodor")
+        if registered != 0:
+            return registered
     if plugin_is_installed(codex, plugin_id) is True:
         print("Codex plugin already installed; skipping redundant reinstall.")
         return 0

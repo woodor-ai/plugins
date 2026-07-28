@@ -17,7 +17,7 @@ def _load_module():
     return module
 
 
-def test_does_not_reregister_existing_marketplace_after_upgrade_failure(monkeypatch):
+def test_uses_local_checkout_after_existing_marketplace_upgrade_failure(monkeypatch):
     module = _load_module()
     calls = []
 
@@ -30,16 +30,27 @@ def test_does_not_reregister_existing_marketplace_after_upgrade_failure(monkeypa
                 returncode=0,
                 stdout='{"marketplaces": [{"name": "woodor"}]}',
             )
-        raise AssertionError(f"unexpected command: {command}")
+        if command[-3:] == ["plugin", "list", "--json"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    '{"installed": [{"pluginId": "agent-meeting@woodor", '
+                    '"installed": true}]}'
+                ),
+            )
+        return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(module.shutil, "which", lambda _command: "/usr/bin/codex")
     monkeypatch.setattr(module.subprocess, "run", run)
     monkeypatch.setattr(module, "installed_plugin_version", lambda *_args: None)
 
-    assert module.main() == 1
+    assert module.main() == 0
     assert [command for command, _ in calls] == [
         ["/usr/bin/codex", "plugin", "marketplace", "upgrade", "woodor"],
         ["/usr/bin/codex", "plugin", "marketplace", "list", "--json"],
+        ["/usr/bin/codex", "plugin", "marketplace", "remove", "woodor"],
+        ["/usr/bin/codex", "plugin", "marketplace", "add", str(ROOT)],
+        ["/usr/bin/codex", "plugin", "list", "--json"],
     ]
 
 
