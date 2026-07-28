@@ -1,4 +1,4 @@
-"""Subprocess invocation for the public ``meeting`` command."""
+"""Subprocess invocation for the public ``am`` command."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 
-def run_meeting_cli(
+def run_am_cli(
     cli_path,
     *args,
     python=None,

@@ -7,6 +7,11 @@ Your AI agents stop working in isolation. Sessions running in different windows 
 Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-source toolkit for running AI agents at scale.
 
 Architecture: [`docs/agent-meeting-runtime-architecture.md`](docs/agent-meeting-runtime-architecture.md).
+
+Implementation design for local relay, multi-address listeners, direct
+`am-msgd status|start|stop|restart` service management, and `agent-list`:
+[`docs/am-msgd-local-relay-multi-bind-design.md`](docs/am-msgd-local-relay-multi-bind-design.md).
+
 Repository-wide plugin rules:
 [`../docs/plugins-codex-architecture-audit.md`](../docs/plugins-codex-architecture-audit.md).
 
@@ -69,10 +74,12 @@ are TUI commands and are not aliases for installed skills.
 | `/imagent delete <peer>` | Delete a room and its history |
 | `/imagent rename <new>` | Rename this session and migrate its room |
 | `/imagent stop [<name>]` | Stop the message monitor for this session (or a named one) |
-| `/imagent setup am-msgd` | Start the central am-msgd session/message hub on this machine |
-| `/imagent setup am-msgd status` | Show central am-msgd status |
-| `/imagent setup am-msgd stop` | Stop central am-msgd |
-| `/imagent setup am-msgd restart` | Restart central am-msgd |
+| `/imagent setup am-msgd` | Show the local am-msgd service status |
+| `/imagent setup am-msgd status` | Show the local am-msgd service and listener status |
+| `/imagent setup am-msgd start` | Start local am-msgd and enable autostart |
+| `/imagent setup am-msgd stop` | Stop local am-msgd and disable autostart |
+| `/imagent setup am-msgd restart` | Restart local am-msgd with its saved bind list |
+| `/imagent setup am-msgd agent-list` | List agents known to the local am-msgd |
 | `/imagent setup token [<value>\|clear]` | Set or clear the bearer auth token |
 | `/imagent setup telemetry on\|off\|status` | Control telemetry collection |
 | `/imagent help` | Show command reference |
@@ -94,13 +101,13 @@ Also understands natural language forms like "tell Alice to check the logs" or "
 
 ### CLI maintenance commands
 
-Not exposed as slash commands — run directly via `~/.agent-meeting/bin/meeting <cmd>`:
+Not exposed as slash commands — run directly via `~/.agent-meeting/bin/am <cmd>`:
 
 | Command | What it does |
 |---|---|
-| `meeting message <self> <msg_id>` | Read one exact visible message by global ID |
-| `meeting prune [--older-than N] [--include-referenced] [--yes]` | Drop stale `sessions` rows (dry run unless `--yes`); never touches message history |
-| `meeting projcache [list\|clear] [--all]` | Inspect or clear this machine's cached `--proj` declarations (local file only, no central am-msgd call) |
+| `am message <self> <msg_id>` | Read one exact visible message by global ID |
+| `am prune [--older-than N] [--include-referenced] [--yes]` | Drop stale `sessions` rows (dry run unless `--yes`); never touches message history |
+| `am projcache [list\|clear] [--all]` | Inspect or clear this machine's cached `--proj` declarations (local file only, no central am-msgd call) |
 
 ## Configuration
 
@@ -108,13 +115,22 @@ Not exposed as slash commands — run directly via `~/.agent-meeting/bin/meeting
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `is_host` | bool | `false` | When `true`, this machine runs the central am-msgd session/message hub |
+| `is_host` | bool | `false` | Legacy migration input; new installs use `am-msgd.json` |
 | `telemetry` | bool | `true` | Collect anonymous usage events; absent key means enabled |
 | `auth_token` | string | — | Optional bearer token for central am-msgd authentication |
 | `host` | string | — | Preferred central am-msgd URL; overrides mDNS discovery when set |
 | `machine_id` | string | auto | Anonymous identifier, generated on first run |
 
 On POSIX the file is created with mode `0600`; on Windows that step is a no-op and the file inherits its NTFS ACLs.
+
+### `~/.agent-meeting/am-msgd.json`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Whether the local user service and autostart are enabled |
+| `port` | int | `8765` | Port shared by all configured listeners |
+| `binds` | string list | `["127.0.0.1"]` | Desired listener IPs |
+| `mdns` | string | `"auto"` | Advertise only while a non-loopback listener is active |
 
 ### Environment variables
 
@@ -124,7 +140,7 @@ On POSIX the file is created with mode `0600`; on Windows that step is a no-op a
 | `MEETING_HOST` | — | Explicit central am-msgd URL; overrides mDNS |
 | `MEETING_NO_TELEMETRY` | — | Set to any non-empty value to disable telemetry |
 | `MEETING_TOKEN` | — | Overrides `auth_token` from config |
-| `MEETING_PORT` | `8765` | Port central am-msgd listens on |
+| `MEETING_PORT` | `8765` | Legacy client probe override; service port lives in `am-msgd.json` |
 
 ## How it works
 
@@ -135,13 +151,21 @@ host OS service, then emits session context. It does not rewrite an activated
 runtime. The source-tree `bin/session-bootstrap.py` remains only as a
 compatibility hook for plugin caches and delegates to the packaged module.
 
-The host machine runs central am-msgd, an HTTP + WebSocket session/message hub that owns a SQLite database at `~/.agent-meeting/db/rooms.db`. All writes go through central am-msgd, giving you atomic operations and no race conditions between concurrent agents.
+Every installed machine runs a user-level am-msgd service bound to
+`127.0.0.1` by default. It is an HTTP + WebSocket session/message hub that owns
+a SQLite database at `~/.agent-meeting/db/rooms.db`. `am-msgd --bind=<ip>` can
+add a LAN listener to the same process without dropping the loopback listener;
+`am-msgd --local-only` removes the LAN listeners again.
 
 As of 0.15.0 this process is named `am-msgd` (formerly `amctl`) to reflect
 that it owns sessions, messages, groups, and delivery cursors. Upgrade cleanup
 removes the old command and OS service names.
 
-Client sessions discover the host via mDNS: central am-msgd advertises itself as `_agent-meeting._tcp.local.` on port 8765 (or `MEETING_PORT`). Once discovered, clients connect and exchange messages through named rooms. You can bypass mDNS entirely by setting `MEETING_HOST` or the `host` config key to a direct URL — useful for cross-machine setups where mDNS doesn't reach.
+An am-msgd with an active non-loopback listener advertises itself through mDNS
+as `_agent-meeting._tcp.local.`. A loopback-only instance does not advertise.
+Clients can select another hub through `MEETING_HOST` or the `host` config key;
+when no external hub is available, the healthy local loopback hub is the
+fallback.
 
 For Codex, `mycodex` connects each foreground TUI to the machine-wide
 `am-codexd` daemon. The daemon owns one shared official Codex app-server, one

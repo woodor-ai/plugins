@@ -3,9 +3,9 @@
 Cross-platform monitor for an agent-meeting session.
 
 Behavior:
-  - On startup, calls `meeting online` to write this session into the
+  - On startup, calls `am online` to write this session into the
     central sessions table (project derived from cwd). On exit, calls
-    `meeting offline`.
+    `am offline`.
   - Liveness is tracked via WS pong: central am-msgd updates last_seen on pong.
   - Connects to central am-msgd /subscribe, receives pushed frames, emits
     stdout lines for Claude Code task notifications.
@@ -30,7 +30,7 @@ from agent_meeting.clients import (
     client_configuration,
     hub_discovery,
     hub_subscription_client,
-    meeting_process_client,
+    am_process_client,
 )
 from agent_meeting.messaging import project_identity
 
@@ -48,10 +48,10 @@ _parser.add_argument("--director", action="store_true", default=False,
 _parser.add_argument("--global", dest="is_global", action="store_true", default=False,
                      help="register as global identity (project='*'), skips cwd project derivation")
 _parser.add_argument("--proj", default=None,
-                     help="explicit project identity passed through to `meeting online` on every (re)register")
+                     help="explicit project identity passed through to `am online` on every (re)register")
 _parser.add_argument("--host", default=None,
                      help="explicit control URL (http://<ip-or-name>:<port>) passed through to "
-                          "`meeting online` on every (re)register; set when the skill's control-"
+                          "`am online` on every (re)register; set when the skill's control-"
                           "discovery step resolved a specific control instead of LAN autodiscover")
 _parser.add_argument("--force", action="store_true", default=False,
                      help="override an existing live registration under this name (user explicitly "
@@ -65,7 +65,7 @@ IS_GLOBAL = _args.is_global
 IS_PROJ = _args.proj
 IS_HOST = _args.host
 _force_next = _args.force
-# Process-unique id sent as `meeting online --instance`. Lets central am-msgd tell
+# Process-unique id sent as `am online --instance`. Lets central am-msgd tell
 # "this same monitor process reconnecting after a central am-msgd restart" (always
 # allowed) apart from "a DIFFERENT live process claiming the same name"
 # (refused unless --force) -- see am-msgd's _register().
@@ -73,7 +73,7 @@ INSTANCE = uuid.uuid4().hex
 HOME = Path.home()
 _MEETING_HOME_ENV = os.environ.get("MEETING_HOME")
 DATA = Path(_MEETING_HOME_ENV) if _MEETING_HOME_ENV else HOME / ".agent-meeting"
-MEETING_CLI = DATA / "bin" / "meeting"
+AM_CLI = DATA / "bin" / "am"
 
 STATUSLINE_DIR = DATA / "statusline"
 _CWD = os.getcwd()
@@ -97,13 +97,13 @@ def _derive_project(cwd: str) -> str:
     return project_identity.derive_project(cwd, meeting_home=str(DATA))
 
 # Read once at startup -- reported to central am-msgd on every (re)register so
-# `meeting list` / sessions rows can tell which plugin build a live session
+# `am list` / sessions rows can tell which plugin build a live session
 # is running. config.json (not plugin.json) is the only version source
 # monitor.py can reliably read: it runs from the copied ~/.agent-meeting/bin
 # runtime, not the plugin source tree, with no CLAUDE_PLUGIN_ROOT guarantee.
 _CLIENT_VERSION = client_configuration.read_plugin_version(DATA)
 
-# Exit codes from `meeting online` that mean central am-msgd/CLI made a considered,
+# Exit codes from `am online` that mean central am-msgd/CLI made a considered,
 # stable refusal (not a transient hiccup) -- retrying would either spin
 # forever against the same refusal (name_taken) or repeatedly fail to send a
 # request that was never even attempted (missing_project_identity). Any other
@@ -112,7 +112,7 @@ _NORETRY_EXIT_CODES = {3, 4}  # 3=name_taken, 4=missing_project_identity
 
 
 # Derive project once at startup from cwd — stored for WS handshake. An
-# explicit --proj bypasses derivation directly (mirrors `meeting online
+# explicit --proj bypasses derivation directly (mirrors `am online
 # --proj`) so the very first run picks it up before _register() has had a
 # chance to write the proj cache that derive_project() would otherwise read.
 if IS_GLOBAL:
@@ -130,14 +130,12 @@ PID_FILE = RUN_DIR / (
 )
 
 
-def _run_meeting(*extra_args):
+def _run_am(*extra_args):
     if sys.platform.startswith("win"):
-        executable = DATA / "bin" / "meeting.exe"
-        if not executable.exists():
-            executable = DATA / "bin" / "meeting.cmd"
+        executable = DATA / "bin" / "am.exe"
     else:
-        executable = MEETING_CLI
-    return meeting_process_client.run_meeting_cli(
+        executable = AM_CLI
+    return am_process_client.run_am_cli(
         executable,
         *extra_args,
         timeout=15,
@@ -148,10 +146,10 @@ def _run_meeting(*extra_args):
 
 
 def _discover_control_info() -> dict:
-    return hub_discovery.discover_control(_run_meeting)
+    return hub_discovery.discover_control(_run_am)
 
 
-_registered = False  # sticky: True once `meeting online` has actually succeeded
+_registered = False  # sticky: True once `am online` has actually succeeded
 
 
 def _register():
@@ -194,7 +192,7 @@ def _register():
     # os._exit(), which skips atexit (this file's _unregister included), so we
     # never delete another process's registration row.
     try:
-        r = _run_meeting("online", SELF, "--cwd", _CWD, "--instance", INSTANCE, *extra)
+        r = _run_am("online", SELF, "--cwd", _CWD, "--instance", INSTANCE, *extra)
     except Exception as e:
         ts = time.strftime("%Y-%m-%dT%H:%M:%S")
         sys.stderr.write(f"[meeting {_display_id}] {ts} re-register failed ({type(e).__name__}); "
@@ -252,7 +250,7 @@ def _unregister():
         # for every --global/--proj monitor since offline had no escape hatch).
         extra = ["--global"] if IS_GLOBAL else (["--proj", IS_PROJ] if IS_PROJ else [])
         try:
-            _run_meeting("offline", SELF, "--instance", INSTANCE, *extra)
+            _run_am("offline", SELF, "--instance", INSTANCE, *extra)
         except Exception:
             pass
     try:
@@ -288,7 +286,7 @@ _register()
 print(f"[meeting {_display_id}] monitor started (pid={os.getpid()})", flush=True)
 
 
-# ---------- WS client wiring (kernel lives in meeting_common.WSSubscribeClient) ----------
+# ---------- WS client wiring (kernel lives in am_common.WSSubscribeClient) ----------
 
 def _log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")

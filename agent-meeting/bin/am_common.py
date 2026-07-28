@@ -2,8 +2,8 @@
 """Compatibility facade for the packaged agent-meeting client modules.
 
 New code imports the domain modules under ``agent_meeting`` directly. This
-file remains temporarily because copied 0.14-era monitors and Codex launchers
-still import ``meeting_common`` from ``~/.agent-meeting/bin``.
+file remains as a compatibility facade for copied monitors and Codex launchers
+that import ``am_common`` from ``~/.agent-meeting/bin``.
 """
 
 from __future__ import annotations
@@ -46,8 +46,8 @@ from agent_meeting.clients.hub_subscription_client import (  # noqa: E402
     send_masked_frame,
     websocket_key,
 )
-from agent_meeting.clients.meeting_process_client import (  # noqa: E402
-    run_meeting_cli,
+from agent_meeting.clients.am_process_client import (  # noqa: E402
+    run_am_cli,
 )
 from agent_meeting.messaging import project_identity  # noqa: E402
 

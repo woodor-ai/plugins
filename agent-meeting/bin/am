@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility entrypoint for the packaged ``meeting`` command."""
+"""Compatibility entrypoint for the packaged ``am`` command."""
 
 import sys
 from pathlib import Path
@@ -19,13 +19,13 @@ def _resolve_source_root() -> Path:
                 return activated_source
 
     raise RuntimeError(
-        "meeting package source not found; rerun the agent-meeting installer"
+        "am package source not found; rerun the agent-meeting installer"
     )
 
 
 _SOURCE_ROOT = _resolve_source_root()
 _IMPLEMENTATION = (
-    _SOURCE_ROOT / "agent_meeting" / "commands" / "meeting_cli.py"
+    _SOURCE_ROOT / "agent_meeting" / "commands" / "am_cli.py"
 )
 sys.path.insert(0, str(_SOURCE_ROOT))
 

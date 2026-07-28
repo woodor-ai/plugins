@@ -1,11 +1,11 @@
 # agent-meeting / mycodex 运行时架构
 
-版本：0.15.4
+版本：0.16.0
 
 更新时间：2026-07-28
 
 仓库级插件规范见
-[`../../docs/plugins-codex-architecture-audit.md`](../../docs/plugins-codex-architecture-audit.md)。
+[`../../docs/plugin-architecture-guidelines.md`](../../docs/plugin-architecture-guidelines.md)。
 本文只描述 agent-meeting 与 mycodex 的产品边界、四维安装/运行方式和兼容策略。
 
 ## 1. 架构结论
@@ -20,7 +20,7 @@
 
 | 命令 | 职责 |
 |---|---|
-| `meeting` | 身份、会话、消息、群组和客户端操作 |
+| `am` | 身份、会话、消息、群组和客户端操作 |
 | `am-msgd` | LAN 中央会话/消息中心的进程与运维 |
 | `mycodex` | 以 agent-meeting 身份启动 Codex TUI |
 | `am-codexd` | 本机 Codex session broker 的进程与运维 |
@@ -30,7 +30,7 @@
 - 原 `amctl` 更名为 `am-msgd`。新名称表达它拥有会话、消息、群组和投递游标，
   而不是一个单纯的 control CLI；
 - 原 `/meeting` / `$meeting` skill 更名为 Claude Code 的 `/imagent` 和
-  Codex 的 `$imagent`；底层 `meeting` CLI 不改名；
+  Codex 的 `$imagent`；底层 `am` CLI 不改名；
 - 旧名称只保留在升级清理代码与迁移测试中。
 
 ## 2. 产品边界
@@ -43,7 +43,7 @@
 - SQLite 消息、会话、群组与游标数据；
 - LAN 中央消息中心及 HTTP/WebSocket 协议；
 - mDNS 发现和消息中心客户端；
-- `meeting`、`am-msgd`；
+- `am`、`am-msgd`；
 - 共用的 `imagent`、`talkto` skills；
 - Claude Code 的 SessionStart、monitor 和 status line；
 - macOS/Windows 上 `am-msgd` 的常驻适配。
@@ -268,7 +268,7 @@ supervisor 直接执行 `~/.agent-meeting/bin/am-msgd.exe`，不使用
 公共：
 
 ```text
-meeting
+am
 am-msgd
 mycodex
 am-codexd
@@ -284,9 +284,11 @@ am-claude-session-start
 am-configure-codex-user-environment
 ```
 
-`meeting am-msgd [status|stop|restart]` 是统一客户端里的生命周期入口；
-`am-msgd` 仍是可直接运行和诊断的独立公共进程命令。`am-codexd` 同理，不降级为
-不可见的包内实现。
+`am` 是 agent identity、消息、群组和 control 客户端。原 `meeting` launcher
+已直接删除，不保留兼容别名。`am-msgd` 自己提供
+`status|start|stop|restart|agent-list`、动态 listener 管理和内部 `serve`
+入口；原 `meeting am-msgd ...` 已删除。`am-codexd` 同理保留独立公共运维入口，
+不降级为不可见的包内实现。
 
 ## 10. 旧布局迁移
 
@@ -308,17 +310,18 @@ am-configure-codex-user-environment
 
 本轮已完成：
 
-- 全量 pytest：305 passed，1 skipped；
-- Windows 相关 adapter、版本激活、旧布局迁移和 Codex 安装定向测试；
-- WebSocket、identity、prune、monitor 独立集成测试；
-- macOS shell 语法和安装 smoke；
-- 隔离 venv 的两个 Python 包安装与全部 entrypoint smoke；
+- `agent-meeting` 全量 pytest：180 passed，1 skipped；
+- `mycodex` 全量 pytest：15 passed；
+- Windows 相关 adapter、版本激活、旧布局迁移和命令构造模拟测试；
+- WebSocket、identity、prune、monitor 和动态 listener 集成测试；
+- POSIX shell 语法校验；
+- 隔离 venv 的两个 Python 包安装，以及 `am`/`am-msgd` entrypoint smoke；
 - `.codex-plugin` validator；
 - `imagent`、`talkto` skill validator；
 - Windows `.exe` 激活和命令构造的本地模拟测试。
 
-由于控制节点网络不稳定，用户决定本轮暂不执行 Windows 真机安装和进程生命周期
-测试。因此 Windows 真机的 Startup、Task Scheduler、`am-msgd.exe`、
+按本轮约定暂不执行 Windows 真机安装和进程生命周期测试。因此 Windows 真机的
+Startup、Task Scheduler、`am-msgd.exe`、
 `am-codexd.exe` 与 Codex `--remote` 联调状态是 **延期/未验证**，不能解释为已经
 通过。
 

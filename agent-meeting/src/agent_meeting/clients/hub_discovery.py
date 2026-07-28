@@ -1,4 +1,4 @@
-"""Resolve the active message hub through the public meeting client."""
+"""Resolve the active message hub through the public ``am`` client."""
 
 from __future__ import annotations
 

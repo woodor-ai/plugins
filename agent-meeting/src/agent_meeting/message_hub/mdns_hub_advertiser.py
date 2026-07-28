@@ -1,4 +1,4 @@
-"""mDNS publication for the LAN agent-meeting message hub."""
+"""mDNS publication for the LAN agent-am message hub."""
 
 import ipaddress
 import os

@@ -33,7 +33,7 @@ $MeetingHome = if ($env:MEETING_HOME) { $env:MEETING_HOME } else { Split-Path -P
 $SourceStamp = Join-Path $MeetingHome ".bin-plugin-root"
 $PluginBin = if (Test-Path $SourceStamp) { (Get-Content $SourceStamp -TotalCount 1).Trim() } else { "" }
 $PluginRoot = if ($PluginBin) { Split-Path -Parent $PluginBin } else { "" }
-$AmCodexMeeting = if ($PluginRoot) { Join-Path $PluginRoot "codex\codex-meeting.py" } else { "" }
+$AmCodexSession = if ($PluginRoot) { Join-Path $PluginRoot "codex\codex-session.py" } else { "" }
 $Vpy = Join-Path $MeetingHome "venv\Scripts\python.exe"
 
 if ($RestArgs.Count -gt 0 -and $RestArgs[0] -eq "--update") {
@@ -41,15 +41,15 @@ if ($RestArgs.Count -gt 0 -and $RestArgs[0] -eq "--update") {
     exit 2
 }
 
-if (-not $PluginBin -or -not (Test-Path $Vpy) -or -not (Test-Path $AmCodexMeeting)) {
+if (-not $PluginBin -or -not (Test-Path $Vpy) -or -not (Test-Path $AmCodexSession)) {
     Write-Error "mycodex: agent-meeting is not installed - run 'am-update' to install it, then retry."
     exit 1
 }
 
 # Terminal window title: codex's TUI has no programmable status bar (unlike
 # Claude Code's), so the window/tab title is the only identity cue available.
-# codex-meeting.py owns this end-to-end (a background thread in that same
+# codex-session.py owns this end-to-end (a background thread in that same
 # shared console process periodically calls SetConsoleTitleW) -- no title
 # logic needed here.
-& $Vpy $AmCodexMeeting @RestArgs
+& $Vpy $AmCodexSession @RestArgs
 exit $LASTEXITCODE

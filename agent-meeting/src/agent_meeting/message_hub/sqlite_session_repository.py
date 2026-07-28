@@ -187,7 +187,7 @@ class SQLiteSessionRepository:
                                 "(instance "
                                 f"{existing_instance or 'unknown'}). "
                                 "Refusing to take over silently. Stop it "
-                                "first (`meeting stop <name>`), or pass "
+                                "first (`am stop <name>`), or pass "
                                 "--force to override."
                             ),
                             "code": "name_taken",

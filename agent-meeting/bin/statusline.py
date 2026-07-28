@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility entrypoint for the packaged Claude meeting status line."""
+"""Compatibility entrypoint for the packaged Claude agent status line."""
 
 import sys
 from pathlib import Path

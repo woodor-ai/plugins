@@ -1,4 +1,4 @@
-"""Authenticated JSON requests to the central agent-meeting message hub."""
+"""Authenticated JSON requests to the central agent-am message hub."""
 
 from __future__ import annotations
 

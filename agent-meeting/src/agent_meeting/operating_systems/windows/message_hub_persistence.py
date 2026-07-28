@@ -230,7 +230,7 @@ def control_message_hub_persistence(
     process_is_alive: Callable[[int], bool],
     health_probe: Callable[[], dict | None],
 ) -> None:
-    """Implement ``meeting am-msgd`` status/stop/restart on Windows."""
+    """Implement ``am-msgd`` status/stop/restart on Windows."""
     if action == "status":
         query = subprocess.run(
             [

@@ -22,7 +22,7 @@ MEETING_HOME="${MEETING_HOME:-$(dirname "$BIN_DIR")}"
 SOURCE_STAMP="$MEETING_HOME/.bin-plugin-root"
 PLUGIN_BIN="$(sed -n '1p' "$SOURCE_STAMP" 2>/dev/null || true)"
 PLUGIN_ROOT="$(dirname "$PLUGIN_BIN")"
-AM_CODEX_MEETING="$PLUGIN_ROOT/codex/codex-meeting.py"
+AM_CODEX_SESSION="$PLUGIN_ROOT/codex/codex-session.py"
 VPY="$MEETING_HOME/venv/bin/python"
 
 if [ "${1:-}" = "--update" ]; then
@@ -30,9 +30,9 @@ if [ "${1:-}" = "--update" ]; then
     exit 2
 fi
 
-if [ -z "$PLUGIN_BIN" ] || [ ! -x "$VPY" ] || [ ! -f "$AM_CODEX_MEETING" ]; then
+if [ -z "$PLUGIN_BIN" ] || [ ! -x "$VPY" ] || [ ! -f "$AM_CODEX_SESSION" ]; then
     echo "mycodex: agent-meeting is not installed — run 'am-update' to install it, then retry." >&2
     exit 1
 fi
 
-exec "$VPY" "$AM_CODEX_MEETING" "$@"
+exec "$VPY" "$AM_CODEX_SESSION" "$@"

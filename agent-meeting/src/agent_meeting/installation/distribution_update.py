@@ -144,9 +144,14 @@ def _run_python_script(
     relative_script: str,
     *,
     run: Callable[..., object],
+    arguments: tuple[str, ...] = (),
 ) -> None:
     run(
-        [sys.executable, str(source_root / relative_script)],
+        [
+            sys.executable,
+            str(source_root / relative_script),
+            *arguments,
+        ],
         check=True,
     )
 
@@ -190,6 +195,7 @@ def install_release(
         source_root,
         "installers/shared/install-agent-meeting-package.py",
         run=run,
+        arguments=("--meeting-home", str(meeting_home)),
     )
     _run_python_script(
         source_root,

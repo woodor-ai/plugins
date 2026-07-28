@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-meeting — peer-to-peer agent messaging CLI backed by SQLite.
+am — peer-to-peer agent messaging CLI backed by SQLite.
 
 Messages are addressed sender->recipient; no room containers exist.
 SQLite gives us atomic transactions, version-based optimistic concurrency,
@@ -14,14 +14,14 @@ Peer addressing: bare <name> resolves if globally unique across projects;
 ambiguous names require <name>@<project> qualifier.
 
 Usage:
-  meeting init
-  meeting send <self>[@project] <peer>[@project] <body> [--kind=X] [--ask=Y]
-  meeting read <self>[@project] <peer>[@project] [--limit=30] [--since=ID]
-  meeting show <self>[@project] <peer>[@project] [--limit=30]
-  meeting turn <self>[@project] <peer>[@project]
-  meeting list
-  meeting online <name> --cwd <cwd>
-  meeting offline <name>
+  am init
+  am send <self>[@project] <peer>[@project] <body> [--kind=X] [--ask=Y]
+  am read <self>[@project] <peer>[@project] [--limit=30] [--since=ID]
+  am show <self>[@project] <peer>[@project] [--limit=30]
+  am turn <self>[@project] <peer>[@project]
+  am list
+  am online <name> --cwd <cwd>
+  am offline <name>
 """
 
 import argparse
@@ -43,11 +43,10 @@ from agent_meeting.clients import hub_http_client
 from agent_meeting.commands import (
     conversation_commands,
     group_commands,
-    message_hub_lifecycle_commands,
 )
 from agent_meeting.message_hub import sqlite_message_database
+from agent_meeting.message_hub import service_configuration
 from agent_meeting.messaging import project_identity
-from agent_meeting.operating_systems import process_liveness
 
 if sys.platform.startswith("win"):
     for _stream in (sys.stdout, sys.stderr):
@@ -115,7 +114,7 @@ _NO_CONTROL_MSG = (
     "Possible causes: control not started / different subnet / multicast blocked "
     "(Wi-Fi AP isolation or firewall blocking UDP 5353). "
     "Fix: run /imagent setup am-msgd to make this machine the central am-msgd session/message hub; "
-    "or pin a control for unreachable machines — meeting host http://<ip>:<port> (persistent) "
+    "or pin a control for unreachable machines — am host http://<ip>:<port> (persistent) "
     "or temporarily export MEETING_HOST=http://<ip>:<port>."
 )
 
@@ -551,7 +550,26 @@ def discover_host() -> str | None:
 
     # 3-5. zeroconf → raw-socket mDNS → TCP-probed auto-cache (see discover_controls).
     controls = discover_controls()
-    return controls[0]["url"] if controls else None
+    if controls:
+        return controls[0]["url"]
+
+    # Every installation owns a loopback am-msgd. It is an explicit last
+    # resort after environment, sticky host, cache, and LAN discovery.
+    configuration = service_configuration.load(
+        service_configuration.default_path(Path(MEETING_HOME)),
+        create=False,
+    )
+    local_url = f"http://127.0.0.1:{configuration.port}"
+    try:
+        with _NO_PROXY_OPENER.open(
+            f"{local_url}/health",
+            timeout=1,
+        ) as response:
+            if response.status == 200:
+                return local_url
+    except Exception:
+        pass
+    return None
 
 
 def _invalidate_host_cache():
@@ -801,40 +819,6 @@ def cmd_offline(args):
     print(f"offline: {name}@{project}")
 
 
-AM_MSGD_PORT = int(os.environ.get("MEETING_PORT", "8765"))
-
-
-def _probe_health() -> dict | None:
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{AM_MSGD_PORT}/health", timeout=5) as r:
-            return json.loads(r.read().decode("utf-8"))
-    except Exception:
-        return None
-
-
-def _plugin_root_for_compatibility() -> Path:
-    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("PLUGIN_ROOT") or ""
-    if not plugin_root:
-        plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return Path(plugin_root)
-
-
-def cmd_am_msgd(args):
-    return message_hub_lifecycle_commands.run_message_hub_lifecycle_command(
-        args,
-        paths=message_hub_lifecycle_commands.MessageHubLifecyclePaths(
-            meeting_home=Path(MEETING_HOME),
-            config_path=Path(_CONFIG_PATH),
-            plugin_root=_plugin_root_for_compatibility(),
-        ),
-        port=AM_MSGD_PORT,
-        windows_process_is_alive=(
-            process_liveness.is_windows_process_alive
-        ),
-        health_probe=_probe_health,
-    )
-
-
 def cmd_telemetry(args):
     try:
         with open(_CONFIG_PATH) as f:
@@ -900,7 +884,7 @@ def cmd_token(args):
     print(new_token)
     print(
         "Token generated and written to config.json. "
-        "Run `meeting token <value>` on every client machine to distribute it, "
+        "Run `am token <value>` on every client machine to distribute it, "
         "or set the MEETING_TOKEN env var. Keep it secret."
     )
 
@@ -940,7 +924,7 @@ def cmd_host(args):
     _write_config(cfg)
     reachable = "reachable" if _tcp_reachable(url) else "NOT reachable right now"
     print(f"control_host pinned: {url} ({reachable})")
-    print("(this beats mDNS; clear with `meeting host clear`)")
+    print("(this beats mDNS; clear with `am host clear`)")
 
 
 def _validate_group_name(name: str) -> str | None:
@@ -1118,7 +1102,7 @@ def cmd_prune(args):
 # ---------- main ----------
 
 def main():
-    p = argparse.ArgumentParser(prog="meeting")
+    p = argparse.ArgumentParser(prog="am")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init").set_defaults(func=cmd_init)
@@ -1184,11 +1168,6 @@ def main():
     s.add_argument("peer")
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_delete)
-
-    s = sub.add_parser("am-msgd",
-                       help="manage the central am-msgd session/message hub; bare `am-msgd` promotes this machine to control")
-    s.add_argument("action", nargs="?", choices=["status", "stop", "restart"], default=None)
-    s.set_defaults(func=cmd_am_msgd)
 
     s = sub.add_parser("controls",
                        help="list all discovered control nodes")

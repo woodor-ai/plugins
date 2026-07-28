@@ -2,7 +2,6 @@ import json
 import plistlib
 import sqlite3
 import subprocess
-from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -28,12 +27,18 @@ def test_macos_launch_agent_names_the_message_hub(tmp_path):
         build_message_hub_launch_agent(
             label="com.tommy.agent-meeting.am-msgd",
             message_hub_command=command,
+            configuration_path=tmp_path / "am-msgd.json",
             log_path=log_path,
         )
     )
 
     assert payload["Label"] == "com.tommy.agent-meeting.am-msgd"
-    assert payload["ProgramArguments"] == [str(command), "--port", "8765"]
+    assert payload["ProgramArguments"] == [
+        str(command),
+        "serve",
+        "--config",
+        str(tmp_path / "am-msgd.json"),
+    ]
     assert payload["KeepAlive"] is True
     assert payload["StandardOutPath"] == str(log_path)
 
@@ -163,44 +168,60 @@ def test_windows_message_hub_stop_is_owned_by_os_adapter(
     assert ["taskkill", "/F", "/PID", "202"] in commands
 
 
-def test_message_hub_start_prefers_activated_session_start_command(
+def test_windows_supervisor_uses_explicit_service_configuration(
     tmp_path,
     monkeypatch,
-    capsys,
 ):
-    from agent_meeting.commands import message_hub_lifecycle_commands
-
-    meeting_home = tmp_path / "meeting-home"
-    stable_command = meeting_home / "bin" / "am-claude-session-start"
-    stable_command.parent.mkdir(parents=True)
-    stable_command.write_text("#!/bin/sh\n", encoding="utf-8")
-    paths = message_hub_lifecycle_commands.MessageHubLifecyclePaths(
-        meeting_home=meeting_home,
-        config_path=meeting_home / "config.json",
-        plugin_root=tmp_path / "agent-meeting",
+    from agent_meeting.operating_systems.windows import (
+        message_hub_logon_supervisor,
     )
-    calls = []
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "am-msgd.exe"
+    executable.write_bytes(b"placeholder")
+    captured = {}
+
+    class FakeProcess:
+        pid = 123
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = list(command)
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(message_hub_logon_supervisor, "BIN", bin_dir)
     monkeypatch.setattr(
-        message_hub_lifecycle_commands.subprocess,
-        "run",
-        lambda command, **kwargs: (
-            calls.append((command, kwargs))
-            or subprocess.CompletedProcess(command, 0, "", "")
-        ),
+        message_hub_logon_supervisor,
+        "MEETING_HOME",
+        tmp_path,
     )
-
-    message_hub_lifecycle_commands.run_message_hub_lifecycle_command(
-        SimpleNamespace(action=None),
-        paths=paths,
-        port=8765,
-        windows_process_is_alive=lambda _pid: False,
-        health_probe=lambda: None,
-        system_name="Darwin",
+    monkeypatch.setattr(
+        message_hub_logon_supervisor,
+        "AM_MSGD_LOG",
+        tmp_path / "am-msgd.log",
     )
+    monkeypatch.setattr(
+        message_hub_logon_supervisor,
+        "AM_MSGD_PID_FILE",
+        tmp_path / "am-msgd.pid",
+    )
+    monkeypatch.setattr(message_hub_logon_supervisor, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        message_hub_logon_supervisor.subprocess,
+        "Popen",
+        fake_popen,
+    )
+    monkeypatch.delenv("MEETING_NO_MDNS", raising=False)
 
-    assert calls[0][0] == [str(stable_command)]
-    assert json.loads(paths.config_path.read_text())["is_host"] is True
-    assert "session/message hub" in capsys.readouterr().out
+    message_hub_logon_supervisor.launch_am_msgd()
+
+    assert captured["command"] == [
+        str(executable),
+        "serve",
+        "--config",
+        str(tmp_path / "am-msgd.json"),
+    ]
 
 
 def test_macos_message_hub_restart_is_owned_by_launchd_adapter(
@@ -265,7 +286,7 @@ def test_claude_context_reads_composite_online_identities(tmp_path):
     payload = build_session_start_payload(
         config={"is_host": False},
         database_path=database,
-        meeting_command=tmp_path / "bin" / "meeting",
+        am_command=tmp_path / "bin" / "am",
         monitor_script=tmp_path / "bin" / "monitor.py",
         python_executable=tmp_path / "venv" / "bin" / "python",
         is_windows=False,

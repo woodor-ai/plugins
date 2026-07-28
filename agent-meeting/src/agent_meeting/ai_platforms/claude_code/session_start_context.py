@@ -45,7 +45,7 @@ def build_session_start_payload(
     *,
     config: dict,
     database_path: Path,
-    meeting_command: Path,
+    am_command: Path,
     monitor_script: Path,
     python_executable: Path,
     is_windows: bool,
@@ -64,23 +64,23 @@ def build_session_start_payload(
     hostname = hostname or socket.gethostname()
 
     if standalone_commands:
-        cli = f'"{meeting_command}"' if is_windows else str(meeting_command)
+        cli = f'"{am_command}"' if is_windows else str(am_command)
         monitor = f'"{monitor_script}" <name>'
         os_label = "windows" if is_windows else "posix"
     elif is_windows:
-        cli = f'"{python_executable}" "{meeting_command}"'
+        cli = f'"{python_executable}" "{am_command}"'
         monitor = (
             f'"{python_executable.as_posix()}" '
             f'"{monitor_script.as_posix()}" <name>'
         )
         os_label = "windows"
     else:
-        cli = str(meeting_command)
+        cli = str(am_command)
         monitor = f"python3 {monitor_script} <name>"
         os_label = "posix"
 
     if is_codex_thread:
-        registration_context = """This is a Codex session. A `mycodex` launch supplies its exact agent-meeting recipient and control URL through thread and turn request parameters. Pass those values as explicit `meeting` CLI arguments; do not use `MEETING_SELF` or `MEETING_HOST`.
+        registration_context = """This is a Codex session. A `mycodex` launch supplies its exact agent-meeting recipient and control URL through thread and turn request parameters. Pass those values as explicit `am` CLI arguments; do not use `MEETING_SELF` or `MEETING_HOST`.
 
 If no agent-meeting recipient is present in the current runtime context, this Codex session is not registered — and that's fine. Peer-to-peer agent messaging is optional. Never gate, block, or delay the user's work to register a name.
 

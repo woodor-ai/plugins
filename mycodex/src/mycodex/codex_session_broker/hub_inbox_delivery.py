@@ -1,4 +1,4 @@
-"""Cursor reconciliation and notification rendering for meeting inbox delivery."""
+"""Cursor reconciliation and notification rendering for hub inbox delivery."""
 
 from __future__ import annotations
 

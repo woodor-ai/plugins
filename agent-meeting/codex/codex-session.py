@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility entrypoint for the independent mycodex launcher package."""
+"""Entrypoint for the independent mycodex launcher package."""
 
 import sys
 from pathlib import Path

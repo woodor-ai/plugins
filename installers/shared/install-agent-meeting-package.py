@@ -21,6 +21,9 @@ from agent_meeting.installation.version_activation import (
     activate_runtime,
     runtime_command_path,
 )
+from agent_meeting.installation.message_hub_service_installation import (
+    ensure_local_message_hub_service,
+)
 
 
 def _project_version(project_root: Path) -> str:
@@ -158,6 +161,20 @@ def main(argv=None) -> int:
         source_root=args.source_root.resolve(),
         meeting_home=args.meeting_home.resolve(),
     )
+    meeting_home = args.meeting_home.resolve()
+    if sys.platform.startswith("win"):
+        session_start = meeting_home / "bin" / "am-claude-session-start.exe"
+        environment = os.environ.copy()
+        environment["MEETING_HOME"] = str(meeting_home)
+        subprocess.run(
+            [str(session_start)],
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        ensure_local_message_hub_service(meeting_home)
     print(
         f"installed and activated host runtime {payload['version']} "
         f"at {payload['runtime']}"

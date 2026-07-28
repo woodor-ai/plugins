@@ -42,7 +42,7 @@ from pathlib import Path
 
 from mycodex import __version__
 from mycodex.codex_session_broker import (
-    meeting_inbox_delivery,
+    hub_inbox_delivery,
     session_lease_registry,
     tui_websocket_proxy,
 )
@@ -57,7 +57,7 @@ except ImportError:
 # discovery is unsuitable here: it can route private control traffic through a
 # local proxy, and recent ``websockets`` releases require the optional
 # ``python-socks`` package before they can even connect to that proxy.  Keep
-# this traffic direct, matching the meeting CLI and Claude subscription client.
+# this traffic direct, matching the am CLI and Claude subscription client.
 CENTRAL_HTTP_PROXY_HANDLER = urllib.request.ProxyHandler({})
 CENTRAL_HTTP_OPENER = urllib.request.build_opener(CENTRAL_HTTP_PROXY_HANDLER)
 
@@ -329,7 +329,7 @@ class Broker:
 
     @staticmethod
     def reconcile_central_cursor(session, central_cursor):
-        meeting_inbox_delivery.reconcile_central_cursor(
+        hub_inbox_delivery.reconcile_central_cursor(
             session,
             central_cursor,
         )
@@ -662,10 +662,10 @@ class Broker:
 
     @staticmethod
     def message_sender(message):
-        return meeting_inbox_delivery.message_sender(message)
+        return hub_inbox_delivery.message_sender(message)
 
     def build_injection(self, session):
-        return meeting_inbox_delivery.build_injection(
+        return hub_inbox_delivery.build_injection(
             session,
             control_stale_seconds=CONTROL_STALE_S,
         )

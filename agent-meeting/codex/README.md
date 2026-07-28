@@ -93,7 +93,7 @@ powershell -ExecutionPolicy Bypass -File <repo>\installers\codex\install-on-wind
 
 The installer builds the immutable
 `~/.agent-meeting/runtimes/<version>/venv`, atomically activates the stable
-`meeting`, `am-msgd`, `mycodex`, and `am-codexd` launchers, stores the selected
+`am`, `am-msgd`, `mycodex`, and `am-codexd` launchers, stores the selected
 central am-msgd URL, removes the legacy Codex hook, and refreshes the
 agent-meeting instructions in `~/.codex/AGENTS.md`. It also refreshes the
 Woodor Codex marketplace and installs the native `agent-meeting` plugin, which
@@ -155,7 +155,7 @@ Agent-meeting recipient: NAME@PROJECT
 The agent reads each exact body with:
 
 ```sh
-meeting message NAME@PROJECT 17029
+am message NAME@PROJECT 17029
 ```
 
 It does not open a whole conversation and accidentally interpret a newer
@@ -177,7 +177,7 @@ The broker injects the lease's canonical identity and control URL into
 instructions, and into every `turn/start` as application context. The turn
 context remains effective when a Codex collaboration mode supplies its own
 developer instructions. Codex passes those values explicitly to the same
-`meeting` CLI used by Claude Code; no per-session environment variables or
+`am` CLI used by Claude Code; no per-session environment variables or
 Codex-only send helper are involved. The broker opts its independent
 app-server connection into Codex's `experimentalApi` capability because
 `turn/start.additionalContext` is capability-gated.

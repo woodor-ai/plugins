@@ -16,7 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 AM_MSGD = ROOT / "bin" / "am-msgd"
-MEETING = ROOT / "bin" / "meeting"
+AM = ROOT / "bin" / "am"
 
 
 def free_port():
@@ -78,6 +78,7 @@ def am_msgd(tmp_path):
         [
             os.environ.get("PYTHON", os.sys.executable),
             str(AM_MSGD),
+            "serve",
             "--bind",
             "127.0.0.1",
             "--port",
@@ -663,7 +664,7 @@ def test_private_send_requires_full_identity_but_group_short_name_is_allowed(am_
     bare_private = subprocess.run(
         [
             sys.executable,
-            str(MEETING),
+            str(AM),
             "send",
             "alice@proj",
             "bob",
@@ -678,7 +679,7 @@ def test_private_send_requires_full_identity_but_group_short_name_is_allowed(am_
     full_private = subprocess.run(
         [
             sys.executable,
-            str(MEETING),
+            str(AM),
             "send",
             "alice@proj",
             "bob@proj",
@@ -693,7 +694,7 @@ def test_private_send_requires_full_identity_but_group_short_name_is_allowed(am_
     short_group = subprocess.run(
         [
             sys.executable,
-            str(MEETING),
+            str(AM),
             "send",
             "alice@proj",
             "review",

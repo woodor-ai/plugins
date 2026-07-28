@@ -7,7 +7,7 @@ introduced in PR3. Never touches the live central am-msgd on 8765.
 
 Schema/API note: the central am-msgd's identity model is a (project, name)
 composite key. monitor.py normally derives
-its own project from cwd via meeting_common.derive_project(), but that
+its own project from cwd via am_common.derive_project(), but that
 derivation depends on cache state under the real ~/.agent-meeting home (an
 explicit --proj declared for this repo root on the host machine wins over
 folder-based guessing). Like test_ws.py, this test instead pins a fixed
@@ -293,7 +293,7 @@ def start_am_msgd(db_dir: str, port: int = TEST_PORT) -> subprocess.Popen:
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
     proc = subprocess.Popen(
-        [sys.executable, AM_MSGD_PATH, f"--port={port}", "--no-mdns"],
+        [sys.executable, AM_MSGD_PATH, "serve", f"--port={port}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -321,16 +321,16 @@ def start_monitor(name: str, db_dir: str) -> "tuple[subprocess.Popen, list[str],
     """
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
-    # Hard pin: no `meeting` subcommand this monitor's subprocess runs may
-    # fall back to mDNS/LAN discovery -- see the install_meeting_cli module
+    # Hard pin: no `am` subcommand this monitor's subprocess runs may
+    # fall back to mDNS/LAN discovery -- see the install_am_cli module
     # comment for why this is load-bearing, not defensive.
     env["MEETING_HOST"] = f"http://{HOST}:{TEST_PORT}"
 
     # --force: most test cases pre-register `name` via a direct HTTP /register
     # call (to seed messages/read_cursors before the monitor connects) and then
-    # start the monitor under that same name. Now that `meeting online` and the
+    # start the monitor under that same name. Now that `am online` and the
     # WS connection both target the same local test central am-msgd (see
-    # install_meeting_cli), that pre-registration is a genuine still-fresh live
+    # install_am_cli), that pre-registration is a genuine still-fresh live
     # session as far as the central am-msgd is concerned -- without --force the
     # central am-msgd refuses (name_taken) and the monitor exits before reaching
     # the WS loop. The fresh-registration test does not pre-register the receiver;
@@ -425,8 +425,8 @@ def check(name: str, cond: bool, detail: str = ""):
         FAIL_COUNT += 1
 
 
-# ---------- meeting CLI install ----------
-# monitor.py invokes `<MEETING_HOME>/bin/meeting online|offline|controls` as a
+# ---------- am CLI install ----------
+# monitor.py invokes `<MEETING_HOME>/bin/am online|offline|controls` as a
 # subprocess. That real CLI resolves which central am-msgd to talk to via its own
 # `_resolve_host()` -- env MEETING_HOST first, then user-pinned config, then
 # LIVE mDNS/LAN DISCOVERY as a fallback. MEETING_HOME only redirects local
@@ -439,27 +439,27 @@ def check(name: str, cond: bool, detail: str = ""):
 # before it ever reaches the mDNS branch, for every subcommand, no shim
 # logic required.
 #
-# We install the SOURCE TREE's real `bin/meeting` (+ meeting_common.py), not
+# We install the SOURCE TREE's real `bin/am` (+ am_common.py), not
 # a hand-rolled stand-in that forwards unhandled subcommands to whatever is
-# installed at ~/.agent-meeting/bin/meeting on this machine -- that forward
+# installed at ~/.agent-meeting/bin/am on this machine -- that forward
 # is exactly the mechanism that produced the incident (it ran a real
-# `meeting online` with no MEETING_HOST override, which fell through to
+# `am online` with no MEETING_HOST override, which fell through to
 # mDNS). Running the actual CLI under test, with MEETING_HOST pinned, is
 # both safer and more faithful.
 
-def install_meeting_cli(db_dir: str, counter_file: str | None = None) -> str:
-    """Install the real `meeting` CLI (+ meeting_common.py) under db_dir/bin.
+def install_am_cli(db_dir: str, counter_file: str | None = None) -> str:
+    """Install the real `am` CLI (+ am_common.py) under db_dir/bin.
 
-    counter_file: if given, `meeting` becomes a thin wrapper that increments
+    counter_file: if given, `am` becomes a thin wrapper that increments
     counter_file on every `controls --json` call before delegating to the
-    real copy (installed alongside as `meeting-real`) -- lets TC-M5 prove
+    real copy (installed alongside as `am-real`) -- lets TC-M5 prove
     monitor re-resolves the control on every reconnect, not just at startup.
     """
     bin_dir = os.path.join(db_dir, "bin")
     os.makedirs(bin_dir, exist_ok=True)
-    real_path = os.path.join(bin_dir, "meeting-real")
-    shutil.copy2(os.path.join(BIN_DIR, "meeting"), real_path)
-    shutil.copy2(os.path.join(BIN_DIR, "meeting_common.py"), os.path.join(bin_dir, "meeting_common.py"))
+    real_path = os.path.join(bin_dir, "am-real")
+    shutil.copy2(os.path.join(BIN_DIR, "am"), real_path)
+    shutil.copy2(os.path.join(BIN_DIR, "am_common.py"), os.path.join(bin_dir, "am_common.py"))
     # The 0.15 source-tree entrypoint resolves its packaged implementation
     # through the activation stamp when it is copied outside agent-meeting/.
     # Point this isolated test layout back at the checkout source without
@@ -474,7 +474,7 @@ def install_meeting_cli(db_dir: str, counter_file: str | None = None) -> str:
         )
     os.chmod(real_path, 0o755)
 
-    stub_path = os.path.join(bin_dir, "meeting")
+    stub_path = os.path.join(bin_dir, "am")
     if counter_file:
         script = f"""#!/usr/bin/env python3
 import os, sys
@@ -681,7 +681,7 @@ def test_m5_host_reresolution(db_dir: str):
         pass
 
     # Replace with counting version
-    install_meeting_cli(db_dir, counter_file=counter_file)
+    install_am_cli(db_dir, counter_file=counter_file)
 
     _register("m5_user")
     seed = _send("m5_user", "m5_user", "seed")
@@ -721,7 +721,7 @@ def test_m5_host_reresolution(db_dir: str):
         proc.terminate()
         proc.wait(timeout=3)
         # Restore plain (non-counting) install for any subsequent tests
-        install_meeting_cli(db_dir)
+        install_am_cli(db_dir)
 
 
 def test_m6_first_seed_zero_replay(db_dir: str):
@@ -938,7 +938,7 @@ def test_emit_message_unit():
           "in group" not in line4, repr(line4))
 
     # Test global project ("*") renders as bare name, no "@" — matches the
-    # display convention used elsewhere (monitor.py's _display_id, meeting's
+    # display convention used elsewhere (monitor.py's _display_id, am's
     # _fmt_id) for the project that means "no project restriction".
     buf5 = io.StringIO()
     with redirect_stdout(buf5):
@@ -965,7 +965,7 @@ def main():
         init_test_db(tmp)
         print(f"[setup] test DB: {tmp}")
 
-        install_meeting_cli(tmp)
+        install_am_cli(tmp)
         _am_msgd_proc = start_am_msgd(tmp, TEST_PORT)
         print(f"[setup] central am-msgd pid={_am_msgd_proc.pid} port={TEST_PORT}")
 

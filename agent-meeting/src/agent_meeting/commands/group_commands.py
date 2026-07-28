@@ -1,4 +1,4 @@
-"""Group-management commands for the public meeting client."""
+"""Group-management commands for the public ``am`` client."""
 
 from __future__ import annotations
 

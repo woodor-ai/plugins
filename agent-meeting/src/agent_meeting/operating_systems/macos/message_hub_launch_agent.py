@@ -24,15 +24,16 @@ def build_message_hub_launch_agent(
     *,
     label: str,
     message_hub_command: Path,
+    configuration_path: Path,
     log_path: Path,
-    port: int = 8765,
 ) -> bytes:
     definition = {
         "Label": label,
         "ProgramArguments": [
             str(message_hub_command),
-            "--port",
-            str(port),
+            "serve",
+            "--config",
+            str(configuration_path),
         ],
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -162,6 +163,7 @@ def ensure_message_hub_launch_agent(
     lock_path: Path,
     label: str,
     message_hub_command: Path,
+    configuration_path: Path,
     log_path: Path,
     remove_legacy_jobs: Callable[[], None],
     install_locked: Callable[[bytes], None],
@@ -181,6 +183,7 @@ def ensure_message_hub_launch_agent(
     definition = build_message_hub_launch_agent(
         label=label,
         message_hub_command=message_hub_command,
+        configuration_path=configuration_path,
         log_path=log_path,
     )
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -350,7 +353,7 @@ def install_message_hub_launch_agent_locked(
 
     warning = (
         "central am-msgd failed to start automatically; "
-        "run `meeting am-msgd restart` or check "
+        "run `am-msgd restart` or check "
         "~/.agent-meeting/logs/bootstrap.log"
     )
     log(warning)
@@ -367,7 +370,7 @@ def control_message_hub_launch_agent(
     host_is_enabled: bool,
     health_probe: Callable[[], dict | None],
 ) -> None:
-    """Implement ``meeting am-msgd`` status/stop/restart on macOS."""
+    """Implement ``am-msgd`` status/stop/restart on macOS."""
     user_id = os.getuid()
     domain = f"gui/{user_id}"
     target = f"{domain}/{label}"
@@ -395,7 +398,7 @@ def control_message_hub_launch_agent(
             print(
                 "\nThis machine is configured as control but central "
                 f"am-msgd is not listening on :{port}. "
-                "Fix: run 'meeting am-msgd restart' if launchctl "
+                "Fix: run 'am-msgd restart' if launchctl "
                 "self-heal did not fire, or reopen the Claude session "
                 "to trigger auto-launch. "
                 "See ~/.agent-meeting/logs/bootstrap.log"

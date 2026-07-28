@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
-from agent_meeting.clients.meeting_process_client import run_meeting_cli
+from agent_meeting.clients.am_process_client import run_am_cli
 
 
 def parse_discovered_controls(payload: str) -> str:
@@ -26,12 +26,12 @@ def parse_discovered_controls(payload: str) -> str:
         return ""
 
 
-def discover_control(meeting_command: Path) -> str:
-    if not meeting_command.exists():
+def discover_control(am_command: Path) -> str:
+    if not am_command.exists():
         return ""
     try:
-        result = run_meeting_cli(
-            meeting_command,
+        result = run_am_cli(
+            am_command,
             "controls",
             "--json",
             timeout=10,
@@ -61,6 +61,19 @@ def read_saved_control(meeting_home: Path) -> str:
         return ""
 
 
+def local_control_url(meeting_home: Path) -> str:
+    try:
+        payload = json.loads(
+            meeting_home.joinpath("am-msgd.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        port = int(payload.get("port", 8765))
+    except Exception:
+        port = 8765
+    return f"http://127.0.0.1:{port}"
+
+
 def control_is_healthy(control_url: str) -> bool:
     try:
         with urllib.request.urlopen(
@@ -87,8 +100,13 @@ def select_control(
     if discovered:
         return discovered
     saved = read_saved_control(meeting_home)
-    if saved and health_check(saved):
+    # A persisted remote hub is an authority choice. Do not silently replace
+    # it with the unrelated local database merely because the network is down.
+    if saved:
         return saved
+    local = local_control_url(meeting_home)
+    if health_check(local):
+        return local
     return prompt("control URL (http://x.x.x.x:8765)", "")
 
 

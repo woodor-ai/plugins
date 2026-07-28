@@ -1,1 +1,1 @@
-"""Clients used to communicate with an agent-meeting message hub."""
+"""Clients used to communicate with an agent-am message hub."""

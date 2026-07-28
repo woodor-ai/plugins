@@ -1,10 +1,10 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-29 · version 0.15.4
+Last updated: 2026-07-29 · version 0.16.0
 
-The runtime command is `~/.agent-meeting/bin/meeting`. On POSIX it is an
+The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
-pip-generated `~/.agent-meeting/bin/meeting.exe` console launcher. The same
+pip-generated `~/.agent-meeting/bin/am.exe` console launcher. The same
 rule applies to `am-msgd`, `am-update`, `mycodex`, and `am-codexd`.
 
 Claude Code exposes the workflows as `/imagent` and `/talkto`. Codex loads the
@@ -36,13 +36,13 @@ The Claude Code skill exposes:
 | Slash command | CLI operation |
 |---|---|
 | `/imagent <name>` | Start a named session monitor |
-| `/imagent list` | `meeting list` plus `meeting controls` |
-| `/imagent rename <new>` | `meeting rename` and monitor restart |
-| `/imagent stop [name]` | `meeting stop` |
-| `/imagent delete <peer>` | `meeting delete` after confirmation |
-| `/imagent setup am-msgd [status\|stop\|restart]` | `meeting am-msgd` |
-| `/imagent setup token [value\|clear]` | `meeting token` |
-| `/imagent setup telemetry on\|off\|status` | `meeting telemetry` |
+| `/imagent list` | `am list` plus `am controls` |
+| `/imagent rename <new>` | `am rename` and monitor restart |
+| `/imagent stop [name]` | `am stop` |
+| `/imagent delete <peer>` | `am delete` after confirmation |
+| `/imagent setup am-msgd [status\|start\|stop\|restart\|agent-list]` | Direct `am-msgd` command |
+| `/imagent setup token [value\|clear]` | `am token` |
+| `/imagent setup telemetry on\|off\|status` | `am telemetry` |
 
 Reserved session names include `list`, `delete`, `rename`, `stop`, `setup`,
 `help`, `controls`, `am-msgd`, `telemetry`, and `token`.
@@ -51,12 +51,12 @@ Reserved session names include `list`, `delete`, `rename`, `stop`, `setup`,
 
 | Command | Purpose |
 |---|---|
-| `meeting send SELF PEER [BODY]` | Insert one direct or group message |
-| `meeting read SELF PEER` | Return conversation rows as TSV |
-| `meeting message SELF MSG_ID` | Return exactly one visible message by global ID |
-| `meeting show SELF PEER` | Render recent conversation history |
-| `meeting turn SELF PEER` | Print the current direct-message turn holder |
-| `meeting delete SELF PEER` | Delete a direct conversation |
+| `am send SELF PEER [BODY]` | Insert one direct or group message |
+| `am read SELF PEER` | Return conversation rows as TSV |
+| `am message SELF MSG_ID` | Return exactly one visible message by global ID |
+| `am show SELF PEER` | Render recent conversation history |
+| `am turn SELF PEER` | Print the current direct-message turn holder |
+| `am delete SELF PEER` | Delete a direct conversation |
 
 Common options:
 
@@ -67,7 +67,7 @@ Common options:
 - `turn` and `delete`: `--host`.
 
 `message` is am-codexd's precise-read path. A notification carrying
-`msg_id=17029` must be followed by `meeting message SELF 17029`; opening a
+`msg_id=17029` must be followed by `am message SELF 17029`; opening a
 whole conversation can expose later messages and lead to the wrong task being
 handled.
 
@@ -79,12 +79,12 @@ name remains valid when it resolves uniquely to a group.
 
 | Command | Purpose |
 |---|---|
-| `meeting online NAME --cwd PATH` | Register or refresh a session |
-| `meeting offline NAME` | Unregister a session |
-| `meeting list` | List online, empty, and historical identities |
-| `meeting stop NAME` | Stop a local Claude monitor |
-| `meeting rename OLD NEW` | Rename an identity and its history |
-| `meeting init` | Initialize the local control database |
+| `am online NAME --cwd PATH` | Register or refresh a session |
+| `am offline NAME` | Unregister a session |
+| `am list` | List online, empty, and historical identities |
+| `am stop NAME` | Stop a local Claude monitor |
+| `am rename OLD NEW` | Rename an identity and its history |
+| `am init` | Initialize the local control database |
 
 Identity options:
 
@@ -98,9 +98,10 @@ Identity options:
 
 ## Central control
 
-`am-msgd` is the central agent-meeting session/message hub. It owns
-`~/.agent-meeting/db/rooms.db`, exposes HTTP and WebSocket APIs, and advertises
-`_agent-meeting._tcp.local.` through mDNS.
+`am-msgd` is the local agent-meeting session/message hub. It owns
+`~/.agent-meeting/db/rooms.db` and exposes HTTP and WebSocket APIs. It
+advertises `_agent-meeting._tcp.local.` through mDNS only while an active
+non-loopback listener exists.
 
 Version 0.15.0 renamed this process and command from `amctl` to `am-msgd`
 because it owns sessions and message delivery rather than merely controlling
@@ -109,18 +110,24 @@ runtime entrypoint.
 
 | Command | Purpose |
 |---|---|
-| `meeting am-msgd [status\|stop\|restart]` | Manage the local central node |
-| `meeting controls [--json]` | Discover central nodes |
-| `meeting host [URL\|clear]` | Inspect or pin a central URL |
-| `meeting token [VALUE\|clear]` | Manage bearer authentication |
-| `meeting telemetry on\|off\|status` | Manage telemetry |
-| `meeting prune` | Prune stale session rows without deleting messages |
-| `meeting projcache [list\|clear]` | Manage local authoritative-project cache |
+| `am-msgd status [--json]` | Show service, autostart, listener and health state |
+| `am-msgd start\|stop\|restart` | Manage the local user service |
+| `am-msgd agent-list [--json]` | List local hub identities and status |
+| `am-msgd --bind IP` | Add a listener without restarting the daemon |
+| `am-msgd --unbind IP` | Remove one listener without restarting the daemon |
+| `am-msgd --local-only` | Remove every non-loopback listener |
+| `am-msgd serve` | Internal foreground entrypoint used by OS service managers |
+| `am controls [--json]` | Discover central nodes |
+| `am host [URL\|clear]` | Inspect or pin a central URL |
+| `am token [VALUE\|clear]` | Manage bearer authentication |
+| `am telemetry on\|off\|status` | Manage telemetry |
+| `am prune` | Prune stale session rows without deleting messages |
+| `am projcache [list\|clear]` | Manage local authoritative-project cache |
 
-The executable is `bin/am-msgd`:
+The daemon entrypoint used by launchd, Task Scheduler, and systemd is:
 
 ```text
-am-msgd [--port 8765] [--bind 0.0.0.0] [--no-mdns]
+am-msgd serve --config ~/.agent-meeting/am-msgd.json
 ```
 
 The former `meeting-daemon` executable and `meeting daemon` command have no
@@ -129,7 +136,7 @@ names so both services cannot run at once.
 
 ## Group commands
 
-`meeting group` supports `create`, `add`, `remove`, `rename`, `list`,
+`am group` supports `create`, `add`, `remove`, `rename`, `list`,
 `members`, `delete`, and `charter`. Group messages use the same `send`,
 `read`, and `show` commands as direct messages.
 

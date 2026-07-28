@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-meeting-supervisor — Windows keep-alive supervisor for central am-msgd.
+am-message-hub-supervisor — Windows keep-alive supervisor for central am-msgd.
 
 Windows analog of macOS launchd KeepAlive. On Windows there is no built-in
 "restart this process when it exits" facility for a user-level, no-admin
@@ -22,12 +22,12 @@ Responsibilities
    This is the only layer that can recover a wedge the in-process watchdog
    can't.
 
-Contract with `meeting am-msgd` (CLI, cmd_am_msgd Windows branch)
+Contract with the public `am-msgd` lifecycle commands
 ---------------------------------------------------------------
 Stop sentinel: ~/.agent-meeting/am-msgd.stopped
-  - `meeting am-msgd stop`    → writes the sentinel (then taskkills central am-msgd +
+  - `am-msgd stop`    → writes the sentinel (then taskkills central am-msgd +
     supervisor). Seeing it, the supervisor exits WITHOUT relaunching.
-  - `meeting am-msgd start/restart` → removes the sentinel before (re)launching.
+  - `am-msgd start/restart` → removes the sentinel before (re)launching.
 The sentinel is the authoritative "operator wants it down" signal; central am-msgd's
 exit code alone can't distinguish a deliberate stop from a crash/wedge, so the
 sentinel — not the exit code — gates relaunch.
@@ -129,7 +129,12 @@ def launch_am_msgd():
     if not am_msgd.exists():
         log(f"central am-msgd script missing: {am_msgd}")
         return
-    cmd = [str(am_msgd), "--port", str(PORT)]
+    cmd = [
+        str(am_msgd),
+        "serve",
+        "--config",
+        str(MEETING_HOME / "am-msgd.json"),
+    ]
     if os.environ.get("MEETING_NO_MDNS"):
         cmd.append("--no-mdns")
     logf = open(AM_MSGD_LOG, "a", encoding="utf-8")

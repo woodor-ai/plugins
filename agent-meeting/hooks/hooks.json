@@ -1,5 +1,5 @@
 {
-  "description": "Meeting-room lifecycle: ensure data dir + venv, auto-launch central am-msgd on host machine, inject context on SessionStart.",
+  "description": "Agent messaging lifecycle: repair the loopback-first am-msgd user service and inject context on SessionStart.",
   "hooks": {
     "SessionStart": [
       {

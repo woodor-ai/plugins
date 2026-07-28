@@ -12,7 +12,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 BROKER_PATH = ROOT / "codex" / "am_codexd.py"
-LAUNCHER_PATH = ROOT / "codex" / "codex-meeting.py"
+LAUNCHER_PATH = ROOT / "codex" / "codex-session.py"
 
 
 def load(path, name):

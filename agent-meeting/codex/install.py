@@ -9,7 +9,7 @@ Standalone use:                python install.py [--control-url URL]
 What run_install does (in order):
   1. Run session-bootstrap (builds ~/.agent-meeting: venv + zeroconf + websockets +
      bin/ wrappers including mycodex).
-  2. Discover LAN controls via `meeting controls --json`; automatically reuse a
+  2. Discover LAN controls via `am controls --json`; automatically reuse a
      discovered or previously saved reachable control URL.
   3. Write the control_url to launcher.json so bare `mycodex` needs no --control-url.
   4. Remove the obsolete per-session Codex register hook.
@@ -40,7 +40,7 @@ BIN_DIR = PLUGIN_ROOT / "bin"
 if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 
-import meeting_common
+import am_common
 
 BOOTSTRAP = PLUGIN_ROOT / "bin" / "session-bootstrap.py"
 HOOK_REMOVER = HERE / "remove-legacy-codex-hook.py"
@@ -100,12 +100,12 @@ def _venv_python(meeting_home: Path) -> Path:
     return meeting_home / "venv" / "bin" / "python"
 
 
-def _meeting_command(meeting_home: Path) -> Path:
+def _am_command(meeting_home: Path) -> Path:
     if IS_WINDOWS:
-        executable = meeting_home / "bin" / "meeting.exe"
+        executable = meeting_home / "bin" / "am.exe"
         if executable.exists():
             return executable
-    return meeting_home / "bin" / "meeting"
+    return meeting_home / "bin" / "am"
 
 
 _AGENTS_BEGIN = "<!-- agent-meeting:begin (auto-managed by agent-meeting/codex/install.py) -->"
@@ -221,7 +221,7 @@ def _prompt_full_auto(codex_home: Path) -> None:
 def _ensure_agents_md(codex_home: Path, meeting_home: Path, control: str):
     """Append (or refresh) the agent-meeting usage block in ~/.codex/AGENTS.md. Idempotent."""
     vpy = _venv_python(meeting_home)
-    cli = _meeting_command(meeting_home)
+    cli = _am_command(meeting_home)
     ctrl = control or "http://<your-mac-tailnet-ip>:8765"
     if IS_WINDOWS:
         cli_command = (
@@ -268,7 +268,7 @@ message them.
   ```
 - **Direct reply or proactive private message**: private recipients MUST use
   the full canonical `name@project` identity shown by the notification or
-  `meeting list`. Never try a bare private name:
+  `am list`. Never try a bare private name:
   ```
   {cli_command} send NAME@PROJECT X '正文放在单引号里' --kind=回应 --host {ctrl}
   ```
@@ -467,7 +467,7 @@ def _broadcast_environment_change() -> None:
 
 
 def _parse_controls(json_str: str) -> str:
-    """Parse `meeting controls --json` output. Returns best URL or ''.
+    """Parse `am controls --json` output. Returns best URL or ''.
 
     Prefers the entry with is_current=True; falls back to the first entry.
     """
@@ -483,12 +483,12 @@ def _parse_controls(json_str: str) -> str:
 
 
 def _discover_control(meeting_home: Path, vpy: Path) -> str:
-    """Query the LAN for agent-meeting controls. Returns the best URL or ''."""
-    cli = _meeting_command(meeting_home)
+    """Query the LAN for agent-am controls. Returns the best URL or ''."""
+    cli = _am_command(meeting_home)
     if not cli.exists():
         return ""
     try:
-        r = meeting_common.run_meeting_cli(
+        r = am_common.run_am_cli(
             cli,
             "controls",
             "--json",

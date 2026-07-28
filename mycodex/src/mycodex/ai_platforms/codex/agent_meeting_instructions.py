@@ -17,20 +17,20 @@ LEGACY_AGENTS_BEGIN = (
 )
 
 
-def _command_prefix(meeting_command: Path, *, is_windows: bool) -> str:
+def _command_prefix(am_command: Path, *, is_windows: bool) -> str:
     if is_windows:
-        return f'& "{meeting_command}"'
-    return f'"{meeting_command}"'
+        return f'& "{am_command}"'
+    return f'"{am_command}"'
 
 
 def render_agent_meeting_instructions(
     *,
-    meeting_command: Path,
+    am_command: Path,
     control_url: str,
     is_windows: bool,
 ) -> str:
     command = _command_prefix(
-        meeting_command,
+        am_command,
         is_windows=is_windows,
     )
     quoting_note = (
@@ -86,7 +86,7 @@ message them.
 def install_agent_meeting_instructions(
     *,
     codex_home: Path,
-    meeting_command: Path,
+    am_command: Path,
     control_url: str,
     is_windows: bool,
 ) -> bool:
@@ -102,7 +102,7 @@ def install_agent_meeting_instructions(
         or LEGACY_AGENTS_BEGIN in existing
     )
     block = render_agent_meeting_instructions(
-        meeting_command=meeting_command,
+        am_command=am_command,
         control_url=control_url,
         is_windows=is_windows,
     )

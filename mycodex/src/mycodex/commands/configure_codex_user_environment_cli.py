@@ -24,9 +24,9 @@ def _prompt(message: str, default: str = "") -> str:
     return answer or default
 
 
-def _meeting_command(meeting_home: Path, *, is_windows: bool) -> Path:
+def _am_command(meeting_home: Path, *, is_windows: bool) -> Path:
     return meeting_home / "bin" / (
-        "meeting.exe" if is_windows else "meeting"
+        "am.exe" if is_windows else "am"
     )
 
 
@@ -47,12 +47,12 @@ def main(argv=None) -> int:
         os.environ.get("CODEX_HOME")
         or (Path.home() / ".codex")
     )
-    meeting_command = _meeting_command(
+    am_command = _am_command(
         meeting_home,
         is_windows=is_windows,
     )
     discovered = control_endpoint_selection.discover_control(
-        meeting_command
+        am_command
     )
     control_url = control_endpoint_selection.select_control(
         meeting_home=meeting_home,
@@ -71,7 +71,7 @@ def main(argv=None) -> int:
     first_install = (
         agent_meeting_instructions.install_agent_meeting_instructions(
             codex_home=codex_home,
-            meeting_command=meeting_command,
+            am_command=am_command,
             control_url=instructions_control,
             is_windows=is_windows,
         )

@@ -17,9 +17,9 @@ the trigger.
 
 ## Architecture (changed 2026-05-26)
 
-Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `meeting` CLI at `~/.agent-meeting/bin/meeting`. There are no canonical `.md` files to read or write anymore. All writes are atomic transactions (insert message + flip turn in one BEGIN IMMEDIATE). No mtime checks. No tmp files. No Edit/Write tool on room files.
+Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `am` CLI at `~/.agent-meeting/bin/am`. There are no canonical `.md` files to read or write anymore. All writes are atomic transactions (insert message + flip turn in one BEGIN IMMEDIATE). No mtime checks. No tmp files. No Edit/Write tool on room files.
 
-**CLI invocation is per-OS** (see the `imagent` skill's "Invoking the `meeting` CLI / monitor" section): macOS/Linux call `~/.agent-meeting/bin/meeting …` directly; **Windows** calls the pip-generated stable launcher `"<abs>\.agent-meeting\bin\meeting.exe" …`. Do not reintroduce the legacy `venv\Scripts\python.exe` + extensionless-script form. The examples below use the macOS/Linux form; rewrite them to the `.exe` launcher on Windows.
+**CLI invocation is per-OS** (see the `imagent` skill's "Invoking the `am` CLI / monitor" section): macOS/Linux call `~/.agent-meeting/bin/am …` directly; **Windows** calls the pip-generated stable launcher `"<abs>\.agent-meeting\bin\am.exe" …`. Do not reintroduce the legacy `venv\Scripts\python.exe` + extensionless-script form. The examples below use the macOS/Linux form; rewrite them to the `.exe` launcher on Windows.
 
 ## Steps
 
@@ -29,21 +29,21 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
      instructions. Pass the recipient as `<self>` and append
      `--host <control-url>` to every direct message CLI call. Do not use
      environment variables.
-   - Claude Code: run `meeting list` and identify the current session by cwd
+   - Claude Code: run `am list` and identify the current session by cwd
      and host. If none is active, tell the user to run `/imagent <name>` first.
 2. **Require a canonical private recipient**: `<peer>` must be
    `<name>@<project>` or `<name>@*`. Never silently resolve a bare private name,
-   even when `meeting list` currently shows only one candidate. If the user
-   supplied a bare name, show matching full identities from `meeting list` and
+   even when `am list` currently shows only one candidate. If the user
+   supplied a bare name, show matching full identities from `am list` and
    ask them to choose.
-3. **Verify the full peer identity exists** in `meeting list`; refuse if it does
+3. **Verify the full peer identity exists** in `am list`; refuse if it does
    not.
 4. **Read recent history when useful**:
-   `meeting show <self> <peer> --limit=20`.
-5. **Turn check (advisory, not blocking)**: `meeting turn <self> <peer>`.
+   `am show <self> <peer> --limit=20`.
+5. **Turn check (advisory, not blocking)**: `am turn <self> <peer>`.
    - If output is `<self>` → normal case, send your message.
    - If output is `<peer>` → peer is expected to respond next. You MAY still send when the user explicitly asks for a follow-up or you have a non-deferrable addition. Don't refuse on this basis alone.
-   - The room may not exist yet — that's fine, `meeting send` will create it on first message.
+   - The room may not exist yet — that's fine, `am send` will create it on first message.
 6. **Compose your message body** (markdown, ≤30 lines is the soft norm).
 
    **Do NOT send ack-only / no-info messages** — this is a hard rule, not a style preference. Abort the send if your body is just one of:
@@ -51,30 +51,30 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
    - A bare confirmation echoing peer's content with no new info
    - "I'll do X" narration when there's no actual handoff or status to convey
 
-   **Why**: every `meeting send` flips turn and wakes the peer's monitor → forces a full ~100k-context pass on their side, costing ≈$0.15 cache-read for zero information. Across a working session this dwarfs the actual coordination cost.
+   **Why**: every `am send` flips turn and wakes the peer's monitor → forces a full ~100k-context pass on their side, costing ≈$0.15 cache-read for zero information. Across a working session this dwarfs the actual coordination cost.
 
    **If you have ack + substantive content**: batch into one message. Never send the ack as its own message and the substance as another.
 
-   **If you only have an ack**: don't call `meeting send` at all. Tell the user one line ("→ no message to send, ack-only suppressed") and stop.
+   **If you only have an ack**: don't call `am send` at all. Tell the user one line ("→ no message to send, ack-only suppressed") and stop.
 
 7. **Send via the CLI** (one atomic transaction inserts msg + flips turn). Three body modes — pick by content:
 
    **Mode A — inline (short, no shell-special chars)**:
    ```
-   ~/.agent-meeting/bin/meeting send <self> <peer> "short safe body" --kind=回应 [--ask="..."]
+   ~/.agent-meeting/bin/am send <self> <peer> "short safe body" --kind=回应 [--ask="..."]
    ```
    Unsafe if body has `` ` ``, `$(...)`, `$VAR`, unescaped `"`. → Use Mode C instead.
 
    **Mode B — stdin via `-`**:
    ```
-   cat "$TMPDIR/body.md" | ~/.agent-meeting/bin/meeting send <self> <peer> - --kind=回应
+   cat "$TMPDIR/body.md" | ~/.agent-meeting/bin/am send <self> <peer> - --kind=回应
    ```
    (macOS/Linux: `$TMPDIR` or `/tmp`; Windows: `%TEMP%` — use an absolute path)
 
    **Mode C — `--body-file` (recommended for bodies with code blocks, backticks, $vars)**:
    ```
    # Write tool → <tmpdir>/talkto-body.md with the full body content
-   ~/.agent-meeting/bin/meeting send <self> <peer> --body-file=<tmpdir>/talkto-body.md --kind=开启|回应|总结 [--ask="..."]
+   ~/.agent-meeting/bin/am send <self> <peer> --body-file=<tmpdir>/talkto-body.md --kind=开启|回应|总结 [--ask="..."]
    ```
    (`<tmpdir>` = `/tmp` on macOS/Linux, `%TEMP%` on Windows)
 
@@ -90,10 +90,10 @@ After sending, the peer's monitor will detect the new message within ~3 seconds 
 
 ## On incoming RING (handled by imagent skill's monitor, not by this skill)
 
-See `imagent` skill's "Behavior on incoming new-message event" section — same `meeting` CLI is used for the reply.
+See `imagent` skill's "Behavior on incoming new-message event" section — same `am` CLI is used for the reply.
 
 ## What NOT to do
 
 - Do NOT Read or Write `~/.agent-meeting/rooms/canonical/*.md` directly. Those files are legacy snapshots from before the SQLite migration; they're stale. All truth lives in the DB.
-- Do NOT use the Edit or Write tools on any room file. Use only the `meeting` CLI for room state.
+- Do NOT use the Edit or Write tools on any room file. Use only the `am` CLI for room state.
 - Do NOT compose multi-step shell sequences that stat/lock/rename — the CLI's single-call `send` handles all of that atomically.

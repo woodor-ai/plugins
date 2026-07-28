@@ -27,10 +27,10 @@ Covers:
 Phase 2 CLI-addressing regression (docs/contracts/phase2-single-key-targets.md,
 targets #3/#5/#6/#7 -- central am-msgd-HTTP-level addressing for targets #1/#4 lives in
 test_identity_regression.py):
-  T3  - `meeting offline <name>` against a mismatched project must fail loudly
+  T3  - `am offline <name>` against a mismatched project must fail loudly
         (non-zero exit, session row untouched) instead of returning success
         with zero rows deleted; --proj/--global retarget the right project.
-  T5  - `meeting send` to a peer with zero live sessions and zero message
+  T5  - `am send` to a peer with zero live sessions and zero message
         history anywhere must refuse to guess self's own project (no message
         inserted) instead of silently filing it under a project the peer may
         never register under.
@@ -38,7 +38,7 @@ test_identity_regression.py):
         accept name@project like charter/list --member already did, so a group
         can be managed without cd-ing back to its original directory.
   T7  - two projects' same-named monitors get distinct pidfiles, and
-        `meeting stop <name>` accepts --proj/--global to target the right one.
+        `am stop <name>` accepts --proj/--global to target the right one.
 
 Usage:
     python3 agent-meeting/tests/test_authoritative_project.py
@@ -58,14 +58,14 @@ import urllib.parse
 import urllib.request
 
 BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin")
-MEETING_PATH = os.path.join(BIN_DIR, "meeting")
+AM_PATH = os.path.join(BIN_DIR, "am")
 AM_MSGD_PATH = os.path.join(BIN_DIR, "am-msgd")
 MONITOR_PATH = os.path.join(BIN_DIR, "monitor.py")
 PLUGIN_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                             ".claude-plugin", "plugin.json")
 
 sys.path.insert(0, BIN_DIR)
-import meeting_common  # noqa: E402
+import am_common  # noqa: E402
 
 TEST_PORT = 8796  # distinct from other tests' ports (8765 live, 8796-8799 test suite)
 HOST = "127.0.0.1"
@@ -99,7 +99,7 @@ def start_am_msgd(meeting_home: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["MEETING_HOME"] = meeting_home
     proc = subprocess.Popen(
-        [sys.executable, AM_MSGD_PATH, f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, AM_MSGD_PATH, "serve", f"--port={TEST_PORT}", "--no-mdns"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     for _ in range(40):
@@ -138,12 +138,12 @@ def _all_session_names(meeting_home: str) -> set:
     return set(rows)
 
 
-# ---------- `meeting online` CLI invocation (real source-tree bin/meeting) ----------
+# ---------- `am online` CLI invocation (real source-tree bin/am) ----------
 
 def run_online(meeting_home: str, cwd: str, name: str, extra_args: list) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["MEETING_HOME"] = meeting_home
-    cmd = [sys.executable, MEETING_PATH, "online", name, "--cwd", cwd, "--host", HOST_URL] + extra_args
+    cmd = [sys.executable, AM_PATH, "online", name, "--cwd", cwd, "--host", HOST_URL] + extra_args
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=15)
 
 
@@ -153,10 +153,10 @@ def _plugin_version() -> str:
 
 
 def run_meeting(meeting_home: str, cwd: str, args: list) -> subprocess.CompletedProcess:
-    """Invoke the real source-tree `meeting` CLI with an arbitrary subcommand."""
+    """Invoke the real source-tree `am` CLI with an arbitrary subcommand."""
     env = os.environ.copy()
     env["MEETING_HOME"] = meeting_home
-    cmd = [sys.executable, MEETING_PATH] + args
+    cmd = [sys.executable, AM_PATH] + args
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=15)
 
 
@@ -168,10 +168,10 @@ def _message_count(meeting_home: str) -> int:
     return n
 
 
-# ---------- TC1-TC6: `meeting online` authoritative-identity resolution ----------
+# ---------- TC1-TC6: `am online` authoritative-identity resolution ----------
 
 def test_authoritative_resolution(meeting_home: str):
-    print("\n[TC1-TC6] `meeting online` 权威身份解析")
+    print("\n[TC1-TC6] `am online` 权威身份解析")
 
     repo_root = tempfile.mkdtemp(prefix="am-authproj-repo-")
     try:
@@ -192,14 +192,14 @@ def test_authoritative_resolution(meeting_home: str):
         check("TC2: exit code 0", r.returncode == 0, f"stdout={r.stdout!r} stderr={r.stderr!r}")
         row = _sessions_row(meeting_home, "foo", "sess2")
         check("TC2: sessions row exists under project=foo", row is not None, str(row))
-        # proj_cache_get reads from meeting_common.MEETING_HOME (this process's env),
+        # proj_cache_get reads from am_common.MEETING_HOME (this process's env),
         # not the subprocess's -- point it at the same MEETING_HOME the CLI used.
-        _old_home = meeting_common.MEETING_HOME
-        meeting_common.MEETING_HOME = meeting_home
+        _old_home = am_common.MEETING_HOME
+        am_common.MEETING_HOME = meeting_home
         try:
-            cached = meeting_common.proj_cache_get(meeting_common._project_root(repo_root))
+            cached = am_common.proj_cache_get(am_common._project_root(repo_root))
         finally:
-            meeting_common.MEETING_HOME = _old_home
+            am_common.MEETING_HOME = _old_home
         check("TC2: --proj cached for repo root", cached == "foo", f"cached={cached!r}")
 
         # TC3: same root, no --proj this time -> registers via cache, project=foo.
@@ -249,16 +249,16 @@ def _extract_noretry_codes() -> set:
     return eval(m.group(1))  # noqa: S307 -- trusted source file, just a literal set
 
 
-def install_local_meeting_cli(meeting_home: str) -> None:
-    """Copy the SOURCE TREE's bin/meeting + meeting_common.py into
-    <meeting_home>/bin/ so monitor.py's `_run_meeting()` subprocess exercises
+def install_local_am_cli(meeting_home: str) -> None:
+    """Copy the SOURCE TREE's bin/am + am_common.py into
+    <meeting_home>/bin/ so monitor.py's `_run_am()` subprocess exercises
     the code just edited, not whatever build happens to be installed at
     ~/.agent-meeting on this machine."""
     dst = os.path.join(meeting_home, "bin")
     os.makedirs(dst, exist_ok=True)
-    shutil.copy2(MEETING_PATH, os.path.join(dst, "meeting"))
-    shutil.copy2(os.path.join(BIN_DIR, "meeting_common.py"), os.path.join(dst, "meeting_common.py"))
-    os.chmod(os.path.join(dst, "meeting"), 0o755)
+    shutil.copy2(AM_PATH, os.path.join(dst, "am"))
+    shutil.copy2(os.path.join(BIN_DIR, "am_common.py"), os.path.join(dst, "am_common.py"))
+    os.chmod(os.path.join(dst, "am"), 0o755)
 
 
 def test_monitor_noretry(meeting_home: str):
@@ -269,7 +269,7 @@ def test_monitor_noretry(meeting_home: str):
     check("TC7a: transient code 1 is NOT in the no-retry set (still retried)",
           1 not in codes, f"got {codes}")
 
-    install_local_meeting_cli(meeting_home)
+    install_local_am_cli(meeting_home)
     repo_root = tempfile.mkdtemp(prefix="am-authproj-monitor-")
     try:
         env = os.environ.copy()
@@ -300,7 +300,7 @@ def test_monitor_noretry(meeting_home: str):
 # ---------- T3: offline must not report success on a project mismatch ----------
 
 def test_offline_project_scoped(meeting_home: str):
-    """Phase 2 target #3: `meeting offline <name>` against a mismatched
+    """Phase 2 target #3: `am offline <name>` against a mismatched
     project must fail loudly (non-zero exit, session row untouched) instead of
     returning success with zero rows deleted; --proj retargets correctly."""
     print("\n[T3] offline 项目不匹配必须响亮失败，且有 --proj 逃生舱")
@@ -338,7 +338,7 @@ def test_offline_project_scoped(meeting_home: str):
 # ---------- T5: send to a never-seen peer must not guess self_project ----------
 
 def test_resolve_peer_no_guessing(meeting_home: str):
-    """Phase 2 target #5: `meeting send` to a peer with zero live sessions and
+    """Phase 2 target #5: `am send` to a peer with zero live sessions and
     zero message history anywhere must refuse to guess self's own project --
     fail loudly with an explicit-qualifier hint, insert no message."""
     print("\n[T5] send 给全新裸名不得默认猜 self_project")
@@ -445,12 +445,12 @@ def test_group_management_escape_hatch(meeting_home: str):
 
 def test_stop_pidfile_scoped_by_project(meeting_home: str):
     """Phase 2 target #7: two projects' same-named monitors must not share a
-    pidfile, and `meeting stop <name>` must accept --proj to target the right
+    pidfile, and `am stop <name>` must accept --proj to target the right
     one instead of only ever being able to hit whichever process wrote the
     shared pidfile last."""
     print("\n[T7] stop pidfile 按 project 隔离，且有 --proj 逃生舱")
 
-    install_local_meeting_cli(meeting_home)
+    install_local_am_cli(meeting_home)
     cwd_a = tempfile.mkdtemp(prefix="am-authproj-stop-a-")
     cwd_b = tempfile.mkdtemp(prefix="am-authproj-stop-b-")
     proc_a = proc_b = None
@@ -467,9 +467,9 @@ def test_stop_pidfile_scoped_by_project(meeting_home: str):
         )
 
         pid_a_path = os.path.join(meeting_home, "run",
-                                   f"{meeting_common.pidfile_stem('dupmon', 'stopProjA')}.pid")
+                                   f"{am_common.pidfile_stem('dupmon', 'stopProjA')}.pid")
         pid_b_path = os.path.join(meeting_home, "run",
-                                   f"{meeting_common.pidfile_stem('dupmon', 'stopProjB')}.pid")
+                                   f"{am_common.pidfile_stem('dupmon', 'stopProjB')}.pid")
 
         deadline = time.time() + 15
         while time.time() < deadline and not (os.path.exists(pid_a_path) and os.path.exists(pid_b_path)):
@@ -480,7 +480,7 @@ def test_stop_pidfile_scoped_by_project(meeting_home: str):
         check("T7: A and B pidfiles are distinct paths", pid_a_path != pid_b_path,
               f"a={pid_a_path} b={pid_b_path}")
 
-        # `meeting stop dupmon --proj stopProjA` must stop ONLY monitor A.
+        # `am stop dupmon --proj stopProjA` must stop ONLY monitor A.
         r = run_meeting(meeting_home, cwd_a, ["stop", "dupmon", "--proj", "stopProjA"])
         check("T7: stop --proj stopProjA exits 0", r.returncode == 0,
               f"stdout={r.stdout!r} stderr={r.stderr!r}")

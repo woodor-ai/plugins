@@ -47,9 +47,9 @@ def test_project_cache_is_explicitly_scoped_to_runtime_home(tmp_path):
 
 
 def test_compatibility_facade_honors_monkeypatched_meeting_home(tmp_path):
-    facade_path = PLUGIN_ROOT / "bin" / "meeting_common.py"
+    facade_path = PLUGIN_ROOT / "bin" / "am_common.py"
     spec = importlib.util.spec_from_file_location(
-        "meeting_common_isolated",
+        "am_common_isolated",
         facade_path,
     )
     module = importlib.util.module_from_spec(spec)

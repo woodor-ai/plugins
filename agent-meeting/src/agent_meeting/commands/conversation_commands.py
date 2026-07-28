@@ -1,4 +1,4 @@
-"""One-to-one conversation commands for the public meeting client."""
+"""One-to-one conversation commands for the public ``am`` client."""
 
 from __future__ import annotations
 

@@ -1,3 +1,4 @@
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -6,11 +7,28 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PLUGIN_ROOT / "src"
+INSTALLER = (
+    PLUGIN_ROOT.parent
+    / "installers"
+    / "shared"
+    / "install-agent-meeting-package.py"
+)
 
 
 @pytest.fixture(autouse=True)
 def add_source_root(monkeypatch):
     monkeypatch.syspath_prepend(str(SRC_ROOT))
+
+
+def _load_package_installer():
+    spec = importlib.util.spec_from_file_location(
+        "agent_meeting_package_installer_test",
+        INSTALLER,
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_detect_targets_uses_client_directories(tmp_path, monkeypatch):
@@ -58,6 +76,8 @@ def test_install_release_runs_shared_runtime_once_and_selected_adapters(tmp_path
         [
             sys.executable,
             str(source_root / "installers/shared/install-agent-meeting-package.py"),
+            "--meeting-home",
+            str(tmp_path / "meeting"),
         ],
         [
             sys.executable,
@@ -74,6 +94,41 @@ def test_install_release_runs_shared_runtime_once_and_selected_adapters(tmp_path
         ],
         [str(tmp_path / "meeting/bin/am-codexd"), "update", "--defer-if-active"],
     ]
+
+
+def test_package_installer_applies_service_to_explicit_isolated_home(
+    tmp_path,
+    monkeypatch,
+):
+    installer = _load_package_installer()
+    source_root = tmp_path / "source"
+    meeting_home = tmp_path / "isolated-home"
+    calls = []
+
+    monkeypatch.setattr(installer.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        installer,
+        "install_runtime",
+        lambda **kwargs: {
+            "version": "0.16.0",
+            "runtime": str(meeting_home / "runtimes" / "0.16.0"),
+        },
+    )
+    monkeypatch.setattr(
+        installer,
+        "ensure_local_message_hub_service",
+        calls.append,
+    )
+
+    assert installer.main(
+        [
+            "--source-root",
+            str(source_root),
+            "--meeting-home",
+            str(meeting_home),
+        ]
+    ) == 0
+    assert calls == [meeting_home.resolve()]
 
 
 def test_refresh_checkout_fast_forwards_existing_public_checkout(tmp_path):

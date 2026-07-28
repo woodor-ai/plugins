@@ -8,9 +8,9 @@ def runtime_instructions(session) -> str:
         "Agent-meeting runtime for this Codex thread:\n"
         f"- Agent-meeting recipient: {session.identity}\n"
         f"- Agent-meeting control: {session.control_url}\n"
-        "Pass these exact values as explicit meeting CLI arguments. Use the "
+        "Pass these exact values as explicit am CLI arguments. Use the "
         "recipient as the positional <self> argument and pass "
-        f"`--host {session.control_url}`. For `meeting group`, place the "
+        f"`--host {session.control_url}`. For `am group`, place the "
         "`--host` option immediately after `group`. Do not read "
         "MEETING_SELF or MEETING_HOST from the environment."
     )

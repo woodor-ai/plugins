@@ -54,12 +54,12 @@ BROKER_BASE = f"http://127.0.0.1:{BROKER_API_PORT}"
 
 sys.path.insert(0, str(DATA / "bin"))
 try:
-    import meeting_common
+    import am_common
 except ImportError:
     try:
         from agent_meeting.messaging import project_identity
 
-        class _PackagedMeetingIdentity:
+        class _PackagedAmIdentity:
             validate_proj = staticmethod(project_identity.validate_project)
             _project_root = staticmethod(project_identity._project_root)
 
@@ -79,13 +79,13 @@ except ImportError:
                     meeting_home=str(DATA),
                 )
 
-        meeting_common = _PackagedMeetingIdentity()
+        am_common = _PackagedAmIdentity()
     except ImportError:
-        meeting_common = None
+        am_common = None
 
 
 def log(message):
-    print(f"[codex-meeting] {time.strftime('%H:%M:%S')} {message}", flush=True)
+    print(f"[mycodex] {time.strftime('%H:%M:%S')} {message}", flush=True)
 
 
 def default_control_url():
@@ -290,7 +290,7 @@ class Launcher:
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="codex-meeting")
+    parser = argparse.ArgumentParser(prog="mycodex")
     parser.add_argument("name", nargs="?", default=None)
     parser.add_argument("--control-url", default="")
     parser.add_argument(
@@ -307,25 +307,25 @@ def main(argv=None):
     parser.add_argument("--no-codex", action="store_true")
     args = parser.parse_args(argv)
 
-    if meeting_common is None:
+    if am_common is None:
         raise SystemExit(
-            f"meeting_common is unavailable in {DATA / 'bin'}; reinstall agent-meeting"
+            f"am_common is unavailable in {DATA / 'bin'}; reinstall agent-meeting"
         )
     if args.proj is not None and args.is_global:
         raise SystemExit("--proj and --global are mutually exclusive")
 
     if args.proj is not None:
         try:
-            project = meeting_common.validate_proj(args.proj)
+            project = am_common.validate_proj(args.proj)
         except ValueError as exc:
             raise SystemExit(str(exc))
-        root = meeting_common._project_root(os.getcwd())
-        meeting_common.proj_cache_set(root, project)
+        root = am_common._project_root(os.getcwd())
+        am_common.proj_cache_set(root, project)
         log(f"cached project identity {project} for {root}")
     elif args.is_global:
         project = "*"
     else:
-        project = meeting_common.resolve_authoritative_project(os.getcwd(), None)
+        project = am_common.resolve_authoritative_project(os.getcwd(), None)
         if project is None:
             raise SystemExit(
                 "no project identity is configured for this repository; "

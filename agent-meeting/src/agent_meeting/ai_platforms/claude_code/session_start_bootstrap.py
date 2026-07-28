@@ -4,11 +4,10 @@ Claude Code SessionStart integration for agent-meeting.
 Responsibilities (idempotent — runs every SessionStart):
   1. Ensure ~/.agent-meeting/ structure exists (db/, bin link)
   2. Ensure venv at ~/.agent-meeting/venv with zeroconf installed
-  3. Read ~/.agent-meeting/config.json (auto-create if missing). The `is_host`
-     flag determines whether this machine launches the central am-msgd.
-  4. If is_host=true and central am-msgd is not already running → spawn am-msgd
-     detached as a background process. Tracks pid in /tmp/am-msgd.pid
-     (on Windows: %TEMP%\\am-msgd.pid).
+  3. Read ~/.agent-meeting/config.json and migrate the legacy `is_host` value
+     into ~/.agent-meeting/am-msgd.json when needed.
+  4. Repair the loopback-first am-msgd user service without overriding a
+     persisted operator stop.
   5. Emit JSON `hookSpecificOutput.additionalContext` with online peers + setup hints.
 
 Replaces the bash session-bootstrap.sh — that one only worked on POSIX.
@@ -33,6 +32,10 @@ from agent_meeting.ai_platforms.claude_code import (
     session_start_context,
 )
 from agent_meeting.installation import python_environment
+from agent_meeting.installation.message_hub_service_installation import (
+    ensure_configuration,
+    ensure_local_message_hub_service,
+)
 from agent_meeting.operating_systems.macos import (
     message_hub_launch_agent,
 )
@@ -48,7 +51,7 @@ if sys.platform.startswith("win"):
             pass
 
 HOME = Path.home()
-# Honor MEETING_HOME (same env the meeting CLI and monitor.py already respect) so
+# Honor MEETING_HOME (same env the am CLI and monitor.py already respect) so
 # the whole runtime can be relocated — required for isolated codex-only installs
 # and testing on a machine that already has a live ~/.agent-meeting.
 DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
@@ -245,10 +248,10 @@ def ensure_bin_wrappers():
     New design: bin/ is a real directory. Extensionless scripts (meeting,
     am-msgd) become thin shell wrappers that exec the venv
     python with the real plugin script path. .py files (monitor.py, statusline.py,
-    session-bootstrap.py, meeting_common.py) are COPIED, because callers
+    session-bootstrap.py, am_common.py) are COPIED, because callers
     explicitly pass `python3 ~/.agent-meeting/bin/foo.py` and so they must be
-    real .py files. codex-meeting.py also imports the copied
-    meeting_common.py from this directory.
+    real .py files. codex-session.py also imports the copied
+    am_common.py from this directory.
     We copy rather than symlink: symlink_to() needs Administrator / Developer-Mode
     privilege on Windows and would crash the whole bootstrap (taking statusLine
     registration down with it); a copy is privilege-free and identical on every OS.
@@ -303,7 +306,7 @@ def ensure_bin_wrappers():
         return  # Already up to date for this plugin version
 
     # Build wrappers into a temp dir first — if the copy loop fails/interrupts
-    # partway, the existing BIN_LINK stays intact and concurrent `meeting` calls
+    # partway, the existing BIN_LINK stays intact and concurrent `am` calls
     # still find valid scripts. The only moment BIN_LINK is absent is the tiny
     # window between "remove old" and os.rename in the swap below.
     tmp_bin = BIN_LINK.parent / (".bin.tmp." + str(os.getpid()))
@@ -322,7 +325,7 @@ def ensure_bin_wrappers():
                 # on Windows (would crash bootstrap). Copy is privilege-free everywhere.
                 _shutil.copyfile(str(src), str(dest))
             elif IS_WINDOWS:
-                # .cmd wrapper for PATH/shell resolution (monitor, bare `meeting`).
+                # .cmd wrapper for PATH/shell resolution (monitor, bare `am`).
                 dest.with_suffix(".cmd").write_text(
                     f'@echo off\r\n"{py}" "{src}" %*\r\n'
                 )
@@ -340,7 +343,7 @@ def ensure_bin_wrappers():
         # mycodex.cmd/mycodex-impl.ps1 on Windows) — the single source of truth
         # also used by the root installer (install-codex.py), so both sites
         # regenerate the exact same file. Unconditional: mycodex must always
-        # self-heal here even if codex-meeting.py itself is (temporarily)
+        # self-heal here even if codex-session.py itself is (temporarily)
         # missing — its own "not installed" check handles that case at runtime.
         _mycodex_src_dir = PLUGIN_ROOT / "codex"
         if IS_WINDOWS and (_mycodex_src_dir / "mycodex-impl.ps1").exists():
@@ -587,13 +590,19 @@ def launch_am_msgd():
         log(f"central am-msgd command missing: {am_msgd_path}")
         return
     command = (
-        [str(am_msgd_path), "--port", "8765"]
+        [
+            str(am_msgd_path),
+            "serve",
+            "--config",
+            str(DATA / "am-msgd.json"),
+        ]
         if standalone
         else [
             str(venv_python()),
             str(am_msgd_path),
-            "--port",
-            "8765",
+            "serve",
+            "--config",
+            str(DATA / "am-msgd.json"),
         ]
     )
     log_file = TMP / "am-msgd.log"
@@ -657,6 +666,7 @@ def ensure_launchd():
         lock_path=DATA / "run" / "launchd.lock",
         label=LAUNCHD_LABEL,
         message_hub_command=BIN_LINK / "am-msgd",
+        configuration_path=DATA / "am-msgd.json",
         log_path=TMP / "am-msgd.log",
         remove_legacy_jobs=_remove_pre_am_msgd_launchd_service,
         install_locked=_ensure_launchd_locked,
@@ -885,7 +895,7 @@ def online_peers_str() -> str:
     live sessions can share a name across different projects, and the CLI's
     send/read/show/turn already accept name@project to disambiguate. Global
     identities (project "*") drop the suffix, matching the display convention
-    used everywhere else in this codebase (monitor.py's _display_id, meeting's
+    used everywhere else in this codebase (monitor.py's _display_id, am's
     _fmt_id, am-msgd's _fmt_id)."""
     return session_start_context.read_online_peers(DB)
 
@@ -901,7 +911,7 @@ def emit_context(cfg: dict):
         session_start_context.serialize_session_start_payload(
             config=cfg,
             database_path=DB,
-            meeting_command=BIN_LINK / "meeting",
+            am_command=BIN_LINK / "am",
             monitor_script=monitor_command,
             python_executable=venv_python(),
             is_windows=IS_WINDOWS,
@@ -943,7 +953,7 @@ def _read_installed_version() -> str | None:
     Returns None if no runtime is present (fresh install → caller treats as no downgrade).
     """
     # 1. Parse wrapper exec path
-    wrapper = DATA / "bin" / "meeting"
+    wrapper = DATA / "bin" / "am"
     if wrapper.exists() and not wrapper.is_dir():
         try:
             text = wrapper.read_text(encoding="utf-8", errors="replace")
@@ -1020,23 +1030,16 @@ def main():
         if is_new_install:
             beacon("install", version, machine_id, cfg)
 
-        # Runtime activation and OS persistence are independent concerns.
-        # SessionStart must never rewrite an activated runtime, but it must
-        # continue checking the host service on every Claude Code session.
-        if cfg.get("is_host"):
-            if IS_MAC:
-                ensure_launchd()              # plist + KeepAlive — survives reboots
-            elif IS_WINDOWS:
-                ensure_windows_persistence()  # Startup launcher + MINUTE task + supervisor
-            else:
-                if am_msgd_running() and not _am_msgd_version_matches(version):
-                    log("restarting Linux am-msgd after plugin version change")
-                    kill_bootstrap_am_msgd()
-                if not am_msgd_running():
-                    launch_am_msgd()             # Linux: session-bound for now
-        elif IS_WINDOWS:
-            # Not a host anymore — tear down any persistence a prior host left.
-            remove_windows_persistence()
+        # Every installation owns a loopback am-msgd user service. `is_host`
+        # is migrated only into the initial bind-list and no longer decides
+        # whether the daemon exists.
+        message_hub_configuration = ensure_configuration(DATA)
+        if IS_WINDOWS and message_hub_configuration.enabled:
+            ensure_windows_persistence()
+        ensure_local_message_hub_service(
+            DATA,
+            restart_enabled_service=False,
+        )
 
         emit_context(cfg)
     except Exception as e:

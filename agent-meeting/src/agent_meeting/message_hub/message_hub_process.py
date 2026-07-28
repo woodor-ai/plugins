@@ -13,7 +13,7 @@ is <1ms so the cost is negligible).
 Auth model: open by default (trusted-network assumption). Set `auth_token`
 in config.json to enable Bearer-token enforcement on all routes except
 /health. Token is re-read on every request — no central am-msgd restart required
-after `meeting token` writes it.
+after `am token` writes it.
 
 Identity: sessions are identified by (project, name) composite key.
 project is derived from git rev-parse --show-toplevel basename (or cwd basename
@@ -25,16 +25,17 @@ Deployment must preserve ~/.agent-meeting/db/rooms.db; layout cleanup is
 handled by the dedicated legacy-layout migration.
 
 Usage:
-  am-msgd [--port 8765] [--bind 0.0.0.0]
+  am-msgd serve
 
 Run forever; stop with SIGINT/SIGTERM (mDNS unregister + clean shutdown).
 """
 
-import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
+import secrets
 import signal
 import socket
 import sys
@@ -42,9 +43,12 @@ import threading
 import time
 import traceback
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
+from agent_meeting.message_hub import service_configuration
+from agent_meeting.message_hub.listener_manager import ListenerManager
 from agent_meeting.message_hub.mdns_hub_advertiser import publish_message_hub
 from agent_meeting.message_hub.sqlite_conversation_repository import (
     SQLiteConversationRepository,
@@ -93,6 +97,8 @@ ONLINE_THRESHOLD = 12
 # (project, name) -> list[Subscriber]
 _subscribers: dict[tuple, list["Subscriber"]] = {}
 _sub_lock = threading.Lock()
+_listener_manager: ListenerManager | None = None
+_admin_token: str | None = None
 
 
 def _ws_remove(sub: "Subscriber"):
@@ -288,6 +294,26 @@ class Handler(BaseHTTPRequestHandler):
         self._json(401, {"error": "unauthorized"})
         return False
 
+    def _check_admin(self) -> bool:
+        try:
+            remote = ipaddress.ip_address(self.client_address[0])
+        except ValueError:
+            self._json(403, {"error": "admin route requires loopback"})
+            return False
+        # A migrated legacy host may listen on 0.0.0.0. The actual peer
+        # address, not the listener's wildcard address, determines whether an
+        # admin request is local. LAN peers are still rejected.
+        if not remote.is_loopback:
+            self._json(403, {"error": "admin route requires loopback"})
+            return False
+        if (
+            not _admin_token
+            or self.headers.get("X-Am-Msgd-Admin-Token") != _admin_token
+        ):
+            self._json(401, {"error": "unauthorized admin request"})
+            return False
+        return True
+
     def _query(self):
         return parse_qs(urlparse(self.path).query)
 
@@ -299,6 +325,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/_admin/listeners":
+            if not self._check_admin():
+                return
+            return self._json(200, _listener_manager.snapshot())
         if not self._check_auth(path):
             return
 
@@ -308,12 +338,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/health":
-            return self._json(200, {
+            payload = {
                 "ok": True,
                 "host": socket.gethostname(),
                 "version": _plugin_version,
                 "instance_id": PROCESS_INSTANCE_ID,
-            })
+            }
+            if _listener_manager is not None:
+                payload.update(_listener_manager.snapshot())
+            return self._json(200, payload)
         q = self._query()
         try:
             if path == "/list":
@@ -640,6 +673,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path in {"/_admin/listeners", "/_admin/local-only"}:
+            if not self._check_admin():
+                return
+            try:
+                if path == "/_admin/local-only":
+                    return self._json(
+                        200,
+                        _listener_manager.set_local_only(),
+                    )
+                body = self._read_json_body()
+                return self._json(
+                    200,
+                    _listener_manager.add(body["address"]),
+                )
+            except (KeyError, ValueError) as error:
+                return self._err(400, str(error))
+            except Exception as error:
+                sys.stderr.write(traceback.format_exc())
+                return self._err(500, f"internal error: {error}")
         if not self._check_auth(path):
             return
         try:
@@ -720,6 +772,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
+        if path.startswith("/_admin/listeners/"):
+            if not self._check_admin():
+                return
+            try:
+                address = unquote(path.removeprefix("/_admin/listeners/"))
+                return self._json(
+                    200,
+                    _listener_manager.remove(address),
+                )
+            except ValueError as error:
+                return self._err(400, str(error))
+            except Exception as error:
+                sys.stderr.write(traceback.format_exc())
+                return self._err(500, f"internal error: {error}")
         if not self._check_auth(path):
             return
         q = self._query()
@@ -929,48 +995,95 @@ class Handler(BaseHTTPRequestHandler):
 
 # ---------- main ----------
 
-def main():
-    p = argparse.ArgumentParser(prog="am-msgd")
-    p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--bind", default="0.0.0.0")
-    p.add_argument("--no-mdns", action="store_true", help="skip mDNS publish (for testing)")
-    args = p.parse_args()
+def _ensure_admin_token(meeting_home: Path) -> str:
+    path = meeting_home / "am-msgd.admin-token"
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        token = secrets.token_urlsafe(32)
+        temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+        temporary.write_text(token + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    if not token:
+        raise RuntimeError(f"empty am-msgd admin token: {path}")
+    return token
 
+
+def serve(
+    *,
+    configuration_path: Path | None = None,
+    port: int | None = None,
+    binds: tuple[str, ...] | None = None,
+    no_mdns: bool = False,
+) -> None:
+    global _admin_token, _listener_manager
     if not os.path.exists(DB_PATH):
-        print(f"DB not found at {DB_PATH}. Run `meeting init` first.", file=sys.stderr)
-        sys.exit(1)
+        print(f"DB not found at {DB_PATH}. Run `am init` first.", file=sys.stderr)
+        raise SystemExit(1)
 
     prepare_message_database(DB_PATH)
+    meeting_home = Path(MEETING_HOME)
+    configuration_path = (
+        configuration_path
+        or service_configuration.default_path(meeting_home)
+    )
+    configuration = service_configuration.load(
+        configuration_path,
+        create=True,
+    )
+    if port is not None or binds is not None or no_mdns:
+        configuration = service_configuration.from_dict(
+            {
+                "enabled": configuration.enabled,
+                "port": port if port is not None else configuration.port,
+                "binds": (
+                    tuple(
+                        service_configuration.normalize_ip(item)
+                        for item in binds
+                    )
+                    if binds is not None
+                    else configuration.binds
+                ),
+                "mdns": "off" if no_mdns else configuration.mdns,
+            }
+        )
 
-    ThreadingHTTPServer.allow_reuse_address = True
-    server = ThreadingHTTPServer((args.bind, args.port), Handler)
-
-    zc = info = None
-    if not args.no_mdns:
-        zc, info = publish_message_hub(args.port, _plugin_version)
+    _admin_token = _ensure_admin_token(meeting_home)
+    _listener_manager = ListenerManager(
+        handler_class=Handler,
+        configuration_path=configuration_path,
+        configuration=configuration,
+        plugin_version=_plugin_version,
+        publish_mdns=publish_message_hub,
+    )
+    _listener_manager.start_all()
+    stopped = threading.Event()
 
     def shutdown(sig, _frame):
-        print(f"\n[shutdown] received signal {sig}, unpublishing mDNS + stopping HTTP", flush=True)
+        print(
+            f"\n[shutdown] received signal {sig}, stopping HTTP",
+            flush=True,
+        )
+
         def _do():
-            try:
-                if zc and info:
-                    zc.unregister_service(info)
-                    zc.close()
-            except Exception:
-                pass
-            server.shutdown()
-            sys.exit(0)
+            _listener_manager.shutdown()
+            stopped.set()
+
         threading.Thread(target=_do, daemon=True).start()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    def _watchdog(port: int):
+    def _watchdog(watchdog_port: int):
         failures = 0
         time.sleep(15)
-        while True:
+        while not stopped.is_set():
             try:
-                s = socket.create_connection(("127.0.0.1", port), timeout=5)
+                s = socket.create_connection(
+                    ("127.0.0.1", watchdog_port),
+                    timeout=5,
+                )
                 s.sendall(b"GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n")
                 s.recv(256)
                 s.close()
@@ -981,14 +1094,22 @@ def main():
                 if failures >= 3:
                     print("[watchdog] central am-msgd unresponsive, forcing exit", flush=True)
                     os._exit(1)
-            time.sleep(10)
+            stopped.wait(10)
 
-    threading.Thread(target=_watchdog, args=(args.port,), daemon=True).start()
+    threading.Thread(
+        target=_watchdog,
+        args=(configuration.port,),
+        daemon=True,
+    ).start()
     threading.Thread(target=_ws_heartbeat_loop, daemon=True).start()
 
-    print(f"[http] listening on {args.bind}:{args.port}", flush=True)
-    server.serve_forever()
+    for listener in _listener_manager.snapshot()["active_listeners"]:
+        print(f"[http] listening on {listener}", flush=True)
+    try:
+        stopped.wait()
+    except KeyboardInterrupt:
+        _listener_manager.shutdown()
 
 
 if __name__ == "__main__":
-    main()
+    serve()

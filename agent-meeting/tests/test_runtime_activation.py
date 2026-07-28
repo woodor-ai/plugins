@@ -39,26 +39,30 @@ def test_posix_activation_uses_stable_symlinks_and_atomic_manifest(tmp_path):
 
     first = _fake_runtime(tmp_path, "0.15.0", is_windows=False)
     second = _fake_runtime(tmp_path, "0.16.0", is_windows=False)
+    legacy_command = tmp_path / "bin" / "meeting"
+    legacy_command.parent.mkdir(parents=True)
+    legacy_command.write_text("legacy", encoding="utf-8")
 
     activate_runtime(
         meeting_home=tmp_path,
         version="0.15.0",
         is_windows=False,
     )
-    meeting_link = tmp_path / "bin" / "meeting"
+    meeting_link = tmp_path / "bin" / "am"
     assert meeting_link.is_symlink()
-    assert meeting_link.resolve() == first / "venv" / "bin" / "meeting"
+    assert meeting_link.resolve() == first / "venv" / "bin" / "am"
 
     payload = activate_runtime(
         meeting_home=tmp_path,
         version="0.16.0",
         is_windows=False,
     )
-    assert meeting_link.resolve() == second / "venv" / "bin" / "meeting"
+    assert meeting_link.resolve() == second / "venv" / "bin" / "am"
     assert json.loads(
         (tmp_path / "active-runtime.json").read_text(encoding="utf-8")
     ) == payload
     assert not list(tmp_path.glob(".active-runtime.json.tmp.*"))
+    assert not legacy_command.exists()
 
 
 def test_windows_activation_copies_console_exes_without_cmd_forwarders(
@@ -67,18 +71,22 @@ def test_windows_activation_copies_console_exes_without_cmd_forwarders(
     from agent_meeting.installation.version_activation import activate_runtime
 
     runtime = _fake_runtime(tmp_path, "0.15.0", is_windows=True)
+    legacy_command = tmp_path / "bin" / "meeting.exe"
+    legacy_command.parent.mkdir(parents=True)
+    legacy_command.write_bytes(b"legacy")
     activate_runtime(
         meeting_home=tmp_path,
         version="0.15.0",
         is_windows=True,
     )
 
-    for command in ("meeting", "am-msgd", "mycodex", "am-codexd"):
+    for command in ("am", "am-msgd", "mycodex", "am-codexd"):
         destination = tmp_path / "bin" / f"{command}.exe"
         assert destination.read_bytes() == (
             runtime / "venv" / "Scripts" / f"{command}.exe"
         ).read_bytes()
         assert not (tmp_path / "bin" / f"{command}.cmd").exists()
+    assert not legacy_command.exists()
 
 
 def test_activation_refuses_incomplete_runtime(tmp_path):
@@ -86,7 +94,7 @@ def test_activation_refuses_incomplete_runtime(tmp_path):
 
     runtime = tmp_path / "runtimes" / "0.15.0" / "venv" / "bin"
     runtime.mkdir(parents=True)
-    (runtime / "meeting").write_text("meeting")
+    (runtime / "am").write_text("am")
 
     with pytest.raises(FileNotFoundError, match="missing public command"):
         activate_runtime(

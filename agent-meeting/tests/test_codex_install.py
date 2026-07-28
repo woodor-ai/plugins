@@ -130,7 +130,7 @@ def test_parse_controls_invalid_json():
 def test_discover_control_runs_posix_runtime_wrapper_directly(tmp_path):
     mod = _load_install()
     meeting_home = tmp_path / "meeting-home"
-    cli = meeting_home / "bin" / "meeting"
+    cli = meeting_home / "bin" / "am"
     cli.parent.mkdir(parents=True)
     cli.write_text(
         "#!/bin/sh\n"
@@ -147,7 +147,7 @@ def test_discover_control_runs_posix_runtime_wrapper_directly(tmp_path):
 def test_discover_control_reports_cli_failure(tmp_path, capsys):
     mod = _load_install()
     meeting_home = tmp_path / "meeting-home"
-    cli = meeting_home / "bin" / "meeting"
+    cli = meeting_home / "bin" / "am"
     cli.parent.mkdir(parents=True)
     cli.write_text(
         "import sys\nprint('discovery exploded', file=sys.stderr)\nsys.exit(7)\n",
@@ -249,7 +249,7 @@ def test_windows_agents_md_executes_activated_meeting_exe_directly(
     mod.IS_WINDOWS = True
     codex_home = tmp_path / "codex-home"
     meeting_home = tmp_path / "meeting-home"
-    meeting_exe = meeting_home / "bin" / "meeting.exe"
+    meeting_exe = meeting_home / "bin" / "am.exe"
     meeting_exe.parent.mkdir(parents=True)
     meeting_exe.touch()
 
@@ -317,7 +317,7 @@ def test_ensure_agents_md_posix_runs_runtime_wrappers_directly(tmp_path):
     mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
 
     text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
-    cli = meeting_home / "bin" / "meeting"
+    cli = meeting_home / "bin" / "am"
     assert f'"{cli}" send NAME@PROJECT X' in text
     assert "--host http://10.0.0.5:8765" in text
     assert "MEETING_SELF" not in text
@@ -329,11 +329,12 @@ def test_ensure_agents_md_posix_runs_runtime_wrappers_directly(tmp_path):
 
 
 def test_session_context_keeps_claude_unregistered_flow(tmp_path, monkeypatch, capsys):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     plugin_root = _make_plugin_root(tmp_path)
     meeting_home.mkdir()
     mod = _load_bootstrap(meeting_home, plugin_root)
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.delenv("AGENT_MEETING_CODEX_RUNTIME", raising=False)
     monkeypatch.setattr(mod, "online_peers_str", lambda: "(none online)")
 
     mod.emit_context({"is_host": False})
@@ -347,7 +348,7 @@ def test_session_context_keeps_claude_unregistered_flow(tmp_path, monkeypatch, c
 def test_session_context_defers_codex_identity_to_thread_params(
     tmp_path, monkeypatch, capsys
 ):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     plugin_root = _make_plugin_root(tmp_path)
     meeting_home.mkdir()
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -369,7 +370,7 @@ def test_session_start_never_rewrites_an_activated_runtime(
     tmp_path,
     monkeypatch,
 ):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     plugin_root = _make_plugin_root(tmp_path)
     runtime = meeting_home / "runtimes" / "0.15.0"
     runtime.mkdir(parents=True)
@@ -403,6 +404,11 @@ def test_session_start_never_rewrites_an_activated_runtime(
             "machine",
         ),
     )
+    monkeypatch.setattr(
+        mod,
+        "ensure_local_message_hub_service",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(mod, "emit_context", lambda cfg: None)
 
     mod.main()
@@ -412,7 +418,7 @@ def test_activated_runtime_still_repairs_macos_host_service(
     tmp_path,
     monkeypatch,
 ):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     plugin_root = _make_plugin_root(tmp_path)
     runtime = meeting_home / "runtimes" / "0.15.0"
     runtime.mkdir(parents=True)
@@ -451,14 +457,14 @@ def test_activated_runtime_still_repairs_macos_host_service(
     service_checks = []
     monkeypatch.setattr(
         mod,
-        "ensure_launchd",
-        lambda: service_checks.append("launchd"),
+        "ensure_local_message_hub_service",
+        lambda *args, **kwargs: service_checks.append("user-service"),
     )
     monkeypatch.setattr(mod, "emit_context", lambda _cfg: None)
 
     mod.main()
 
-    assert service_checks == ["launchd"]
+    assert service_checks == ["user-service"]
 
 
 def test_legacy_codex_registration_hook_is_removed_without_touching_others():
@@ -540,11 +546,11 @@ def _make_plugin_root(base: Path) -> Path:
     (pr / "codex").mkdir(parents=True)
     (pr / ".codex-plugin").mkdir(parents=True)
     (pr / ".claude-plugin").mkdir(parents=True)
-    (pr / "bin" / "meeting").write_text("#!/bin/sh\necho meeting\n")
+    (pr / "bin" / "am").write_text("#!/bin/sh\necho meeting\n")
     (pr / "bin" / "am-msgd").write_text("#!/bin/sh\necho central am-msgd\n")
     (pr / "bin" / "am-codexd").write_text("#!/usr/bin/env python3\n")
     (pr / "bin" / "monitor.py").write_text("print('monitor-v1')\n")
-    (pr / "codex" / "codex-meeting.py").write_text("# stub\n")
+    (pr / "codex" / "codex-session.py").write_text("# stub\n")
     (pr / "codex" / "mycodex-posix.sh").write_text("#!/bin/sh\necho mycodex-stub\n")
     (pr / "codex" / "mycodex-impl.ps1").write_text("# mycodex-stub\n")
     (pr / "codex" / "mycodex.cmd").write_text("@echo off\r\n")
@@ -566,7 +572,7 @@ def _make_venv(meeting_home: Path):
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX wrapper test")
 def test_mycodex_wrapper_generated_posix(tmp_path):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     _make_venv(meeting_home)
@@ -606,7 +612,7 @@ def test_windows_mycodex_uses_active_plugin_stamp():
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX wrapper test")
 def test_old_codex_meeting_removed_on_regen(tmp_path):
     """If a stale codex-meeting file exists in bin, regeneration must remove it."""
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     _make_venv(meeting_home)
@@ -629,7 +635,7 @@ def test_old_codex_meeting_removed_on_regen(tmp_path):
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX wrapper test")
 def test_same_install_path_new_version_regenerates_copied_runtime(tmp_path):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     _make_venv(meeting_home)
@@ -658,7 +664,7 @@ def test_same_install_path_new_version_regenerates_copied_runtime(tmp_path):
 
 
 def test_bootstrap_reads_invoking_ai_platform_manifest(tmp_path):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     plugin_root = _make_plugin_root(tmp_path)
 
     codex_mod = _load_bootstrap(meeting_home, plugin_root, ai_platform="codex")
@@ -692,7 +698,7 @@ def test_copied_am_msgd_entrypoint_resolves_activated_plugin_source(tmp_path):
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX wrapper test")
 def test_stale_command_names_are_removed_without_full_regeneration(tmp_path):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     _make_venv(meeting_home)
@@ -717,7 +723,7 @@ def test_stale_command_names_are_removed_without_full_regeneration(tmp_path):
 
 
 def test_legacy_launchd_install_migrates_missing_is_host_to_true(tmp_path):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     config = meeting_home / "config.json"
@@ -744,7 +750,7 @@ def test_legacy_launchd_install_migrates_missing_is_host_to_true(tmp_path):
 
 
 def test_am_msgd_launchd_migration_removes_old_amctl_service(tmp_path, monkeypatch):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -776,7 +782,7 @@ def test_am_msgd_launchd_migration_removes_old_amctl_service(tmp_path, monkeypat
 
 
 def test_windows_am_msgd_migration_stops_old_amctl_supervisor(tmp_path, monkeypatch):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -832,7 +838,7 @@ def test_windows_am_msgd_migration_stops_old_amctl_supervisor(tmp_path, monkeypa
 
 
 def test_am_msgd_version_match_requires_live_installed_version(tmp_path, monkeypatch):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -851,7 +857,7 @@ def test_am_msgd_version_match_requires_live_installed_version(tmp_path, monkeyp
 
 
 def test_am_msgd_version_match_accepts_unknown_installed_version(tmp_path, monkeypatch):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -872,7 +878,7 @@ def test_am_msgd_version_match_accepts_unknown_installed_version(tmp_path, monke
 def test_launchd_plist_uses_stable_wrapper_across_plugin_cache_roots(
     tmp_path, monkeypatch
 ):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root_a = _make_plugin_root(tmp_path / "claude-cache")
     plugin_root_b = _make_plugin_root(tmp_path / "codex-cache")
@@ -890,8 +896,9 @@ def test_launchd_plist_uses_stable_wrapper_across_plugin_cache_roots(
         "Label": mod.LAUNCHD_LABEL,
         "ProgramArguments": [
             str(mod.BIN_LINK / "am-msgd"),
-            "--port",
-            "8765",
+            "serve",
+            "--config",
+            str(mod.DATA / "am-msgd.json"),
         ],
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -927,8 +934,9 @@ def test_launchd_plist_uses_stable_wrapper_across_plugin_cache_roots(
     plist = plistlib.loads(mod.LAUNCHD_PLIST.read_bytes())
     assert plist["ProgramArguments"] == [
         str(mod.BIN_LINK / "am-msgd"),
-        "--port",
-        "8765",
+        "serve",
+        "--config",
+        str(mod.DATA / "am-msgd.json"),
     ]
     lifecycle_commands = [
         command[1]
@@ -943,7 +951,7 @@ def test_launchd_plist_uses_stable_wrapper_across_plugin_cache_roots(
 def test_wait_launchd_stopped_requires_old_health_instance_to_disappear(
     tmp_path, monkeypatch
 ):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -998,7 +1006,7 @@ def test_wait_launchd_stopped_requires_old_health_instance_to_disappear(
 def test_wait_launchd_stopped_treats_health_as_old_when_initial_probe_failed(
     tmp_path, monkeypatch
 ):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -1036,7 +1044,7 @@ def test_wait_launchd_stopped_treats_health_as_old_when_initial_probe_failed(
 def test_wait_new_am_msgd_rejects_old_and_requires_stable_new_instance(
     tmp_path, monkeypatch
 ):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -1079,7 +1087,7 @@ def test_wait_new_am_msgd_rejects_old_and_requires_stable_new_instance(
 
 
 def test_launchd_waits_include_probe_latency_in_deadline(tmp_path, monkeypatch):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -1126,14 +1134,14 @@ def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
     If mycodex is absent from bin/, _all_present() must return False even when
     the sentinel (PLUGIN_ROOT) matches — forcing regeneration.
     """
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     _make_venv(meeting_home)
 
     bin_dir = meeting_home / "bin"
     bin_dir.mkdir(parents=True)
-    for name in ("meeting", "am-msgd"):
+    for name in ("am", "am-msgd"):
         (bin_dir / name).write_text("#!/bin/sh\n")
 
     mod = _load_bootstrap(meeting_home, plugin_root)
@@ -1159,7 +1167,7 @@ def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_windows_mycodex_leftover_removed_on_regen(tmp_path):
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     _make_venv(meeting_home)
@@ -1191,7 +1199,7 @@ def test_windows_mycodex_leftover_swept_on_sentinel_match(tmp_path):
     regen path never runs again — the stale-file sweep must still fire on
     that early-return path, or leftover stale mycodex files would persist
     forever on Windows."""
-    meeting_home = tmp_path / "meeting"
+    meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
     _make_venv(meeting_home)

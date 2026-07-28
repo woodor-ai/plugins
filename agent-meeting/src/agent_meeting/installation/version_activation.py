@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 PUBLIC_COMMANDS = (
-    "meeting",
+    "am",
     "am-msgd",
     "am-update",
     "mycodex",
@@ -119,4 +119,11 @@ def activate_runtime(
         },
     }
     _atomic_write_json(meeting_home / "active-runtime.json", payload)
+    legacy_command = bin_dir / (
+        "meeting.exe" if is_windows else "meeting"
+    )
+    try:
+        legacy_command.unlink()
+    except FileNotFoundError:
+        pass
     return payload

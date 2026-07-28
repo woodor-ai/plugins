@@ -21,7 +21,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.15.4"
+    assert mycodex.__version__ == "0.16.0"
     assert mycodex.__version__ == agent_meeting.__version__
 
 
@@ -152,7 +152,7 @@ def test_tui_scope_adds_runtime_context_without_overwriting_existing():
 
 
 def test_meeting_inbox_renderer_uses_provenance_without_message_body():
-    from mycodex.codex_session_broker.meeting_inbox_delivery import (
+    from mycodex.codex_session_broker.hub_inbox_delivery import (
         build_injection,
     )
     from mycodex.codex_session_broker.session_lease_registry import (
@@ -238,12 +238,12 @@ def test_codex_instructions_upgrade_legacy_managed_block(tmp_path):
         "keep after\n",
         encoding="utf-8",
     )
-    meeting = tmp_path / "meeting.exe"
+    am = tmp_path / "am.exe"
 
     first_install = (
         agent_meeting_instructions.install_agent_meeting_instructions(
             codex_home=codex_home,
-            meeting_command=meeting,
+            am_command=am,
             control_url="http://10.0.0.1:8765",
             is_windows=True,
         )
@@ -254,7 +254,7 @@ def test_codex_instructions_upgrade_legacy_managed_block(tmp_path):
     assert "keep before" in text and "keep after" in text
     assert "stale content" not in text
     assert agent_meeting_instructions.AGENTS_BEGIN in text
-    assert f'& "{meeting}" message NAME@PROJECT N' in text
+    assert f'& "{am}" message NAME@PROJECT N' in text
     assert "MEETING_SELF" not in text
     assert "MEETING_HOST" not in text
 
@@ -292,6 +292,27 @@ def test_control_selection_prefers_explicit_then_discovered_then_saved(
         prompt=prompt,
         health_check=lambda _url: True,
     ) == "http://saved:8765"
+
+
+def test_control_selection_uses_healthy_local_hub_before_prompt(tmp_path):
+    from mycodex.installation import control_endpoint_selection
+
+    meeting_home = tmp_path / "meeting"
+    meeting_home.mkdir()
+    (meeting_home / "am-msgd.json").write_text(
+        '{"port": 9911}\n',
+        encoding="utf-8",
+    )
+
+    selected = control_endpoint_selection.select_control(
+        meeting_home=meeting_home,
+        discovered="",
+        explicit="",
+        prompt=lambda *_args: "http://prompt:8765",
+        health_check=lambda url: url == "http://127.0.0.1:9911",
+    )
+
+    assert selected == "http://127.0.0.1:9911"
 
 
 def test_codex_user_configuration_preserves_unrelated_sections(tmp_path):

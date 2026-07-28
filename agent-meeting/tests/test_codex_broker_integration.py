@@ -210,6 +210,7 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
         [
             sys.executable,
             str(AM_MSGD),
+            "serve",
             "--bind",
             "127.0.0.1",
             "--port",

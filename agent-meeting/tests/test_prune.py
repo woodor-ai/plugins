@@ -115,7 +115,7 @@ def start_am_msgd(home_dir: str) -> subprocess.Popen:
     env["MEETING_HOME"] = home_dir
     env["MEETING_HOST"] = f"http://{HOST}:{TEST_PORT}"
     proc = subprocess.Popen(
-        [sys.executable, am_msgd_path, f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, am_msgd_path, "serve", f"--port={TEST_PORT}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

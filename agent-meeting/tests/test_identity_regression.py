@@ -120,7 +120,7 @@ def start_am_msgd(home_dir: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["MEETING_HOME"] = home_dir
     proc = subprocess.Popen(
-        [sys.executable, am_msgd_path, f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, am_msgd_path, "serve", f"--port={TEST_PORT}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -759,7 +759,7 @@ def test_tc9_cursor_composite_key_independence(home_dir: str):
 # ---------- TC10: global identity registration ----------
 
 def test_tc10_global_registration():
-    """meeting online <name> --global must register with project='*'."""
+    """am online <name> --global must register with project='*'."""
     print("\n[TC10] --global 注册 project='*'")
 
     r = _http("/register", "POST", {"project": "*", "name": "GlobalAdmin", "cwd": "/tmp", "force": True})
@@ -1185,7 +1185,7 @@ def test_tc20_codex_instance_semantics(home_dir: str):
 
 def test_tc21_two_step_registration_self_rejects(home_dir: str):
     """TC21: locks down the 0.9.0 `/imagent <name>` regression this fix removes the cause
-    of. The old skill flow did a standalone `meeting online` (no --instance) as its own
+    of. The old skill flow did a standalone `am online` (no --instance) as its own
     step, then installed the monitor which immediately re-registered with its own freshly-
     generated `--instance` uuid. The central am-msgd sees that as a DIFFERENT live process (existing
     instance=None != incoming uuid, heartbeat still fresh) and refuses it — the session
@@ -1195,7 +1195,7 @@ def test_tc21_two_step_registration_self_rejects(home_dir: str):
     no prior bare `online` — succeeds cleanly on a free name."""
     print("\n[TC21] 两步注册自拒回归钉子 + monitor 独立注册验证")
 
-    # (a) The step-3-that-no-longer-exists: a bare `meeting online` with no --instance.
+    # (a) The step-3-that-no-longer-exists: a bare `am online` with no --instance.
     r = _http("/register", "POST", {"project": "tc21p", "name": "sess-x"}, allow_error=True)
     check("TC21a: bare online (no instance) succeeds", r.get("ok") is True, str(r))
 

@@ -29,8 +29,8 @@ _SOURCE_ROOT = _resolve_source_root()
 _IMPLEMENTATION = (
     _SOURCE_ROOT
     / "agent_meeting"
-    / "message_hub"
-    / "message_hub_process.py"
+    / "commands"
+    / "am_msgd_cli.py"
 )
 sys.path.insert(0, str(_SOURCE_ROOT))
 
