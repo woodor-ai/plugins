@@ -50,6 +50,15 @@ LOG_PATH = "/tmp/ws-pr2-test.log"
 
 BIN_DIR = os.path.join(os.path.dirname(__file__), "..", "bin")
 MONITOR_PATH = os.path.join(BIN_DIR, "monitor.py")
+MONITOR_IMPLEMENTATION_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "src",
+    "agent_meeting",
+    "ai_platforms",
+    "claude_code",
+    "session_message_monitor.py",
+)
 AM_MSGD_PATH = os.path.join(BIN_DIR, "am-msgd")
 
 # Fixed literal, not derived from cwd (mirrors test_ws.py's TEST_PROJECT).
@@ -451,6 +460,18 @@ def install_meeting_cli(db_dir: str, counter_file: str | None = None) -> str:
     real_path = os.path.join(bin_dir, "meeting-real")
     shutil.copy2(os.path.join(BIN_DIR, "meeting"), real_path)
     shutil.copy2(os.path.join(BIN_DIR, "meeting_common.py"), os.path.join(bin_dir, "meeting_common.py"))
+    # The 0.15 source-tree entrypoint resolves its packaged implementation
+    # through the activation stamp when it is copied outside agent-meeting/.
+    # Point this isolated test layout back at the checkout source without
+    # forwarding any command to the user's installed runtime.
+    with open(
+        os.path.join(db_dir, ".bin-plugin-root"),
+        "w",
+        encoding="utf-8",
+    ) as activation:
+        activation.write(
+            os.path.abspath(BIN_DIR) + "\n0.15.0\n"
+        )
     os.chmod(real_path, 0o755)
 
     stub_path = os.path.join(bin_dir, "meeting")
@@ -825,7 +846,7 @@ def test_stdout_format_unchanged():
     """Verify the exact stdout format strings match what monitor.py emits."""
     print("\n[TC-FMT] stdout 行格式逐字一致")
 
-    with open(MONITOR_PATH, encoding="utf-8") as f:
+    with open(MONITOR_IMPLEMENTATION_PATH, encoding="utf-8") as f:
         src = f.read()
 
     # 1:1 format: peer_id (name@project, or bare name for the global "*"
@@ -851,7 +872,7 @@ def test_emit_message_unit():
     mod = importlib.util.load_from_spec = None  # won't use this path
 
     # Import _emit_message by exec-ing just that function from source
-    with open(MONITOR_PATH, encoding="utf-8") as f:
+    with open(MONITOR_IMPLEMENTATION_PATH, encoding="utf-8") as f:
         src = f.read()
 
     ns: dict = {}
@@ -866,7 +887,14 @@ def test_emit_message_unit():
             break
         end += 1
     func_src = "\n".join(lines[start:end])
-    exec(compile(func_src, MONITOR_PATH, "exec"), ns)
+    exec(
+        compile(
+            func_src,
+            MONITOR_IMPLEMENTATION_PATH,
+            "exec",
+        ),
+        ns,
+    )
     emit = ns["_emit_message"]
 
     # Test group message
