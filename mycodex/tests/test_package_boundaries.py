@@ -21,7 +21,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.15.3"
+    assert mycodex.__version__ == "0.15.4"
     assert mycodex.__version__ == agent_meeting.__version__
 
 

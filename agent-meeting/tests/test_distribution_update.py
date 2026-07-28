@@ -100,13 +100,24 @@ def test_refresh_checkout_fast_forwards_existing_public_checkout(tmp_path):
                 "git",
                 "-C",
                 str(checkout),
-                "pull",
-                "--ff-only",
+                "fetch",
+                "--prune",
                 "origin",
                 "main",
             ],
             {"check": True, "timeout": CHECKOUT_REFRESH_TIMEOUT_SECONDS},
-        )
+        ),
+        (
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "reset",
+                "--hard",
+                "FETCH_HEAD",
+            ],
+            {"check": True, "timeout": CHECKOUT_REFRESH_TIMEOUT_SECONDS},
+        ),
     ]
 
 
@@ -142,35 +153,73 @@ def test_refresh_checkout_kills_the_complete_git_process_group_on_timeout(
         distribution_update.refresh_checkout(
             checkout=tmp_path / "plugins",
             repository="https://example.test/plugins.git",
+            sleep=lambda _seconds: None,
         )
 
     assert killed == [
         (1234, distribution_update.signal.SIGKILL),
         (1234, distribution_update.signal.SIGKILL),
         (1234, distribution_update.signal.SIGKILL),
+        (1234, distribution_update.signal.SIGKILL),
     ]
+
+
+def test_refresh_checkout_reports_complete_git_error(monkeypatch):
+    from agent_meeting.installation import distribution_update
+
+    class FailedGit:
+        pid = 1234
+        returncode = 1
+
+        @staticmethod
+        def communicate(*, timeout=None):
+            return "", (
+                "error: local changes would be overwritten\n"
+                "Please commit or stash them before you merge.\n"
+                "Aborting"
+            )
+
+    monkeypatch.setattr(
+        distribution_update.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FailedGit(),
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        distribution_update._refresh_checkout_process(["git"])
+
+    assert str(error.value) == (
+        "could not refresh agent-meeting checkout: "
+        "error: local changes would be overwritten\n"
+        "Please commit or stash them before you merge.\n"
+        "Aborting"
+    )
 
 
 def test_refresh_checkout_reports_each_retry_attempt(tmp_path, capsys):
     from agent_meeting.installation import distribution_update
 
     attempts = 0
+    delays = []
 
     def flaky_run(_command, **_kwargs):
         nonlocal attempts
         attempts += 1
-        if attempts < 3:
+        if attempts < 4:
             raise RuntimeError("temporary network failure")
 
     assert distribution_update.refresh_checkout(
         checkout=tmp_path / "plugins",
         repository="https://example.test/plugins.git",
         run=flaky_run,
+        sleep=delays.append,
     ) == tmp_path / "plugins"
     assert capsys.readouterr().out.splitlines() == [
-        "Retrying agent-meeting checkout refresh (2/3) after: temporary network failure",
-        "Retrying agent-meeting checkout refresh (3/3) after: temporary network failure",
+        "Retrying agent-meeting checkout refresh (1/3) in 1s after: temporary network failure",
+        "Retrying agent-meeting checkout refresh (2/3) in 2s after: temporary network failure",
+        "Retrying agent-meeting checkout refresh (3/3) in 4s after: temporary network failure",
     ]
+    assert delays == [1, 2, 4]
 
 
 def test_release_version_rejects_local_cachebuster_suffix(tmp_path):

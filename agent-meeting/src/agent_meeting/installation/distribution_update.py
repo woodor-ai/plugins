@@ -8,6 +8,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 from typing import Callable, Iterable
@@ -15,7 +16,8 @@ from typing import Callable, Iterable
 
 PUBLIC_REPOSITORY = "https://github.com/woodor-ai/plugins.git"
 CHECKOUT_REFRESH_TIMEOUT_SECONDS = 60
-CHECKOUT_REFRESH_MAX_ATTEMPTS = 3
+CHECKOUT_REFRESH_MAX_RETRIES = 3
+CHECKOUT_REFRESH_RETRY_DELAYS_SECONDS = (1, 2, 4)
 TARGET_CLAUDE_CODE = "claude-code"
 TARGET_CODEX = "codex"
 ALL_TARGETS = (TARGET_CLAUDE_CODE, TARGET_CODEX)
@@ -49,41 +51,63 @@ def refresh_checkout(
     checkout: Path,
     repository: str,
     run: Callable[..., object] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> Path:
-    """Clone or fast-forward the public release checkout.
+    """Clone or refresh the updater-owned public release checkout.
 
     The production path owns the Git process group so a stalled HTTPS helper
     cannot outlive the timeout and write an error after the shell prompt.
+    Existing checkouts are reset to the fetched release because this directory
+    is an immutable updater cache, not a user workspace.
     ``run`` remains injectable for unit tests.
     """
+    sleep = time.sleep if sleep is None else sleep
     if (checkout / ".git").is_dir():
-        command = [
-            "git",
-            "-C",
-            str(checkout),
-            "pull",
-            "--ff-only",
-            "origin",
-            "main",
+        commands = [
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "fetch",
+                "--prune",
+                "origin",
+                "main",
+            ],
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "reset",
+                "--hard",
+                "FETCH_HEAD",
+            ],
         ]
     else:
         checkout.parent.mkdir(parents=True, exist_ok=True)
-        command = ["git", "clone", repository, str(checkout)]
-    for attempt in range(1, CHECKOUT_REFRESH_MAX_ATTEMPTS + 1):
+        commands = [["git", "clone", repository, str(checkout)]]
+    for retry in range(CHECKOUT_REFRESH_MAX_RETRIES + 1):
         try:
-            if run is not None:
-                run(command, check=True, timeout=CHECKOUT_REFRESH_TIMEOUT_SECONDS)
-            else:
-                _refresh_checkout_process(command)
+            for command in commands:
+                if run is not None:
+                    run(
+                        command,
+                        check=True,
+                        timeout=CHECKOUT_REFRESH_TIMEOUT_SECONDS,
+                    )
+                else:
+                    _refresh_checkout_process(command)
             return checkout
         except (RuntimeError, subprocess.SubprocessError) as exc:
-            if attempt == CHECKOUT_REFRESH_MAX_ATTEMPTS:
+            if retry == CHECKOUT_REFRESH_MAX_RETRIES:
                 raise
+            delay = CHECKOUT_REFRESH_RETRY_DELAYS_SECONDS[retry]
             print(
                 "Retrying agent-meeting checkout refresh "
-                f"({attempt + 1}/{CHECKOUT_REFRESH_MAX_ATTEMPTS}) after: {exc}",
+                f"({retry + 1}/{CHECKOUT_REFRESH_MAX_RETRIES}) "
+                f"in {delay}s after: {exc}",
                 flush=True,
             )
+            sleep(delay)
     return checkout
 
 
@@ -111,7 +135,7 @@ def _refresh_checkout_process(command: list[str]) -> None:
             f"{CHECKOUT_REFRESH_TIMEOUT_SECONDS} seconds"
         ) from None
     if process.returncode:
-        detail = stderr.strip().splitlines()[-1] if stderr.strip() else "Git failed"
+        detail = stderr.strip() or "Git failed"
         raise RuntimeError(f"could not refresh agent-meeting checkout: {detail}")
 
 

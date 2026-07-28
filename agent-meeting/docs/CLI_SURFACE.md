@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-28 · version 0.15.3
+Last updated: 2026-07-29 · version 0.15.4
 
 The runtime command is `~/.agent-meeting/bin/meeting`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
