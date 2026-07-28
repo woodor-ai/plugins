@@ -6,12 +6,21 @@ Four plugins that work as one system: keep your AI spend under control, and keep
 
 ## Install
 
+Claude Code：
+
 ```
 /plugin marketplace add woodor-ai/plugins
 /plugin install <plugin-name>@woodor
 ```
 
-Compatible with Claude Code.
+Codex：
+
+```bash
+codex plugin marketplace add woodor-ai/plugins
+codex plugin add <plugin-name>@woodor
+```
+
+Claude Code 支持仓库中的全部插件；Codex 原生 marketplace 当前包含 `agent-meeting`、`handoff` 和 `init-agents`。
 
 ## The plugins
 
@@ -27,10 +36,14 @@ Your agents stop working in isolation. Sessions running in different windows —
 ```
 
 #### [`init-agents`](./init-agents/) — cost-tiered subagents in one command
-Set up three subagent profiles — `explore` (cheap), `rd` (mid), `planner` (premium) — so routine work goes to a cheaper model and only the hard calls reach the expensive one. No premium tokens burned on grunt work.
+为 Claude Code 或 Codex 设置三个 project-local profile：`explore` 只读调查、`rd` 实现与验证、`planner` 规划与独立审查。模型和 reasoning 档位按宿主分别配置。
 
 ```
 /plugin install init-agents@woodor
+```
+
+```bash
+codex plugin add init-agents@woodor
 ```
 
 ### Manage your cost

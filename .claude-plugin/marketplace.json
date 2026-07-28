@@ -15,7 +15,7 @@
       "name": "init-agents",
       "displayName": "Woodor: Init Agents",
       "source": "./init-agents",
-      "description": "Initialize three project-level subagent profiles (explore/rd/planner) tiered by model cost. Replaces ad-hoc use of built-in Explore/Plan/general-purpose agents with a deliberate cheap→expensive cascade."
+      "description": "Initialize project-local explore, rd, and planner profiles with deliberate model and reasoning tiers for Claude Code or Codex."
     },
     {
       "name": "handoff",

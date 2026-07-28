@@ -1,49 +1,142 @@
 # init-agents
 
-> Set up cost-tiered subagents in one command so routine work never burns premium tokens.
+为 Codex 和 Claude Code 项目安装三个固定的 project-local subagent profile，让主 agent 按任务性质选择调查、实现或规划模型。
 
-Stop overpaying for simple work. This sets up your project so routine tasks go to a cheaper model and only the hard architectural calls go to the expensive one — automatically, with one command. You get the right answer without burning premium tokens on grunt work.
+## 模型矩阵
 
-Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-source toolkit for running AI agents at scale.
+| Profile | Codex | Claude Code | 用途 |
+|---|---|---|---|
+| `explore` | `gpt-5.6-terra` / medium | `claude-sonnet-5` / medium | 只读调查、定位、证据收集 |
+| `rd` | `gpt-5.6-terra` / high | `claude-sonnet-5` / high | 边界明确的实现、修复、测试 |
+| `planner` | `gpt-5.6-sol` / high | `claude-opus-5` / high | 架构取舍、复杂分析、独立审查 |
 
-## Install
+`planner` 默认使用 high。只有极少数真正困难、长链条且 high 仍不足的任务，才建议手动建立 xhigh 变体；不把 xhigh 作为日常默认。
+
+## 安装
+
+### Codex
 
 ```bash
+codex plugin marketplace add woodor-ai/plugins
+codex plugin add init-agents@woodor
+```
+
+在 Codex 中调用：
+
+```text
+$init-agents
+```
+
+### Claude Code
+
+```text
 /plugin marketplace add woodor-ai/plugins
 /plugin install init-agents@woodor
 ```
 
-Compatible with Claude Code.
+在 Claude Code 中调用：
 
-## What it does
-
-Running `/init-agents` creates three subagent profile files under `<cwd>/.claude/agents/` — one per tier. These are project-local files (not global), so each project gets its own configuration without affecting other workspaces.
-
-If any of the three files already exist, the skill reads the current content and shows it to you before asking whether to overwrite, skip, or merge. Nothing is replaced silently. If your working directory doesn't look like a project root (no `.git`, `package.json`, `Cargo.toml`, or `pyproject.toml`), the skill asks for confirmation before writing anything.
-
-The built-in `Explore`, `Plan`, and `general-purpose` agents are unaffected — they still exist, but after running `/init-agents` you use the three named profiles instead.
-
-## The three tiers
-
-| Profile | Model | Reasoning | Tools | Purpose |
-|---------|-------|-----------|-------|---------|
-| `explore` | `claude-haiku-4-5-20251001` | — | Bash, Read, Glob, Grep, WebFetch, WebSearch | Read-only fact finding: locate code, grep patterns, fetch URLs, list files. Cannot write or edit. |
-| `rd` | `claude-sonnet-5` | xhigh | Read, Edit, Write, Bash, Glob, Grep | Write code, edit files, run builds and tests, fix bounded bugs. Design must already be decided. |
-| `planner` | `claude-fable-5` (fallback: `claude-opus-4-8`) | high | Read, Glob, Grep, WebFetch, WebSearch, Bash, TodoWrite | Architecture decisions, trade-off evaluation, cross-subsystem root cause, PR scope planning. |
-
-Dispatch rule: if `explore` can answer the question, don't call `rd`. If the design is already decided, use `rd` — don't call `planner`. Only call `planner` when the question is genuinely "which direction should we go."
-
-## How to use them
-
-When your main agent needs to dispatch a subagent, set `subagent_type` to one of the three profile names:
-
-```
-subagent_type: "explore"   # look something up
-subagent_type: "rd"        # write or fix code
-subagent_type: "planner"   # decide architecture
+```text
+/init-agents
 ```
 
-The main agent remains responsible for all dispatch decisions. None of the three profiles can spawn further subagents — escalation always flows back up to the main agent first.
+## 生成结果
+
+Codex：
+
+```text
+<project>/.codex/agents/
+├── explore.toml
+├── rd.toml
+└── planner.toml
+```
+
+Claude Code：
+
+```text
+<project>/.claude/agents/
+├── explore.md
+├── rd.md
+└── planner.md
+```
+
+profile 是项目级配置，不会修改 `~/.codex/agents/` 或 `~/.claude/agents/`。生成或更新后建议开启新会话，让宿主重新发现配置。
+
+## 调度原则
+
+- 简单搜索或单文件低风险修改由主 agent 直接做，避免派发成本高于任务本身。
+- 只需要事实、位置和证据时使用 `explore`。
+- 需要改文件，且目标和范围已经明确时使用 `rd`。
+- 需要决定方向、跨系统推理、迁移设计或独立审查时使用 `planner`。
+- 混合任务通常先调查，再由主 agent 收敛范围，最后实现。
+- 不让多个 `rd` 同时修改同一文件；最终集成归主 agent。
+
+建议主 agent 默认使用：
+
+- Codex：`gpt-5.6-terra` / high，需要高影响规划时派 `gpt-5.6-sol` planner；
+- Claude Code：`claude-sonnet-5` / high，需要高影响规划时派 `claude-opus-5` planner。
+
+这样能把 Sol/Opus 用在真正需要深推理的步骤，而不是让整个会话持续承担最高成本和延迟。
+
+## 冲突处理
+
+在插件源码根目录手动运行时，初始化器先以只读模式检查目标：
+
+```bash
+python3 skills/init-agents/scripts/init_agents.py \
+  --host codex \
+  --mode check
+```
+
+目标文件分为 `missing`、`identical` 和 `different`。`different` 会输出统一 diff；apply 默认遇到冲突即停止，不会静默覆盖：
+
+```bash
+# 无冲突时创建缺失文件
+python3 skills/init-agents/scripts/init_agents.py \
+  --host codex \
+  --mode apply
+
+# 保留已有冲突文件，同时创建缺失文件
+python3 skills/init-agents/scripts/init_agents.py \
+  --host codex \
+  --mode apply \
+  --conflict skip
+
+# 用户确认后替换冲突文件
+python3 skills/init-agents/scripts/init_agents.py \
+  --host codex \
+  --mode apply \
+  --conflict overwrite
+```
+
+不提供自动“合并”，因为 TOML 和 Markdown frontmatter 的字段级合并语义不明确，容易生成重复或失效配置。
+
+## 插件与源码设计
+
+本插件遵循仓库的双宿主边界：
+
+```text
+init-agents/
+├── .claude-plugin/plugin.json
+├── .codex-plugin/plugin.json
+├── skills/init-agents/
+│   ├── SKILL.md
+│   ├── agents/openai.yaml
+│   ├── scripts/init_agents.py
+│   └── assets/
+│       ├── claude/*.md
+│       └── codex/*.toml
+└── tests/test_init_agents.py
+```
+
+- 仓库根 `.claude-plugin/marketplace.json` 是 Claude Code 的插件目录；
+- 仓库根 `.agents/plugins/marketplace.json` 是 Codex 的插件目录；
+- 两个 plugin manifest 分别描述各自宿主要加载的版本化资产；
+- `assets/` 是 profile 唯一模板来源，`SKILL.md` 不再重复内嵌六份模板；
+- `init_agents.py` 只向用户项目写入配置，采用原子替换并保护冲突；
+- 本插件没有后台进程、共享 Python 包或用户数据，不需要 `codex/install.py`，也不进入 agent-meeting/mycodex 的共享主机运行时安装链。
+
+详细分析见 [docs/codex-agent-profile-analysis.zh-CN.md](docs/codex-agent-profile-analysis.zh-CN.md)。
 
 ## License
 

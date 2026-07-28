@@ -1,0 +1,25 @@
+{
+  "name": "init-agents",
+  "version": "0.2.0",
+  "description": "Initialize project-local explore, rd, and planner subagent profiles for Codex or Claude Code.",
+  "author": {
+    "name": "Woodor",
+    "url": "https://github.com/woodor-ai"
+  },
+  "homepage": "https://github.com/woodor-ai/plugins",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Woodor: Init Agents",
+    "shortDescription": "Install three project-local subagent profiles.",
+    "longDescription": "Create conflict-safe explore, rd, and planner profiles with deliberate model and reasoning tiers for Codex and Claude Code projects.",
+    "developerName": "Woodor",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use $init-agents to install the standard project-local subagent profiles."
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Init Agents"
+  short_description: "Install three project-local subagent profiles"
+  default_prompt: "Use $init-agents to install the standard project-local subagent profiles."
+  brand_color: "#6D5EF7"

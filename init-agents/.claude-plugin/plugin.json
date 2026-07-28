@@ -1,10 +1,11 @@
 {
   "name": "init-agents",
-  "version": "0.1.7",
-  "description": "Initialize three project-level subagent profiles (explore/rd/planner) tiered by model cost. Replaces ad-hoc use of built-in Explore/Plan/general-purpose agents with a deliberate cheap→expensive cascade.",
+  "version": "0.2.0",
+  "description": "Initialize project-local explore, rd, and planner subagent profiles for Codex or Claude Code.",
   "author": {
     "name": "Woodor",
     "url": "https://github.com/woodor-ai"
   },
-  "homepage": "https://github.com/woodor-ai/plugins"
+  "homepage": "https://github.com/woodor-ai/plugins",
+  "skills": "./skills/"
 }
