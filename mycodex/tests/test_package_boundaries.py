@@ -21,7 +21,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.15.0"
+    assert mycodex.__version__ == "0.15.1"
     assert mycodex.__version__ == agent_meeting.__version__
 
 
@@ -309,3 +309,18 @@ def test_codex_user_configuration_preserves_unrelated_sections(tmp_path):
     assert "default_permissions" not in text
     assert "[features]\nexample = true" in text
     assert '[windows]\nsandbox = "unelevated"' in text
+
+
+def test_packaged_am_codexd_restarts_with_its_own_runtime_python(
+    monkeypatch,
+):
+    """A legacy shared venv may coexist with the active immutable runtime."""
+    from mycodex.commands import am_codexd_cli
+
+    monkeypatch.setattr(
+        am_codexd_cli.sys,
+        "executable",
+        "/active-runtime/venv/bin/python",
+    )
+
+    assert am_codexd_cli.venv_python() == "/active-runtime/venv/bin/python"

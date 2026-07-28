@@ -47,6 +47,12 @@ def installed_version():
 
 
 def venv_python():
+    # A packaged runtime must restart itself with its own interpreter. The
+    # pre-0.15 shared venv can still exist during migration, but it does not
+    # contain the split ``mycodex.commands`` package and would make a newly
+    # activated daemon fail immediately on startup.
+    if __package__:
+        return sys.executable
     return codex_background_process.legacy_runtime_python(DATA)
 
 
