@@ -2,11 +2,11 @@
 """
 WS PR1 integration tests.
 
-Starts an isolated central amctl on port 8799 with a temp DB, runs 6 test cases,
-then tears everything down. Never touches the live central amctl on 8765.
+Starts an isolated central am-msgd on port 8799 with a temp DB, runs 6 test cases,
+then tears everything down. Never touches the live central am-msgd on 8765.
 
-Schema/API note: the central amctl's identity model is (project, name) composite
-key (see amctl docstring "DEPLOY NOTE"). All test identities here
+Schema/API note: the central am-msgd's identity model is (project, name) composite
+key (see am-msgd docstring "DEPLOY NOTE"). All test identities here
 share a single fixed TEST_PROJECT — these tests exercise WS mechanics
 (backlog, races, ping/pong, group fanout), not cross-project isolation
 (covered separately by test_identity_regression.py).
@@ -195,7 +195,7 @@ class WSClient:
         return msgs
 
 
-# ---------- central amctl lifecycle ----------
+# ---------- central am-msgd lifecycle ----------
 
 def _http(path: str, method="GET", body=None, params_=None, method_=None,
           allow_error=False) -> dict:
@@ -218,20 +218,20 @@ def _http(path: str, method="GET", body=None, params_=None, method_=None,
         raise
 
 
-def start_amctl(db_dir: str) -> subprocess.Popen:
+def start_am_msgd(db_dir: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
     # 初始化 DB inline
-    amctl_path = os.path.join(
-        os.path.dirname(__file__), "..", "bin", "amctl"
+    am_msgd_path = os.path.join(
+        os.path.dirname(__file__), "..", "bin", "am-msgd"
     )
     proc = subprocess.Popen(
-        [sys.executable, amctl_path, f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, am_msgd_path, f"--port={TEST_PORT}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    # Wait for central amctl to be ready
+    # Wait for central am-msgd to be ready
     for _ in range(30):
         time.sleep(0.3)
         try:
@@ -240,8 +240,8 @@ def start_amctl(db_dir: str) -> subprocess.Popen:
         except Exception:
             if proc.poll() is not None:
                 out, err = proc.communicate()
-                raise RuntimeError(f"Central amctl exited early:\n{err.decode()}")
-    raise RuntimeError("Central amctl did not start in time")
+                raise RuntimeError(f"Central am-msgd exited early:\n{err.decode()}")
+    raise RuntimeError("Central am-msgd did not start in time")
 
 
 def init_test_db(db_dir: str):
@@ -357,8 +357,8 @@ def test_backlog(db_dir: str):
     r2 = _send("alice_sender", "bob_recv", "msg2")
     r3 = _send("alice_sender", "bob_recv", "msg3")
 
-    # Pre-set read_cursors to r1 so central amctl delivers only r2 and r3.
-    # Small sleep to ensure WAL is visible to central amctl's next connection.
+    # Pre-set read_cursors to r1 so central am-msgd delivers only r2 and r3.
+    # Small sleep to ensure WAL is visible to central am-msgd's next connection.
     _db_upsert_cursor(db_dir, "bob_recv", r1["msg_id"])
     time.sleep(0.05)
 
@@ -419,7 +419,7 @@ def test_ping_pong():
     c = WSClient("eve", cursor=0)
     _ = c.read_until_caught_up(timeout=3)
 
-    # Wait for a server-side ping (central amctl sends every 4s)
+    # Wait for a server-side ping (central am-msgd sends every 4s)
     got_ping = False
     deadline = time.time() + 10
     while time.time() < deadline:
@@ -477,7 +477,7 @@ def test_concurrent_dedup(db_dir: str):
         r = _send("ivan", "heidi", f"pre-{i}")
         pre_ids.append(r["msg_id"])
 
-    # Pre-set cursor=0 so central amctl delivers all 20 as backlog (not seeded-to-MAX on first connect).
+    # Pre-set cursor=0 so central am-msgd delivers all 20 as backlog (not seeded-to-MAX on first connect).
     _db_upsert_cursor(db_dir, "heidi", 0)
     time.sleep(0.05)
 
@@ -544,8 +544,8 @@ def _read_db_cursor(db_dir: str, member_name: str, project: str = TEST_PROJECT) 
 def _db_upsert_cursor(db_dir: str, member_name: str, cursor: int, project: str = TEST_PROJECT):
     """Insert or update a read_cursors row directly (test setup helper).
 
-    Uses WAL mode and isolation_level=None (autocommit) to match central amctl's
-    connection settings, ensuring the write is immediately visible to the central amctl.
+    Uses WAL mode and isolation_level=None (autocommit) to match central am-msgd's
+    connection settings, ensuring the write is immediately visible to the central am-msgd.
     """
     db_path = os.path.join(db_dir, "db", "rooms.db")
     conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
@@ -558,10 +558,9 @@ def _db_upsert_cursor(db_dir: str, member_name: str, cursor: int, project: str =
     conn.close()
 
 
-def test_first_seed_zero_replay(db_dir: str):
-    """TC8: 新成员首次连接 — central amctl 从 read_cursors 无行走首次 seed 分支，
-    seed 到 MAX(id)，零 backlog，caught_up 游标正确，read_cursors 落行。"""
-    print("\n[TC8] 首次 seed 零回放")
+def test_registered_member_first_connection_replays_unread(db_dir: str):
+    """TC8: 注册即建立中心游标，首次 WS 连接补发注册后的未读消息。"""
+    print("\n[TC8] 已注册成员首次连接补发未读")
 
     _register("seed_sender")
     _register("seed_newmember")
@@ -572,8 +571,8 @@ def test_first_seed_zero_replay(db_dir: str):
     r3 = _send("seed_sender", "seed_newmember", "h3")
     max_id = r3["msg_id"]
 
-    # First connect — no read_cursors row yet; central amctl should seed to MAX and return zero backlog.
-    # WSClient does not send X-Meeting-Cursor (cursor=0 is default but central amctl ignores it).
+    # Registration created the durable cursor before these messages, so the
+    # first WebSocket connection must replay all three unread messages.
     c = WSClient("seed_newmember", cursor=0)
 
     # Capture caught_up cursor value before read_until_caught_up discards it.
@@ -597,7 +596,7 @@ def test_first_seed_zero_replay(db_dir: str):
             c.send_pong(payload)
     c.close()
 
-    check("TC8: first seed → zero backlog", len(backlog) == 0,
+    check("TC8: first connection → three unread messages", len(backlog) == 3,
           f"got {len(backlog)} msgs")
     check("TC8: caught_up cursor = MAX(id)",
           caught_up_cursor == max_id,
@@ -614,7 +613,7 @@ def test_first_seed_zero_replay(db_dir: str):
 
 def test_cursor_survives_restart(db_dir: str):
     """TC-PRA1: 游标活过重启 — 预置 cursor=0，成员收 N 条后断开，
-    reconnect 不带 cursor header，central amctl 从 read_cursors 续，只补断开后的新消息。"""
+    reconnect 不带 cursor header，central am-msgd 从 read_cursors 续，只补断开后的新消息。"""
     print("\n[TC-PRA1] 游标活过重启")
 
     _register("pra1_sender")
@@ -625,7 +624,7 @@ def test_cursor_survives_restart(db_dir: str):
     r2 = _send("pra1_sender", "pra1_recv", "m2")
     r3 = _send("pra1_sender", "pra1_recv", "m3")
 
-    # Pre-set cursor to 0 so central amctl delivers all 3 as backlog on first connect.
+    # Pre-set cursor to 0 so central am-msgd delivers all 3 as backlog on first connect.
     _db_upsert_cursor(db_dir, "pra1_recv", 0)
     time.sleep(0.05)
 
@@ -634,7 +633,7 @@ def test_cursor_survives_restart(db_dir: str):
     c.close()
     check("TC-PRA1: initial backlog=3", len(backlog) == 3, f"got {len(backlog)}")
 
-    # Give central amctl time to flush cursor on disconnect.
+    # Give central am-msgd time to flush cursor on disconnect.
     time.sleep(0.1)
 
     # Verify cursor is persisted after backlog drain + disconnect.
@@ -646,7 +645,7 @@ def test_cursor_survives_restart(db_dir: str):
     # Send one more message (arrives while "disconnected").
     r4 = _send("pra1_sender", "pra1_recv", "m4")
 
-    # Reconnect — central amctl resumes from read_cursors (=r3), should only replay r4.
+    # Reconnect — central am-msgd resumes from read_cursors (=r3), should only replay r4.
     c2 = WSClient("pra1_recv", cursor=0)
     backlog2 = c2.read_until_caught_up(timeout=5)
     c2.close()
@@ -720,7 +719,7 @@ def _db_seed_messages(db_dir: str, sender: str, recv: str, count: int,
     """Insert `count` messages directly into the DB and return their ids.
 
     Bypasses HTTP so we can seed large backlogs quickly without hammering
-    the central amctl's thread pool.
+    the central am-msgd's thread pool.
     """
     db_path = os.path.join(db_dir, "db", "rooms.db")
     conn = sqlite3.connect(db_path, timeout=10)
@@ -755,7 +754,7 @@ def test_mid_drain_inject_race(db_dir: str, rounds: int = 20):
     New code: fanout skips state==draining subs; backlog loop owns the stream;
     state flip is inside send_lock with a terminal DB check — no gap.
 
-    Pre-seeding uses direct SQLite writes (not HTTP) to keep the central amctl's thread
+    Pre-seeding uses direct SQLite writes (not HTTP) to keep the central am-msgd's thread
     pool free for the actual test traffic.
     """
     print(f"\n[TC7] 补发途中注入高id消息竞态（{rounds}轮）")
@@ -773,10 +772,10 @@ def test_mid_drain_inject_race(db_dir: str, rounds: int = 20):
         # Pre-seed 200 messages directly into DB (fast, no HTTP overhead)
         pre_ids = _db_seed_messages(db_dir, sender, recv, 200)
 
-        # Pre-set cursor=0 so central amctl delivers all pre-seeded messages as backlog.
+        # Pre-set cursor=0 so central am-msgd delivers all pre-seeded messages as backlog.
         _db_upsert_cursor(db_dir, recv, 0)
 
-        # Connect recv — central amctl starts draining backlog in a new thread
+        # Connect recv — central am-msgd starts draining backlog in a new thread
         c = WSClient(recv, cursor=0)
 
         # Inject 10 live messages via HTTP while backlog drain is in progress.
@@ -825,7 +824,7 @@ def test_g1_group_and_private_unified_stream(db_dir: str):
     _register("g1_bob")
     _register("g1_carol")
 
-    # Create group via central amctl
+    # Create group via central am-msgd
     r = _http("/group/create", "POST", {"project": TEST_PROJECT, "name": "g1-team",
                                          "members": ["g1_bob", "g1_carol"], "creator": "g1_alice"})
     check("TC-G1: group created", r.get("ok") is True, str(r))
@@ -919,7 +918,7 @@ def test_g4_add_member_seed_zero_replay(db_dir: str):
     # Some history in the group before bob joins
     _send("g4_alice", "g4-grp", "old msg")
 
-    # Add bob — central amctl should seed read_cursors to MAX
+    # Add bob — central am-msgd should seed read_cursors to MAX
     r = _http("/group/add", "POST", {"group_project": TEST_PROJECT, "group": "g4-grp",
                                       "member_project": TEST_PROJECT, "member": "g4_bob"})
     check("TC-G4: add returned ok", r.get("ok") is True, str(r))
@@ -1131,8 +1130,8 @@ def main():
     try:
         init_test_db(tmp)
         print(f"[setup] test DB: {tmp}")
-        proc = start_amctl(tmp)
-        print(f"[setup] central amctl pid={proc.pid} on port {TEST_PORT}")
+        proc = start_am_msgd(tmp)
+        print(f"[setup] central am-msgd pid={proc.pid} on port {TEST_PORT}")
 
         try:
             test_handshake_and_auth(False)
@@ -1141,7 +1140,7 @@ def main():
             test_ping_pong()
             test_reconnect_with_cursor()
             test_concurrent_dedup(tmp)
-            test_first_seed_zero_replay(tmp)
+            test_registered_member_first_connection_replays_unread(tmp)
             test_cursor_survives_restart(tmp)
             test_monitor_no_tmp_file(tmp)
             test_unknown_get_route_404()

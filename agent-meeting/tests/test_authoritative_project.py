@@ -6,7 +6,7 @@ Phase 0.1 regression: closing off the project-identity drift mechanism
 Covers:
   TC1  - no --proj, empty cache -> cmd_online exits 4 with
          code=missing_project_identity, no session row is ever written
-         (proves the central amctl is never even called).
+         (proves the central am-msgd is never even called).
   TC2  - explicit --proj=foo -> registers successfully, sessions.project=foo,
          and the per-root proj cache is written.
   TC3  - same repo root, no --proj this time (cache from TC2) -> registers
@@ -25,7 +25,7 @@ Covers:
          nothing else (an unrelated code like 1 must still be retried).
 
 Phase 2 CLI-addressing regression (docs/contracts/phase2-single-key-targets.md,
-targets #3/#5/#6/#7 -- central amctl-HTTP-level addressing for targets #1/#4 lives in
+targets #3/#5/#6/#7 -- central am-msgd-HTTP-level addressing for targets #1/#4 lives in
 test_identity_regression.py):
   T3  - `meeting offline <name>` against a mismatched project must fail loudly
         (non-zero exit, session row untouched) instead of returning success
@@ -59,7 +59,7 @@ import urllib.request
 
 BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin")
 MEETING_PATH = os.path.join(BIN_DIR, "meeting")
-AMCTL_PATH = os.path.join(BIN_DIR, "amctl")
+AM_MSGD_PATH = os.path.join(BIN_DIR, "am-msgd")
 MONITOR_PATH = os.path.join(BIN_DIR, "monitor.py")
 PLUGIN_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                             ".claude-plugin", "plugin.json")
@@ -88,10 +88,10 @@ def check(name: str, cond: bool, detail: str = ""):
         FAILURES.append(msg)
 
 
-# ---------- central amctl lifecycle (empty DB file -- central amctl's own CREATE TABLE IF
+# ---------- central am-msgd lifecycle (empty DB file -- central am-msgd's own CREATE TABLE IF
 # NOT EXISTS builds the current schema, client_version column included) ----------
 
-def start_amctl(meeting_home: str) -> subprocess.Popen:
+def start_am_msgd(meeting_home: str) -> subprocess.Popen:
     db_dir = os.path.join(meeting_home, "db")
     os.makedirs(db_dir, exist_ok=True)
     sqlite3.connect(os.path.join(db_dir, "rooms.db")).close()
@@ -99,7 +99,7 @@ def start_amctl(meeting_home: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["MEETING_HOME"] = meeting_home
     proc = subprocess.Popen(
-        [sys.executable, AMCTL_PATH, f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, AM_MSGD_PATH, f"--port={TEST_PORT}", "--no-mdns"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     for _ in range(40):
@@ -110,8 +110,8 @@ def start_amctl(meeting_home: str) -> subprocess.Popen:
         except Exception:
             if proc.poll() is not None:
                 _, err = proc.communicate()
-                raise RuntimeError(f"Central amctl exited early:\n{err.decode()}")
-    raise RuntimeError("Central amctl did not start within 10s")
+                raise RuntimeError(f"Central am-msgd exited early:\n{err.decode()}")
+    raise RuntimeError("Central am-msgd did not start within 10s")
 
 
 def _health():
@@ -184,7 +184,7 @@ def test_authoritative_resolution(meeting_home: str):
         check("TC1: stdout carries code=missing_project_identity",
               '"code": "missing_project_identity"' in r.stdout, f"stdout={r.stdout!r}")
         after_names = _all_session_names(meeting_home)
-        check("TC1: no session row written (central amctl never called)",
+        check("TC1: no session row written (central am-msgd never called)",
               after_names == before_names, f"before={before_names} after={after_names}")
 
         # TC2: explicit --proj=foo -> registers, sessions.project=foo, cache written.
@@ -518,9 +518,9 @@ def test_stop_pidfile_scoped_by_project(meeting_home: str):
 
 def main():
     meeting_home = tempfile.mkdtemp(prefix="am-authproj-home-")
-    amctl_proc = None
+    am_msgd_proc = None
     try:
-        amctl_proc = start_amctl(meeting_home)
+        am_msgd_proc = start_am_msgd(meeting_home)
         test_authoritative_resolution(meeting_home)
         test_monitor_noretry(meeting_home)
         test_offline_project_scoped(meeting_home)
@@ -528,12 +528,12 @@ def main():
         test_group_management_escape_hatch(meeting_home)
         test_stop_pidfile_scoped_by_project(meeting_home)
     finally:
-        if amctl_proc is not None:
-            amctl_proc.terminate()
+        if am_msgd_proc is not None:
+            am_msgd_proc.terminate()
             try:
-                amctl_proc.wait(timeout=5)
+                am_msgd_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                amctl_proc.kill()
+                am_msgd_proc.kill()
         shutil.rmtree(meeting_home, ignore_errors=True)
 
     sep = "=" * 60

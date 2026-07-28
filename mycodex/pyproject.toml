@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "woodor-mycodex"
+version = "0.15.0"
+description = "Agent-meeting-aware Codex launcher and local session broker."
+requires-python = ">=3.10"
+dependencies = [
+  "woodor-agent-meeting==0.15.0",
+  "websockets>=12",
+]
+
+[project.scripts]
+mycodex = "mycodex.commands.mycodex_cli:main"
+am-codexd = "mycodex.commands.am_codexd_cli:main"
+am-configure-codex-user-environment = "mycodex.commands.configure_codex_user_environment_cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

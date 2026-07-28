@@ -31,7 +31,7 @@
 | 6 | 仅同名跨项目时才出错 | `agent-meeting/bin/meeting:1230-1316` `cmd_group()` 的 `create`/`add`/`remove`/`rename`/`delete`/`members` 子命令 | 群组自身的 project 恒为 `_derive_project(cwd)`，不接受 `--proj`/`--global`；同一文件里 `charter`/`list --member` 却支持 `name@project`，口径不一致。 | 已完成 `b2e007d` |
 | 7 | 仅同名跨项目时才出错 | `agent-meeting/bin/meeting:1392-1424` `cmd_stop()` | 本地 pidfile 路径 `MEETING_HOME/run/<name>.pid` 只按裸名，不带 project 维度；同机两个不同 project 的同名 monitor 会抢同一个 pidfile 路径。 | 已完成 `b2e007d` |
 | 8 | 仅展示层，非数据层 | `agent-meeting/bin/session-bootstrap.py:891-911` `online_peers_str()` | `SELECT name FROM sessions WHERE last_seen >= ?` 不选 project 列，SessionStart 上下文里同名跨项目的两个在线会话会显示成两条一样的裸名，模型无从区分该艾特谁。 | 已完成 `28ef290` |
-| 9 | 仅展示层，非数据层（与 #8 同族，但多一层协议属性，见下） | `agent-meeting/bin/monitor.py` + `agent-meeting/bin/session-bootstrap.py`（收件提示行）+ `agent-meeting/skills/meeting/SKILL.md`（提示行格式的协议文档） | 收到消息时注入给模型的提示行只显示发件人裸名，同名跨项目的两个 agent 产生一模一样的提示，收件人无法区分该回给谁——是 #8（在线名单）在收件侧的对称版本。实施中发现，是新增靶子，非原清单条目。 | 已完成 `adeea41` |
+| 9 | 仅展示层，非数据层（与 #8 同族，但多一层协议属性，见下） | `agent-meeting/bin/monitor.py` + `agent-meeting/bin/session-bootstrap.py`（收件提示行）+ `agent-meeting/skills/imagent/SKILL.md`（提示行格式的协议文档） | 收到消息时注入给模型的提示行只显示发件人裸名，同名跨项目的两个 agent 产生一模一样的提示，收件人无法区分该回给谁——是 #8（在线名单）在收件侧的对称版本。实施中发现，是新增靶子，非原清单条目。 | 已完成 `adeea41` |
 
 ## 失败场景详述
 
@@ -78,7 +78,7 @@ Project A 和 project B 各跑一个名叫 `worker1` 的 monitor，都在同一�
 **#9 收件提示行不带 project，且是协议改动而非纯展示（实施中发现，新增）**
 `monitor.py` 把入站消息注入给模型时，提示行只显示发件人的裸名。如果 `amb@projA` 和 `amb@projB` 都给同一个会话发过消息，两条提示看起来一模一样，收件人（通常就是模型自己）没有依据判断该回给谁——是 #8（在线名单，展示会话开始时的名单）在收件路径上的对称版本，同一族问题的另一半。
 
-与 #8 的关键差异：#8 是纯展示，改完不影响任何解析逻辑；#9 的提示行格式写死在 `agent-meeting/skills/meeting/SKILL.md` 里，主 agent 依据这个格式的字符串**解析**出发件人名字用于回复寻址——所以这不是换一下展示文本就完事，而是要同时改协议文档和消费该协议的解析逻辑。严重度仍按"仅展示层，非数据层"分类，因为它不改任何持久化数据，只改传输给客户端用于展示/解析的字符串格式；但归为 #8 同档的同时要说明它多一层协议属性。
+与 #8 的关键差异：#8 是纯展示，改完不影响任何解析逻辑；#9 的提示行格式写死在 `agent-meeting/skills/imagent/SKILL.md` 里，主 agent 依据这个格式的字符串**解析**出发件人名字用于回复寻址——所以这不是换一下展示文本就完事，而是要同时改协议文档和消费该协议的解析逻辑。严重度仍按"仅展示层，非数据层"分类，因为它不改任何持久化数据，只改传输给客户端用于展示/解析的字符串格式；但归为 #8 同档的同时要说明它多一层协议属性。
 
 **实施结果**：发件人一律渲染为 `name@project`——不是"只有撞名时才转全称"。原因：按撞名与否切换格式，得在每条消息上都做一次撞名检测，且同一个对等体一会儿裸名一会儿全名，比稳定的长格式更难读。全局身份（project 为 `"*"`）仍降级显示裸名，跟其余四处展示位置的既有约定一致；#8 新增的 `online_peers_str` 当时没跟这个约定对齐，这次一并补齐。
 

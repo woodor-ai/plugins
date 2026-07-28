@@ -99,7 +99,7 @@ allowed-tools:
 
 ## fast-restart 标记（仅 AMBridge 托管会话）
 
-检测到 `~/.ambridge/` 存在时，写完交接卡后另写 `~/.ambridge/handoff-triggers/<本会话的 /meeting 注册名>.json`，内容为：
+检测到 `~/.ambridge/` 存在时，写完交接卡后另写 `~/.ambridge/handoff-triggers/<本会话的 /imagent 注册名>.json`，内容为：
 
 ```json
 {"agent":"<注册名>","mode":"fast-restart","greeting_extra":"你刚被自动重启，交接卡已注入上下文。","ts":<当前 unix 秒>}

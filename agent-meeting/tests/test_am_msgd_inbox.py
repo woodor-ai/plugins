@@ -1,4 +1,4 @@
-"""Integration coverage for the amctl recipient-wide ordered inbox API."""
+"""Integration coverage for the am-msgd recipient-wide ordered inbox API."""
 
 import json
 import os
@@ -15,7 +15,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AMCTL = ROOT / "bin" / "amctl"
+AM_MSGD = ROOT / "bin" / "am-msgd"
 MEETING = ROOT / "bin" / "meeting"
 
 
@@ -66,7 +66,7 @@ def request(base, method, path, body=None, params=None):
 
 
 @pytest.fixture
-def amctl(tmp_path):
+def am_msgd(tmp_path):
     meeting_home = tmp_path / "meeting-home"
     db_dir = meeting_home / "db"
     db_dir.mkdir(parents=True)
@@ -77,7 +77,7 @@ def amctl(tmp_path):
     process = subprocess.Popen(
         [
             os.environ.get("PYTHON", os.sys.executable),
-            str(AMCTL),
+            str(AM_MSGD),
             "--bind",
             "127.0.0.1",
             "--port",
@@ -100,7 +100,7 @@ def amctl(tmp_path):
     else:
         process.terminate()
         _, stderr = process.communicate(timeout=5)
-        pytest.fail(f"amctl did not start: {stderr}")
+        pytest.fail(f"am-msgd did not start: {stderr}")
     try:
         yield base
     finally:
@@ -151,8 +151,8 @@ def send(base, sender, recipient, body):
     return result["msg_id"]
 
 
-def test_subscribe_uses_http_11_websocket_handshake(amctl):
-    parsed = urllib.parse.urlparse(amctl)
+def test_subscribe_uses_http_11_websocket_handshake(am_msgd):
+    parsed = urllib.parse.urlparse(am_msgd)
     with socket.create_connection((parsed.hostname, parsed.port), timeout=5) as sock:
         sock.sendall(
             (
@@ -175,10 +175,10 @@ def test_subscribe_uses_http_11_websocket_handshake(amctl):
     assert status_line == b"HTTP/1.1 101 Switching Protocols\r\n"
 
 
-def test_notify_subscription_does_not_advance_central_cursor(amctl):
-    register(amctl, "alice", "instance-alice")
-    registration = register(amctl, "bob", "instance-bob")
-    parsed = urllib.parse.urlparse(amctl)
+def test_notify_subscription_does_not_advance_central_cursor(am_msgd):
+    register(am_msgd, "alice", "instance-alice")
+    registration = register(am_msgd, "bob", "instance-bob")
+    parsed = urllib.parse.urlparse(am_msgd)
     with socket.create_connection((parsed.hostname, parsed.port), timeout=5) as sock:
         sock.sendall(
             (
@@ -201,11 +201,11 @@ def test_notify_subscription_does_not_advance_central_cursor(amctl):
             response += sock.recv(1)
         assert response.startswith(b"HTTP/1.1 101 Switching Protocols\r\n")
         sync_frame = recv_ws_json(sock)
-        message_id = send(amctl, "alice", "bob", "notify only")
+        message_id = send(am_msgd, "alice", "bob", "notify only")
         frame = recv_ws_json(sock)
 
     inbox = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -221,11 +221,11 @@ def test_notify_subscription_does_not_advance_central_cursor(amctl):
     assert [row["id"] for row in inbox["messages"]] == [message_id]
 
 
-def test_delivery_subscription_rejects_stale_instance_without_advancing(amctl):
-    register(amctl, "alice", "instance-alice")
-    registration = register(amctl, "bob", "instance-current")
-    message_id = send(amctl, "alice", "bob", "must remain unread")
-    parsed = urllib.parse.urlparse(amctl)
+def test_delivery_subscription_rejects_stale_instance_without_advancing(am_msgd):
+    register(am_msgd, "alice", "instance-alice")
+    registration = register(am_msgd, "bob", "instance-current")
+    message_id = send(am_msgd, "alice", "bob", "must remain unread")
+    parsed = urllib.parse.urlparse(am_msgd)
 
     with socket.create_connection((parsed.hostname, parsed.port), timeout=5) as sock:
         sock.sendall(
@@ -248,7 +248,7 @@ def test_delivery_subscription_rejects_stale_instance_without_advancing(amctl):
             status_line += sock.recv(1)
 
     inbox = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -263,11 +263,11 @@ def test_delivery_subscription_rejects_stale_instance_without_advancing(amctl):
     assert [row["id"] for row in inbox["messages"]] == [message_id]
 
 
-def test_inbox_orders_direct_and_group_messages_by_global_id(amctl):
+def test_inbox_orders_direct_and_group_messages_by_global_id(am_msgd):
     for name in ("alice", "bob", "carol"):
-        register(amctl, name, f"instance-{name}")
+        register(am_msgd, name, f"instance-{name}")
     created = request(
-        amctl,
+        am_msgd,
         "POST",
         "/group/create",
         {
@@ -279,12 +279,12 @@ def test_inbox_orders_direct_and_group_messages_by_global_id(amctl):
     )
     assert created.get("ok"), created
 
-    direct_id = send(amctl, "alice", "bob", "direct")
-    group_id = send(amctl, "alice", "review", "@carol directed")
-    later_id = send(amctl, "carol", "bob", "later")
+    direct_id = send(am_msgd, "alice", "bob", "direct")
+    group_id = send(am_msgd, "alice", "review", "@carol directed")
+    later_id = send(am_msgd, "carol", "bob", "later")
 
     inbox = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -306,20 +306,20 @@ def test_inbox_orders_direct_and_group_messages_by_global_id(amctl):
     assert inbox["high_water_mark"] == later_id
 
 
-def test_offline_message_survives_first_broker_local_start(amctl):
-    register(amctl, "alice", "instance-alice")
-    first = register(amctl, "bob", "instance-bob-old")
+def test_offline_message_survives_first_broker_local_start(am_msgd):
+    register(am_msgd, "alice", "instance-alice")
+    first = register(am_msgd, "bob", "instance-bob-old")
     request(
-        amctl,
+        am_msgd,
         "POST",
         "/unregister",
         {"project": "proj", "name": "bob", "instance": "instance-bob-old"},
     )
 
-    message_id = send(amctl, "alice", "bob", "sent while offline")
-    resumed = register(amctl, "bob", "instance-bob-new")
+    message_id = send(am_msgd, "alice", "bob", "sent while offline")
+    resumed = register(am_msgd, "bob", "instance-bob-new")
     inbox = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -334,12 +334,12 @@ def test_offline_message_survives_first_broker_local_start(amctl):
     assert inbox["cursor"] == first["cursor"]
 
 
-def test_legacy_broker_cursor_migrates_central_cursor_exactly_once(amctl):
-    register(amctl, "alice", "instance-alice")
-    initial = register(amctl, "bob", "instance-bob")
-    first_id = send(amctl, "alice", "bob", "sent but not injected")
+def test_legacy_broker_cursor_migrates_central_cursor_exactly_once(am_msgd):
+    register(am_msgd, "alice", "instance-alice")
+    initial = register(am_msgd, "bob", "instance-bob")
+    first_id = send(am_msgd, "alice", "bob", "sent but not injected")
     advanced = request(
-        amctl,
+        am_msgd,
         "POST",
         "/ack",
         {
@@ -353,13 +353,13 @@ def test_legacy_broker_cursor_migrates_central_cursor_exactly_once(amctl):
     assert advanced["cursor"] == first_id
 
     migrated = register(
-        amctl,
+        am_msgd,
         "bob",
         "instance-bob",
         legacy_cursor=initial["cursor"],
     )
     replay = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -372,7 +372,7 @@ def test_legacy_broker_cursor_migrates_central_cursor_exactly_once(amctl):
     assert [row["id"] for row in replay["messages"]] == [first_id]
 
     acknowledged = request(
-        amctl,
+        am_msgd,
         "POST",
         "/ack",
         {
@@ -385,7 +385,7 @@ def test_legacy_broker_cursor_migrates_central_cursor_exactly_once(amctl):
     )
     assert acknowledged["cursor"] == first_id
     repeated = register(
-        amctl,
+        am_msgd,
         "bob",
         "instance-bob",
         legacy_cursor=initial["cursor"],
@@ -393,13 +393,13 @@ def test_legacy_broker_cursor_migrates_central_cursor_exactly_once(amctl):
     assert repeated["cursor"] == first_id
 
 
-def test_ack_requires_current_instance_and_expected_cursor(amctl):
-    register(amctl, "alice", "instance-alice")
-    registration = register(amctl, "bob", "instance-bob")
-    message_id = send(amctl, "alice", "bob", "ack me")
+def test_ack_requires_current_instance_and_expected_cursor(am_msgd):
+    register(am_msgd, "alice", "instance-alice")
+    registration = register(am_msgd, "bob", "instance-bob")
+    message_id = send(am_msgd, "alice", "bob", "ack me")
 
     stale_instance = request(
-        amctl,
+        am_msgd,
         "POST",
         "/ack",
         {
@@ -411,7 +411,7 @@ def test_ack_requires_current_instance_and_expected_cursor(amctl):
         },
     )
     acknowledged = request(
-        amctl,
+        am_msgd,
         "POST",
         "/ack",
         {
@@ -423,7 +423,7 @@ def test_ack_requires_current_instance_and_expected_cursor(amctl):
         },
     )
     stale_cursor = request(
-        amctl,
+        am_msgd,
         "POST",
         "/ack",
         {
@@ -435,7 +435,7 @@ def test_ack_requires_current_instance_and_expected_cursor(amctl):
         },
     )
     inbox = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -452,12 +452,12 @@ def test_ack_requires_current_instance_and_expected_cursor(amctl):
     assert inbox["messages"] == []
 
 
-def test_ack_rejects_future_message_but_allows_pulled_group_after_membership_change(amctl):
-    register(amctl, "alice", "instance-alice")
-    registration = register(amctl, "bob", "instance-bob")
-    register(amctl, "carol", "instance-carol")
+def test_ack_rejects_future_message_but_allows_pulled_group_after_membership_change(am_msgd):
+    register(am_msgd, "alice", "instance-alice")
+    registration = register(am_msgd, "bob", "instance-bob")
+    register(am_msgd, "carol", "instance-carol")
     created = request(
-        amctl,
+        am_msgd,
         "POST",
         "/group/create",
         {
@@ -468,9 +468,9 @@ def test_ack_rejects_future_message_but_allows_pulled_group_after_membership_cha
         },
     )
     assert created.get("ok"), created
-    group_id = send(amctl, "alice", "review", "@bob please review")
+    group_id = send(am_msgd, "alice", "review", "@bob please review")
     pulled = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -481,7 +481,7 @@ def test_ack_rejects_future_message_but_allows_pulled_group_after_membership_cha
     )
     assert [row["id"] for row in pulled["messages"]] == [group_id]
     removed = request(
-        amctl,
+        am_msgd,
         "POST",
         "/group/remove",
         {
@@ -494,7 +494,7 @@ def test_ack_rejects_future_message_but_allows_pulled_group_after_membership_cha
     assert removed.get("ok"), removed
 
     acknowledged = request(
-        amctl,
+        am_msgd,
         "POST",
         "/ack",
         {
@@ -506,7 +506,7 @@ def test_ack_rejects_future_message_but_allows_pulled_group_after_membership_cha
         },
     )
     future = request(
-        amctl,
+        am_msgd,
         "POST",
         "/ack",
         {
@@ -518,7 +518,7 @@ def test_ack_rejects_future_message_but_allows_pulled_group_after_membership_cha
         },
     )
     inbox = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -534,12 +534,12 @@ def test_ack_rejects_future_message_but_allows_pulled_group_after_membership_cha
     assert inbox["messages"] == []
 
 
-def test_ack_allows_pulled_message_deleted_before_ack(amctl):
-    register(amctl, "alice", "instance-alice")
-    registration = register(amctl, "bob", "instance-bob")
-    message_id = send(amctl, "alice", "bob", "delete after pull")
+def test_ack_allows_pulled_message_deleted_before_ack(am_msgd):
+    register(am_msgd, "alice", "instance-alice")
+    registration = register(am_msgd, "bob", "instance-bob")
+    message_id = send(am_msgd, "alice", "bob", "delete after pull")
     pulled = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -550,7 +550,7 @@ def test_ack_allows_pulled_message_deleted_before_ack(amctl):
     )
     assert [row["id"] for row in pulled["messages"]] == [message_id]
     deleted = request(
-        amctl,
+        am_msgd,
         "DELETE",
         "/conversation",
         params={
@@ -563,7 +563,7 @@ def test_ack_allows_pulled_message_deleted_before_ack(amctl):
     assert deleted.get("deleted"), deleted
 
     acknowledged = request(
-        amctl,
+        am_msgd,
         "POST",
         "/ack",
         {
@@ -578,12 +578,12 @@ def test_ack_allows_pulled_message_deleted_before_ack(amctl):
     assert acknowledged == {"ok": True, "cursor": message_id}
 
 
-def test_inbox_rejects_replaced_registration_instance(amctl):
-    register(amctl, "bob", "instance-old")
-    register(amctl, "bob", "instance-new", force=True)
+def test_inbox_rejects_replaced_registration_instance(am_msgd):
+    register(am_msgd, "bob", "instance-old")
+    register(am_msgd, "bob", "instance-new", force=True)
 
     stale = request(
-        amctl,
+        am_msgd,
         "GET",
         "/inbox",
         params={
@@ -596,19 +596,19 @@ def test_inbox_rejects_replaced_registration_instance(amctl):
     assert stale["code"] == "stale_instance"
 
 
-def test_exact_message_requires_participation(amctl):
+def test_exact_message_requires_participation(am_msgd):
     for name in ("alice", "bob", "carol"):
-        register(amctl, name, f"instance-{name}")
-    message_id = send(amctl, "alice", "bob", "precise body")
+        register(am_msgd, name, f"instance-{name}")
+    message_id = send(am_msgd, "alice", "bob", "precise body")
 
     visible = request(
-        amctl,
+        am_msgd,
         "GET",
         "/message",
         params={"project": "proj", "name": "bob", "id": message_id},
     )
     hidden = request(
-        amctl,
+        am_msgd,
         "GET",
         "/message",
         params={"project": "proj", "name": "carol", "id": message_id},
@@ -620,18 +620,18 @@ def test_exact_message_requires_participation(amctl):
     assert "not visible" in hidden["error"]
 
 
-def test_unregister_only_deletes_the_matching_instance(amctl):
-    register(amctl, "bob", "instance-a")
+def test_unregister_only_deletes_the_matching_instance(am_msgd):
+    register(am_msgd, "bob", "instance-a")
 
     wrong = request(
-        amctl,
+        am_msgd,
         "POST",
         "/unregister",
         {"project": "proj", "name": "bob", "instance": "instance-b"},
     )
-    rows = request(amctl, "GET", "/list")
+    rows = request(am_msgd, "GET", "/list")
     right = request(
-        amctl,
+        am_msgd,
         "POST",
         "/unregister",
         {"project": "proj", "name": "bob", "instance": "instance-a"},
@@ -642,11 +642,11 @@ def test_unregister_only_deletes_the_matching_instance(amctl):
     assert right["deleted"] is True
 
 
-def test_private_send_requires_full_identity_but_group_short_name_is_allowed(amctl):
+def test_private_send_requires_full_identity_but_group_short_name_is_allowed(am_msgd):
     for name in ("alice", "bob"):
-        register(amctl, name, f"instance-{name}")
+        register(am_msgd, name, f"instance-{name}")
     created = request(
-        amctl,
+        am_msgd,
         "POST",
         "/group/create",
         {
@@ -669,7 +669,7 @@ def test_private_send_requires_full_identity_but_group_short_name_is_allowed(amc
             "bob",
             "unsafe",
             "--host",
-            amctl,
+            am_msgd,
         ],
         env=env,
         capture_output=True,
@@ -684,7 +684,7 @@ def test_private_send_requires_full_identity_but_group_short_name_is_allowed(amc
             "bob@proj",
             "safe",
             "--host",
-            amctl,
+            am_msgd,
         ],
         env=env,
         capture_output=True,
@@ -699,7 +699,7 @@ def test_private_send_requires_full_identity_but_group_short_name_is_allowed(amc
             "review",
             "group",
             "--host",
-            amctl,
+            am_msgd,
         ],
         env=env,
         capture_output=True,

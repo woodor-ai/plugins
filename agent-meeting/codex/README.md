@@ -51,11 +51,16 @@ whichever `mycodex` invocation happened to start the broker first.
 
 | File | Role |
 |---|---|
-| `am-codexd` | Persistent machine-level daemon and shared app-server owner |
-| `am_codexd.py` | Daemon implementation |
-| `codex-meeting.py` | Thin `mycodex` launcher; acquires and releases one broker lease |
-| `remove-legacy-codex-hook.py` | Installer migration that removes the obsolete registration hook |
-| `install.py` | Codex installer integration |
+| `mycodex/src/mycodex/commands/am_codexd_cli.py` | Public daemon lifecycle command |
+| `mycodex/src/mycodex/codex_session_broker/` | Daemon, leases, inbox delivery, and TUI proxy |
+| `mycodex/src/mycodex/launcher/codex_tui_session.py` | Foreground `mycodex` launcher and broker lease |
+| `mycodex/src/mycodex/ai_platforms/codex/` | Codex instructions and user configuration |
+| `mycodex/src/mycodex/operating_systems/{macos,windows}/` | OS process, terminal, and PATH adapters |
+| `installers/codex/` | macOS and Windows Codex installer entrypoints |
+
+The files under `agent-meeting/codex/` are compatibility entrypoints for
+pre-0.15 copied-plugin installations. New installations execute the packaged
+`mycodex` and `am-codexd` console launchers.
 
 `codex app-server` is an official Codex process. agent-meeting starts and owns
 one shared instance because Homebrew and other unmanaged Codex installations
@@ -75,23 +80,27 @@ macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.sh | bash
 ```
 
-Manual:
+From a checkout, use the platform installer:
 
 ```sh
 git clone https://github.com/woodor-ai/plugins
-python <repo>/install-codex.py
+sh <repo>/installers/codex/install-on-macos.sh
 ```
 
-The installer builds `~/.agent-meeting`, installs `zeroconf` and `websockets`
-in its virtual environment, writes the `mycodex` wrapper, stores the selected
-central-amctl URL, removes the legacy Codex hook, and refreshes the
+```powershell
+powershell -ExecutionPolicy Bypass -File <repo>\installers\codex\install-on-windows.ps1
+```
+
+The installer builds the immutable
+`~/.agent-meeting/runtimes/<version>/venv`, atomically activates the stable
+`meeting`, `am-msgd`, `mycodex`, and `am-codexd` launchers, stores the selected
+central am-msgd URL, removes the legacy Codex hook, and refreshes the
 agent-meeting instructions in `~/.codex/AGENTS.md`. It also refreshes the
 Woodor Codex marketplace and installs the native `agent-meeting` plugin, which
-exposes `$meeting` and `$talkto` through Codex's `/skills` picker. It
-automatically uses an amctl found through mDNS, or a previously saved URL when
-that endpoint is still reachable. It prompts for a URL only when neither
-source is available, and restarts a stale amctl process when its version
-differs from the installed plugin.
+exposes `$imagent` and `$talkto` through Codex's `/skills` picker. It
+automatically uses an am-msgd found through mDNS, or a previously saved URL
+when that endpoint is still reachable, and prompts only when neither source is
+available.
 
 ## Run
 
@@ -129,7 +138,7 @@ sessions are active.
 
 ## Message delivery
 
-Central amctl exposes one recipient-wide inbox ordered by global `msg_id` and
+Central am-msgd exposes one recipient-wide inbox ordered by global `msg_id` and
 owns the only durable recipient cursor. The broker keeps only a transient
 pending queue and uses its WebSocket subscription as a wake-up signal; the
 subscription never advances delivery state. Once the target thread is idle,
@@ -182,7 +191,7 @@ app-server connection into Codex's `experimentalApi` capability because
   authority.
 - `~/.agent-meeting/codex/logs/am-codexd.log`: daemon lifecycle and injection log.
 - `~/.agent-meeting/codex/logs/app-server.log`: shared official app-server log.
-- `~/.agent-meeting/codex/launcher.json`: selected central-amctl URL.
+- `~/.agent-meeting/codex/launcher.json`: selected central am-msgd URL.
 
 The daemon deliberately does not reuse a stray app-server found on another
 port; it owns its child process and can restart it safely.

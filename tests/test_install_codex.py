@@ -1,5 +1,6 @@
 """Tests for install-codex.py — plugin discovery, copy exclusions, Y/n branches, default/custom dir."""
 import importlib.util
+import subprocess
 import types
 from pathlib import Path
 
@@ -179,6 +180,9 @@ def test_run_interactive_n_skips(tmp_path):
 
 def test_install_native_plugins_refreshes_marketplace_and_installs(tmp_path, monkeypatch):
     mod = _load()
+    marketplace = tmp_path / ".agents" / "plugins" / "marketplace.json"
+    marketplace.parent.mkdir(parents=True)
+    marketplace.write_text("{}")
     install_dir = tmp_path / "agent-meeting"
     manifest = install_dir / ".codex-plugin" / "plugin.json"
     manifest.parent.mkdir(parents=True)
@@ -197,7 +201,7 @@ def test_install_native_plugins_refreshes_marketplace_and_installs(tmp_path, mon
         lambda command, **_kwargs: calls.append(command) or Result(),
     )
 
-    mod._install_native_plugins([("agent-meeting", install_dir)])
+    mod._install_native_plugins([("agent-meeting", install_dir)], tmp_path)
 
     assert calls == [
         [
@@ -206,6 +210,61 @@ def test_install_native_plugins_refreshes_marketplace_and_installs(tmp_path, mon
             "marketplace",
             "upgrade",
             "woodor",
+        ],
+        [
+            "/usr/local/bin/codex",
+            "plugin",
+            "add",
+            "agent-meeting@woodor",
+        ],
+    ]
+
+
+def test_install_native_plugins_registers_marketplace_on_first_install(
+    tmp_path, monkeypatch
+):
+    mod = _load()
+    marketplace = tmp_path / ".agents" / "plugins" / "marketplace.json"
+    marketplace.parent.mkdir(parents=True)
+    marketplace.write_text("{}")
+    install_dir = tmp_path / "installed" / "agent-meeting"
+    manifest = install_dir / ".codex-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}")
+    calls = []
+
+    class Result:
+        def __init__(self, returncode=0):
+            self.returncode = returncode
+            self.stdout = ""
+            self.stderr = ""
+
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/local/bin/codex")
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if command[2:5] == ["marketplace", "upgrade", "woodor"]:
+            return Result(1)
+        return Result()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    mod._install_native_plugins([("agent-meeting", install_dir)], tmp_path)
+
+    assert calls == [
+        [
+            "/usr/local/bin/codex",
+            "plugin",
+            "marketplace",
+            "upgrade",
+            "woodor",
+        ],
+        [
+            "/usr/local/bin/codex",
+            "plugin",
+            "marketplace",
+            "add",
+            str(tmp_path.resolve()),
         ],
         [
             "/usr/local/bin/codex",
@@ -391,12 +450,47 @@ def test_main_generates_mycodex_command_when_something_installed(tmp_path, monke
         mod, "run_interactive",
         lambda *a, **k: {"installed": [("agent-meeting", tmp_path / "installed")], "skipped": []},
     )
+    monkeypatch.setattr(
+        mod,
+        "_install_versioned_agent_meeting_runtime",
+        lambda *_args, **_kwargs: False,
+    )
 
     mod.main()
 
     dest = meeting_home / "bin" / "mycodex"
     assert dest.exists()
     assert dest.stat().st_mode & 0o111
+
+
+def test_agent_meeting_selection_activates_versioned_host_runtime(
+    tmp_path,
+    monkeypatch,
+):
+    mod = _load()
+    calls = []
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda command, **kwargs: (
+            calls.append((command, kwargs))
+            or subprocess.CompletedProcess(command, 0)
+        ),
+    )
+    meeting_home = tmp_path / "meeting-home"
+
+    assert mod._install_versioned_agent_meeting_runtime(
+        [("agent-meeting", tmp_path / "installed")],
+        meeting_home,
+    ) is True
+    assert [Path(call[0][1]).name for call in calls] == [
+        "install-agent-meeting-package.py",
+        "migrate-agent-meeting-legacy-layout.py",
+    ]
+    assert all(
+        call[1]["env"]["MEETING_HOME"] == str(meeting_home)
+        for call in calls
+    )
 
 
 def test_main_generates_mycodex_command_even_when_nothing_installed(tmp_path, monkeypatch):
@@ -430,6 +524,8 @@ def test_main_cleans_up_stale_codex_plugins(tmp_path, monkeypatch):
     (bin_dir / "codex-plugins.ps1").write_text("# old\n")
     (bin_dir / "meeting-say").write_text("#!/bin/sh\necho old\n")
     (bin_dir / "meeting-say.cmd").write_text("@echo off\r\n")
+    (bin_dir / "amctl").write_text("#!/bin/sh\necho old\n")
+    (bin_dir / "amctl.cmd").write_text("@echo off\r\n")
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("MEETING_HOME", str(meeting_home))
@@ -446,6 +542,8 @@ def test_main_cleans_up_stale_codex_plugins(tmp_path, monkeypatch):
     assert not (bin_dir / "codex-plugins.ps1").exists()
     assert not (bin_dir / "meeting-say").exists()
     assert not (bin_dir / "meeting-say.cmd").exists()
+    assert not (bin_dir / "amctl").exists()
+    assert not (bin_dir / "amctl.cmd").exists()
     assert (bin_dir / "mycodex").exists()
 
 

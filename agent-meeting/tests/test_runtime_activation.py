@@ -1,0 +1,112 @@
+import json
+from pathlib import Path
+
+import pytest
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PLUGIN_ROOT / "src"
+
+
+@pytest.fixture(autouse=True)
+def add_source_root(monkeypatch):
+    monkeypatch.syspath_prepend(str(SRC_ROOT))
+
+
+def _fake_runtime(
+    meeting_home: Path,
+    version: str,
+    *,
+    is_windows: bool,
+) -> Path:
+    from agent_meeting.installation.version_activation import RUNTIME_COMMANDS
+
+    runtime = meeting_home / "runtimes" / version
+    command_dir = (
+        runtime / "venv" / "Scripts"
+        if is_windows
+        else runtime / "venv" / "bin"
+    )
+    command_dir.mkdir(parents=True)
+    for command in RUNTIME_COMMANDS:
+        path = command_dir / (f"{command}.exe" if is_windows else command)
+        path.write_bytes(f"{version}:{command}".encode())
+    return runtime
+
+
+def test_posix_activation_uses_stable_symlinks_and_atomic_manifest(tmp_path):
+    from agent_meeting.installation.version_activation import activate_runtime
+
+    first = _fake_runtime(tmp_path, "0.15.0", is_windows=False)
+    second = _fake_runtime(tmp_path, "0.16.0", is_windows=False)
+
+    activate_runtime(
+        meeting_home=tmp_path,
+        version="0.15.0",
+        is_windows=False,
+    )
+    meeting_link = tmp_path / "bin" / "meeting"
+    assert meeting_link.is_symlink()
+    assert meeting_link.resolve() == first / "venv" / "bin" / "meeting"
+
+    payload = activate_runtime(
+        meeting_home=tmp_path,
+        version="0.16.0",
+        is_windows=False,
+    )
+    assert meeting_link.resolve() == second / "venv" / "bin" / "meeting"
+    assert json.loads(
+        (tmp_path / "active-runtime.json").read_text(encoding="utf-8")
+    ) == payload
+    assert not list(tmp_path.glob(".active-runtime.json.tmp.*"))
+
+
+def test_windows_activation_copies_console_exes_without_cmd_forwarders(
+    tmp_path,
+):
+    from agent_meeting.installation.version_activation import activate_runtime
+
+    runtime = _fake_runtime(tmp_path, "0.15.0", is_windows=True)
+    activate_runtime(
+        meeting_home=tmp_path,
+        version="0.15.0",
+        is_windows=True,
+    )
+
+    for command in ("meeting", "am-msgd", "mycodex", "am-codexd"):
+        destination = tmp_path / "bin" / f"{command}.exe"
+        assert destination.read_bytes() == (
+            runtime / "venv" / "Scripts" / f"{command}.exe"
+        ).read_bytes()
+        assert not (tmp_path / "bin" / f"{command}.cmd").exists()
+
+
+def test_activation_refuses_incomplete_runtime(tmp_path):
+    from agent_meeting.installation.version_activation import activate_runtime
+
+    runtime = tmp_path / "runtimes" / "0.15.0" / "venv" / "bin"
+    runtime.mkdir(parents=True)
+    (runtime / "meeting").write_text("meeting")
+
+    with pytest.raises(FileNotFoundError, match="missing public command"):
+        activate_runtime(
+            meeting_home=tmp_path,
+            version="0.15.0",
+            is_windows=False,
+        )
+
+    assert not (tmp_path / "active-runtime.json").exists()
+
+
+def test_activation_refuses_runtime_with_installing_marker(tmp_path):
+    from agent_meeting.installation.version_activation import activate_runtime
+
+    runtime = _fake_runtime(tmp_path, "0.15.0", is_windows=False)
+    (runtime / ".installing").write_text("pid=1\n")
+
+    with pytest.raises(RuntimeError, match="installation is incomplete"):
+        activate_runtime(
+            meeting_home=tmp_path,
+            version="0.15.0",
+            is_windows=False,
+        )

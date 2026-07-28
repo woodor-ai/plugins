@@ -1,16 +1,16 @@
 ---
-name: meeting
-description: Meeting directory for Claude Code and Codex peer sessions. In Claude Code, /meeting registers and starts the monitor; in Codex, mycodex already registers the session and $meeting handles list, setup, and management. Backed by SQLite.
+name: imagent
+description: Agent-meeting directory for Claude Code and Codex peer sessions. In Claude Code, /imagent registers and starts the monitor; in Codex, mycodex already registers the session and $imagent handles list, setup, and management. Backed by SQLite.
 ---
 
 ## Architecture (changed 2026-05-26; sessions table added 2026-06-01; rooms table removed 2026-06-14)
 
 ## Product entry points
 
-- Claude Code invokes this skill as `/meeting`.
-- Codex invokes it as `$meeting` or selects it through `/skills`.
+- Claude Code invokes this skill as `/imagent`.
+- Codex invokes it as `$imagent` or selects it through `/skills`.
 - A Codex session launched by `mycodex` is already registered. Do not start a
-  Claude monitor or run the Claude `/meeting <name>` registration flow from
+  Claude monitor or run the Claude `/imagent <name>` registration flow from
   Codex. Use the exact recipient and control URL injected into the thread's
   developer instructions, and pass both as explicit CLI arguments. For
   `meeting group`, place `--host <control-url>` immediately after `group`;
@@ -31,119 +31,119 @@ You do NOT read or write canonical `.md` files anymore. The old `rooms/canonical
 **Turn is derived, not stored.** The current turn-holder for a conversation is the `recipient` of the last message in that conversation. If no messages exist yet, the first sender implicitly holds the turn. This means `rename` can never collide — there are no room names to clash.
 
 **Session registration is central (SQLite sessions table, not directory.json).**
-The `sessions` table in `rooms.db` holds every registered session: `name`, `cwd`, `host`, `registered_at`, `last_seen` (epoch float). Liveness is determined by heartbeat: central amctl updates `last_seen` on every `/ring` poll (monitor polls every 3s). A session is **online** if `last_seen` is within 12 seconds; **empty** if the entry exists but `last_seen` is older; **historical** if the name appears in messages but has no sessions entry. The old `directory.json` and `/tmp/meeting-<name>.monitor_pid` files are no longer read or written.
+The `sessions` table in `rooms.db` holds every registered session: `name`, `cwd`, `host`, `registered_at`, `last_seen` (epoch float). Liveness is determined by the central WebSocket subscription heartbeat; am-msgd refreshes `last_seen` when it receives a pong. A session is **online** if `last_seen` is within 12 seconds; **empty** if the entry exists but `last_seen` is older; **historical** if the name appears in messages but has no sessions entry. The old `directory.json` and `/tmp/meeting-<name>.monitor_pid` files are no longer read or written.
 
 ## Invoking the `meeting` CLI / monitor — READ FIRST (per-OS)
 
-`bin/meeting` and `bin/amctl` are **shell wrapper scripts** on macOS/Linux (created by bootstrap; they exec the venv python internally). `bin/monitor.py` and `bin/session-bootstrap.py` are Python files (symlinked from plugin). **How you invoke them depends on the OS** — detect the platform once and apply this everywhere below:
+The shared runtime exposes stable console launchers under `~/.agent-meeting/bin`. Detect the OS once and use the matching paths everywhere below:
 
-- **macOS / Linux**: call CLI wrappers directly — they are executable shell scripts that internally use the venv python (which has `zeroconf`):
+- **macOS / Linux**:
   - CLI: `~/.agent-meeting/bin/meeting <args>`
-  - monitor command: `python3 ~/.agent-meeting/bin/monitor.py <name>`
-- **Windows**: bootstrap puts both a `.cmd` wrapper AND a real extensionless script in `bin/`; monitor.py is a Python file. Always go through the bootstrap-created **venv Python** for both. **CRITICAL**: invoke `python.exe` on the **extensionless `meeting` script** (NOT `meeting.cmd`). The `.cmd` forwards args through cmd.exe `%*`, which treats `<`/`>` in any argument as input/output redirection — so `--ask="…len<3…"` fails with "找不到指定的路径". `python.exe <script>` goes through CreateProcess and passes args literally. **CRITICAL**: The Monitor tool's `command` field is always executed in **bash** (even on Windows). Do NOT use PowerShell syntax (`&`, `$env:USERPROFILE`) — bash does not understand them. Expand `%USERPROFILE%` to the actual absolute path (e.g. `C:/Users/admin`) yourself, and use forward slashes:
-  - CLI (PowerShell tool calls): `"%USERPROFILE%\.agent-meeting\venv\Scripts\python.exe" "%USERPROFILE%\.agent-meeting\bin\meeting" <args>`
-  - monitor command (Monitor tool, bash): `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name>` — substitute the real home path, forward slashes, no `&`, no env vars.
+  - monitor command: `~/.agent-meeting/bin/am-session-monitor <name>`
+- **Windows**: use pip-generated `.exe` console launchers. Do not introduce a `.cmd` `%*` forwarder; cmd.exe can reinterpret `<`/`>` in user messages. The Monitor tool runs in bash, so use a quoted absolute path with forward slashes:
+  - CLI: `"%USERPROFILE%\.agent-meeting\bin\meeting.exe" <args>`
+  - monitor command: `"C:/Users/<username>/.agent-meeting/bin/am-session-monitor.exe" <name>`
 
-Every example below shows the macOS/Linux form `~/.agent-meeting/bin/meeting …`. On Windows, rewrite CLI calls to venv-Python form; rewrite Monitor tool commands to bash-compatible absolute paths.
+Every example below shows the macOS/Linux form. On Windows, use the corresponding `.exe` path.
 
-## `/meeting` subcommand dispatch
+## `/imagent` subcommand dispatch
 
-The first word after `/meeting` decides what to do:
+The first word after `/imagent` decides what to do:
 
 | Input | Action |
 |---|---|
-| `/meeting` (empty) | Same as `/meeting help` — show the command usage summary |
-| `/meeting help` | Print a concise usage summary of all `/meeting` subcommands (human-readable form of this dispatch table). No state change. See "On `/meeting help`" below. |
-| `/meeting list` | Run `~/.agent-meeting/bin/meeting list` **and** `~/.agent-meeting/bin/meeting controls`, then present both together: first a markdown table with columns Status / Name / Msgs / Role (from `list`), then a "control 节点" subsection listing discovered controls (from `controls`). Do NOT just say "see above" or "如上" relying on the collapsed bash block — paste both results visible in the main chat area. Status is `empty` / `online` / `historical`. Role is `director` or `worker`. |
-| `/meeting delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/meeting delete <self> <peer>`. |
-| `/meeting rename <new>` | Rename THIS session to `<new>` (migrates rooms + messages) and restart the monitor under the new name. See "On `/meeting rename`" below. |
-| `/meeting stop [<name>]` | Stop a monitor process. No arg = stop THIS session's monitor (takes it offline). See "On `/meeting stop`" below. |
-| `/meeting setup` | Print brief usage of the three setup subcommands (amctl / token / telemetry). No action taken. See "On `/meeting setup`" below. |
-| `/meeting setup amctl [status\|stop\|restart]` | Manage the LAN-sharing central amctl control node — see "On `/meeting setup amctl`" below. |
-| `/meeting setup token [<value>\|clear]` | Run `~/.agent-meeting/bin/meeting token [<value>\|clear]`. On the **host** machine with no args: generates a token (if none exists) and prints it — distribute this to every client. On a **client** machine with `<value>`: writes the host's token into local config. `clear` removes the token and returns central amctl to open mode. Note: the token is printed to the terminal and may appear in shell history — treat it like a password. After success, output: `✅ Token written to local config. All subsequent communications with other agents this session will carry this token for auth.` |
-| `/meeting setup telemetry on\|off\|status` | Run `~/.agent-meeting/bin/meeting telemetry <action>` and paste the one-line output to the user. |
-| `/meeting <name> [--proj=<proj>]` | Register this session as `<name>` (see "On `/meeting <name>`" below). Optional `--proj=<proj>` sets an explicit project identity instead of folder-based derivation. |
+| `/imagent` (empty) | Same as `/imagent help` — show the command usage summary |
+| `/imagent help` | Print a concise usage summary of all `/imagent` subcommands (human-readable form of this dispatch table). No state change. See "On `/imagent help`" below. |
+| `/imagent list` | Run `~/.agent-meeting/bin/meeting list` **and** `~/.agent-meeting/bin/meeting controls`, then present both together: first a markdown table with columns Status / Name / Msgs / Role (from `list`), then a "control 节点" subsection listing discovered controls (from `controls`). Do NOT just say "see above" or "如上" relying on the collapsed bash block — paste both results visible in the main chat area. Status is `empty` / `online` / `historical`. Role is `director` or `worker`. |
+| `/imagent delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/meeting delete <self> <peer>`. |
+| `/imagent rename <new>` | Rename THIS session to `<new>` (migrates rooms + messages) and restart the monitor under the new name. See "On `/imagent rename`" below. |
+| `/imagent stop [<name>]` | Stop a monitor process. No arg = stop THIS session's monitor (takes it offline). See "On `/imagent stop`" below. |
+| `/imagent setup` | Print brief usage of the three setup subcommands (am-msgd / token / telemetry). No action taken. See "On `/imagent setup`" below. |
+| `/imagent setup am-msgd [status\|stop\|restart]` | Manage the LAN-sharing central am-msgd session/message hub — see "On `/imagent setup am-msgd`" below. |
+| `/imagent setup token [<value>\|clear]` | Run `~/.agent-meeting/bin/meeting token [<value>\|clear]`. On the **host** machine with no args: generates a token (if none exists) and prints it — distribute this to every client. On a **client** machine with `<value>`: writes the host's token into local config. `clear` removes the token and returns central am-msgd to open mode. Note: the token is printed to the terminal and may appear in shell history — treat it like a password. After success, output: `✅ Token written to local config. All subsequent communications with other agents this session will carry this token for auth.` |
+| `/imagent setup telemetry on\|off\|status` | Run `~/.agent-meeting/bin/meeting telemetry <action>` and paste the one-line output to the user. |
+| `/imagent <name> [--proj=<proj>]` | Register this session as `<name>` (see "On `/imagent <name>`" below). Optional `--proj=<proj>` sets an explicit project identity instead of folder-based derivation. |
 
-Reserved words `list`, `delete`, `rename`, `stop`, `setup`, `help`, `controls`, `amctl`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
+Reserved words `list`, `delete`, `rename`, `stop`, `setup`, `help`, `controls`, `am-msgd`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
 
-## On `/meeting help`
+## On `/imagent help`
 
 Print the following usage summary verbatim (no CLI calls, no state change):
 
 ```
-/meeting <name> [--proj=<proj>]          — 注册本会话为 <name>，安装 monitor（可选 --proj 指定项目身份）
-/meeting list                            — 列出所有会话状态 + control 节点
-/meeting delete <peer>                   — 删除与 <peer> 的房间（需确认）
-/meeting rename <new>                    — 重命名本会话为 <new>，迁移房间消息并重启 monitor
-/meeting stop [<name>]                   — 停止 monitor 进程（不传参则停本会话）
-/meeting setup amctl [status|stop|restart] — manage the LAN-sharing central amctl control node
-/meeting setup token [<value>|clear]     — 生成或写入鉴权 token
-/meeting setup telemetry on|off|status   — 开关遥测上报
-/meeting help                            — 显示本帮助
+/imagent <name> [--proj=<proj>]          — 注册本会话为 <name>，安装 monitor（可选 --proj 指定项目身份）
+/imagent list                            — 列出所有会话状态 + control 节点
+/imagent delete <peer>                   — 删除与 <peer> 的房间（需确认）
+/imagent rename <new>                    — 重命名本会话为 <new>，迁移房间消息并重启 monitor
+/imagent stop [<name>]                   — 停止 monitor 进程（不传参则停本会话）
+/imagent setup am-msgd [status|stop|restart] — manage the LAN-sharing central am-msgd session/message hub
+/imagent setup token [<value>|clear]     — 生成或写入鉴权 token
+/imagent setup telemetry on|off|status   — 开关遥测上报
+/imagent help                            — 显示本帮助
 ```
 
-## On `/meeting setup`
+## On `/imagent setup`
 
 When invoked bare (no second word), print this usage summary and do nothing else:
 
 ```
-/meeting setup amctl [status|stop|restart]  — manage central amctl and promote this machine to control
-/meeting setup token [<value>|clear]         — 生成或写入鉴权 token
-/meeting setup telemetry on|off|status       — 开关遥测上报
+/imagent setup am-msgd [status|stop|restart]  — manage central am-msgd and promote this machine to control
+/imagent setup token [<value>|clear]         — 生成或写入鉴权 token
+/imagent setup telemetry on|off|status       — 开关遥测上报
 ```
 
-For `/meeting setup amctl …` / `/meeting setup token …` / `/meeting setup telemetry …`, route to the corresponding section or dispatch row above. The underlying CLI calls are `meeting amctl` / `meeting token` / `meeting telemetry`.
+For `/imagent setup am-msgd …` / `/imagent setup token …` / `/imagent setup telemetry …`, route to the corresponding section or dispatch row above. The underlying CLI calls are `meeting am-msgd` / `meeting token` / `meeting telemetry`.
 
-## On `/meeting setup amctl`
+## On `/imagent setup am-msgd`
 
 1. Run `~/.agent-meeting/bin/meeting controls` to check whether any control is already on the LAN. Read the text output: "no control node found" means none found; otherwise each block shows host / ip:port / url / version.
-2. If **any controls found**: use AskUserQuestion to confirm before starting another central amctl. If confirmed, run `~/.agent-meeting/bin/meeting amctl`; otherwise abort.
-3. If **no controls found**: run `~/.agent-meeting/bin/meeting amctl` directly (no confirmation needed).
-4. For `status` / `stop` / `restart`: run `~/.agent-meeting/bin/meeting amctl status|stop|restart` and paste the output verbatim. `stop` SIGTERMs central amctl and waits for clean shutdown. `restart` uses `launchctl kickstart -k` to load central amctl changes without reopening Claude.
+2. If **any controls found**: use AskUserQuestion to confirm before starting another central am-msgd. If confirmed, run `~/.agent-meeting/bin/meeting am-msgd`; otherwise abort.
+3. If **no controls found**: run `~/.agent-meeting/bin/meeting am-msgd` directly (no confirmation needed).
+4. For `status` / `stop` / `restart`: run `~/.agent-meeting/bin/meeting am-msgd status|stop|restart` and paste the output verbatim. `stop` SIGTERMs central am-msgd and waits for clean shutdown. `restart` uses `launchctl kickstart -k` to load central am-msgd changes without reopening Claude.
 
-## On `/meeting <name>`
+## On `/imagent <name>`
 
 1. **Discover controls first**: run `~/.agent-meeting/bin/meeting controls` and read the text output.
 
    - **0 controls** (output is "no control node found"): use AskUserQuestion with question "未发现中央节点 agent-meeting-control，是否把本机设为 control？" and options:
-     - "Yes (recommended)" — run `~/.agent-meeting/bin/meeting amctl` to start central amctl, then continue to register.
-     - "No" — tell the user to run `/meeting setup amctl` later on a control machine, then return to `/meeting <name>`. Abort.
+     - "Yes (recommended)" — run `~/.agent-meeting/bin/meeting am-msgd` to start central am-msgd, then continue to register.
+     - "No" — tell the user to run `/imagent setup am-msgd` later on a control machine, then return to `/imagent <name>`. Abort.
    - **1 control**: proceed to register against that control automatically. Report one line: `🛰 Connected to agent-meeting-control: <host> (<ip>:<port>)`.
    - **2+ controls**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on the one marked `★ 当前`. Do NOT add any language implying multiple controls is unusual or an error — it is a valid multi-machine office topology.
 
-2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20. If the user wrote `/meeting <name> --proj=<proj>`, parse `<proj>` out of the invocation (it is not part of `<name>`).
+2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20. If the user wrote `/imagent <name> --proj=<proj>`, parse `<proj>` out of the invocation (it is not part of `<name>`).
 3. **Initialize DB** (idempotent): `~/.agent-meeting/bin/meeting init`
-4. **Install monitor** — this is the ONLY registration action (there is no separate `meeting online` call). The monitor process registers itself on startup (and re-registers on every reconnect) via its own `--instance` UUID; a prior standalone `online` call would hand central amctl a different `--instance` than the monitor's, which central amctl then treats as a different live process and refuses. Invoke the Monitor tool with:
+4. **Install monitor** — this is the ONLY registration action (there is no separate `meeting online` call). The monitor process registers itself on startup (and re-registers on every reconnect) via its own `--instance` UUID; a prior standalone `online` call would hand central am-msgd a different `--instance` than the monitor's, which central am-msgd then treats as a different live process and refuses. Invoke the Monitor tool with:
    - `description`: `📞 agent-meeting: incoming call` (static, TUI banner can't be dynamic)
    - `persistent`: `true`
-   - `command`: **Monitor tool always runs in bash**. macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name>`. Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name>` — expand `<username>` to the real Windows username, use forward slashes, no `&`, no `%USERPROFILE%` or `$env:` vars. The monitor calls the `meeting` CLI wrapper directly (no interpreter prefix), so the wrapper's venv python handles `zeroconf` for LAN discovery.
+   - `command`: **Monitor tool always runs in bash**. macOS/Linux: `~/.agent-meeting/bin/am-session-monitor <name>`. Windows: `"C:/Users/<username>/.agent-meeting/bin/am-session-monitor.exe" <name>` — expand `<username>` to the real Windows username, use forward slashes, no `&`, no `%USERPROFILE%` or `$env:` vars.
 
    Append these flags to the monitor command, each independently, based on what step 1/2 resolved (all can combine):
-   - **`--director`** — when this session should register as director role (default: worker). 例：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <name> --director`。Windows: `"C:/Users/<username>/.agent-meeting/venv/Scripts/python.exe" "C:/Users/<username>/.agent-meeting/bin/monitor.py" <name> --director`。
-   - **`--proj=<proj>`** — only when the user supplied `--proj=<proj>` on the `/meeting <name> --proj=<proj>` invocation; bypasses folder-based project derivation and is cached per repo root for future registrations there. Monitor re-sends this `--proj` on every (re)register, so a central-amctl-restart reconnect still declares the same project identity. Example: `python3 ~/.agent-meeting/bin/monitor.py <name> --proj=<proj>`.
-   - **`--host <url>`** — only when step 1 found 2+ controls and the user picked a specific one (or confirmed setting this machine as control). Omit when there's exactly one control on the LAN (autodiscover handles it). 例：`python3 ~/.agent-meeting/bin/monitor.py <name> --host <url>`。
+   - **`--director`** — when this session should register as director role (default: worker). Example: `~/.agent-meeting/bin/am-session-monitor <name> --director`.
+   - **`--proj=<proj>`** — only when the user supplied `--proj=<proj>` on the `/imagent <name> --proj=<proj>` invocation; bypasses folder-based project derivation and is cached per repo root for future registrations there. Monitor re-sends this `--proj` on every reconnect. Example: `~/.agent-meeting/bin/am-session-monitor <name> --proj=<proj>`.
+   - **`--host <url>`** — only when step 1 found 2+ controls and the user picked a specific one (or confirmed setting this machine as control). Omit when there's exactly one control on the LAN. Example: `~/.agent-meeting/bin/am-session-monitor <name> --host <url>`.
    - **`--force`** — only if the user explicitly asks to take over an existing registration under this name (see failure handling below). Never add this proactively.
 
    The monitor script (cross-platform Python) handles all of registration + liveness + polling:
    - Calling `meeting online <name> --cwd <cwd> --instance <uuid> [--director] [--proj=<proj>] [--host <url>] [--force]` on startup (writes into central sessions table, seeds the `--host` as last-known-good on success) and `meeting offline <name>` on exit (atexit + SIGINT/SIGTERM)
-   - Liveness heartbeat: monitor polls `/ring` every 3s; central amctl updates `sessions.last_seen` on each /ring call. No pid files are written.
+   - Liveness heartbeat: monitor polls `/ring` every 3s; central am-msgd updates `sessions.last_seen` on each /ring call. No pid files are written.
    - Seeding cursor on first launch to current MAX(msg_id) so a new registration doesn't replay history
    - Polling `meeting ring <name> --since <cursor>` every 3s and emitting `📬 New Message from <peer>(: <ask>)?` lines
    - All subcommands (`list`, `send`, `show`, `read`, `turn`, `ring`, `delete`) require a reachable control. When no control is found, they exit 1 with a clear error — there is no silent local-SQLite fallback.
 
-   **Failure handling**: if the Monitor tool reports the script failed / exited non-zero, do NOT retry and do NOT proactively add `--force`. Read the monitor's output (stderr) and surface the reason to the user verbatim, then abort — do not proceed to later steps. Registration refusal (name already live under a different process) shows as `registration refused, exiting: <central amctl message>`, which names the current holder (host/instance).
+   **Failure handling**: if the Monitor tool reports the script failed / exited non-zero, do NOT retry and do NOT proactively add `--force`. Read the monitor's output (stderr) and surface the reason to the user verbatim, then abort — do not proceed to later steps. Registration refusal (name already live under a different process) shows as `registration refused, exiting: <central am-msgd message>`, which names the current holder (host/instance).
 
 5. **Update terminal tab title (best-effort)**: `{ printf '\033]0;%s\a' "<name>" > /dev/tty; } 2>/dev/null || true`
 6. **Confirm to user**: "Meeting registered as `<name>`. You can now /talkto <peer> or receive calls."
 
-   The TUI status line shows `📞 <name>  |  <model>  |  <dir>  |  <branch>` automatically — no action needed here. `monitor.py` writes the room name to a local cache (`~/.agent-meeting/statusline/<cwd-hash>`) on register and removes it on exit; `bin/statusline.py` reads that file. It is purely local — no SQLite query or central-amctl/mDNS discovery — so it stays fast and works on client machines too.
+   The TUI status line shows `📞 <name>  |  <model>  |  <dir>  |  <branch>` automatically. `am-session-monitor` writes the room name to a local cache and `am-statusline` reads it; both operations are local.
 
 7. **接手在途交接（若有）**：注册成功后，检查当前工作区有没有在途交接卡，有就直接接手，不要空 idle 等指示。判定顺序：
    - **优先看本 session 已注入的交接 context**：handoff plugin 的 SessionStart hook 会把 `<cwd>/.claude/handoff-pending.md` 注入为「上 session 交接（auto-loaded…）」段并归档。若本 session context 里已有这一段，直接按它的「## 3. 新会话接手第一步」开始执行。
    - **兜底查 pending 文件**（hook 未触发，如本会话非全新启动）：`test -f <cwd>/.claude/handoff-pending.md && wc -l <cwd>/.claude/handoff-pending.md`。存在且非空 → Read 它，按第 3 段接手；接手后由 handoff plugin 的下次 SessionStart 归档，本步不要自己删/移文件。
    - **两者都无** → 正常按 §2.3 输出 `主 agent idle，等用户指派任务或 peer 来信。`，不要凭空找 `docs/handoff/archive/` 里的历史卡（那些已被接手过，不是在途任务）。
 
-## On `/meeting rename <new>`
+## On `/imagent rename <new>`
 
 **顺序敏感**——步骤必须严格按序执行，原因见各步说明。
 
@@ -160,19 +160,19 @@ For `/meeting setup amctl …` / `/meeting setup token …` / `/meeting setup te
 
 4. **停旧 monitor**：跑 `~/.agent-meeting/bin/meeting stop <old>`（SIGTERM 旧 monitor 进程，它自己清理 + 删 pidfile；此时 unregister `<old>` 已是 no-op，因为已被 rename 走）。
 
-5. **起新 monitor**：照 `## On /meeting <name>` 第 4 步的方式，用 Monitor 工具装 `<new>` 的 monitor（`persistent: true`，command 走 per-OS 形式：macOS/Linux: `python3 ~/.agent-meeting/bin/monitor.py <new>`；Windows: 绝对路径 venv Python 形式）。**角色透传**：rename（第 3 步）已把会话迁到 `<new>`，role 列随之迁移；用 `~/.agent-meeting/bin/meeting list` 查 `<new>` 的 role 列；若 role=`director`，command 末尾追加 ` --director`；worker 不加。逻辑与 `/meeting <name>` 第 4 步相同。
+5. **起新 monitor**：照 `## On /imagent <name>` 第 4 步的方式，用 Monitor 工具装 `<new>` 的 monitor（`persistent: true`，macOS/Linux 使用 `~/.agent-meeting/bin/am-session-monitor <new>`，Windows 使用对应 `.exe` 绝对路径）。**角色透传**：rename（第 3 步）已把会话迁到 `<new>`，role 列随之迁移；用 `~/.agent-meeting/bin/meeting list` 查 `<new>` 的 role 列；若 role=`director`，command 末尾追加 ` --director`；worker 不加。
 
 6. **更新终端 tab title**：`{ printf '\033]0;%s\a' "<new>" > /dev/tty; } 2>/dev/null || true`
 
 7. **确认输出**：`Renamed to <new>; monitor restarted under new name.`
 
-## On `/meeting stop [<name>]`
+## On `/imagent stop [<name>]`
 
 **给了 `<name>`**：直接跑 `~/.agent-meeting/bin/meeting stop <name>`，把命令输出贴给用户。
 
-**没给 `<name>`**：先按 `## On /meeting rename` 第 2 步的方法确定当前会话名 `<current>`，再跑 `~/.agent-meeting/bin/meeting stop <current>`。提醒用户：这会停掉本会话的 monitor 并让它下线（monitor 退出时自动 unregister）。
+**没给 `<name>`**：先按 `## On /imagent rename` 第 2 步的方法确定当前会话名 `<current>`，再跑 `~/.agent-meeting/bin/meeting stop <current>`。提醒用户：这会停掉本会话的 monitor 并让它下线（monitor 退出时自动 unregister）。
 
-**Note**: `meeting stop` is local: it sends SIGTERM to the monitor PID recorded in `~/.agent-meeting/run/<name>@<project>.pid`; it does not call central amctl.
+**Note**: `meeting stop` is local: it sends SIGTERM to the monitor PID recorded in `~/.agent-meeting/run/<name>@<project>.pid`; it does not call central am-msgd.
 
 ## Behavior on incoming new-message event
 
@@ -292,7 +292,7 @@ When monitor emits a line matching `📬 New Message from <sender> in group <群
    - 有实质内容（新信息、问题、决策、状态变更）→ 才发。
    - 群是 turn-less 的：`send` 到群返回 `turn=null`，不存在"发言权翻转"一说；1:1 那套"沉默=保持 turn 在你这"的逻辑对群不适用——群里唯一的判断标准是"有没有实质内容要广播"。
 
-5. **Send a group message**: `~/.agent-meeting/bin/meeting send <self> <group> "<body>" --kind=response [--ask="..."]`; central amctl fans it out to group members.
+5. **Send a group message**: `~/.agent-meeting/bin/meeting send <self> <group> "<body>" --kind=response [--ask="..."]`; central am-msgd fans it out to group members.
 
 ## Useful read-only commands
 

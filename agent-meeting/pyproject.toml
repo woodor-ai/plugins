@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "woodor-agent-meeting"
+version = "0.15.0"
+description = "Cross-platform session and messaging runtime for Claude Code and Codex agents."
+requires-python = ">=3.10"
+dependencies = [
+  "zeroconf>=0.132",
+]
+
+[project.scripts]
+meeting = "agent_meeting.commands.meeting_cli:main"
+am-msgd = "agent_meeting.commands.am_msgd_cli:main"
+am-session-monitor = "agent_meeting.commands.session_monitor_cli:main"
+am-statusline = "agent_meeting.ai_platforms.claude_code.meeting_status_line_process:main"
+am-message-hub-supervisor = "agent_meeting.operating_systems.windows.message_hub_logon_supervisor:main"
+am-claude-session-start = "agent_meeting.ai_platforms.claude_code.session_start_bootstrap:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
