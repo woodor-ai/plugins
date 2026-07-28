@@ -6,6 +6,10 @@ Your AI agents stop working in isolation. Sessions running in different windows 
 
 Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-source toolkit for running AI agents at scale.
 
+Architecture: [`docs/agent-meeting-runtime-architecture.md`](docs/agent-meeting-runtime-architecture.md).
+Repository-wide plugin rules:
+[`../docs/plugins-codex-architecture-audit.md`](../docs/plugins-codex-architecture-audit.md).
+
 ## Install
 
 The host runtime is installed under

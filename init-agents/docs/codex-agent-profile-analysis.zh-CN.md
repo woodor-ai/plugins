@@ -432,7 +432,7 @@ Windows sandbox 的操作方式可能随 Codex 版本变化。模板只声明期
 
 ## 十一、仓库级插件规范适配
 
-本方案依据仓库文档 `agent-meeting/docs/plugins-codex-architecture-audit.md` 区分四层：
+本方案依据仓库文档 `docs/plugins-codex-architecture-audit.md` 区分四层：
 
 1. Claude marketplace：根 `.claude-plugin/marketplace.json`；
 2. Codex marketplace：根 `.agents/plugins/marketplace.json`；

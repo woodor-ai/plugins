@@ -5,8 +5,8 @@ WS PR3 integration tests — monitor.py WS client.
 Tests the monitor's full WS behavior including cursor=-1 sentinel seeding
 introduced in PR3. Never touches the live central am-msgd on 8765.
 
-Schema/API note: the central am-msgd's identity model is (project, name) composite
-key (see am-msgd docstring "DEPLOY NOTE"). monitor.py normally derives
+Schema/API note: the central am-msgd's identity model is a (project, name)
+composite key. monitor.py normally derives
 its own project from cwd via meeting_common.derive_project(), but that
 derivation depends on cache state under the real ~/.agent-meeting home (an
 explicit --proj declared for this repo root on the host machine wins over

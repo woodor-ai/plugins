@@ -20,8 +20,9 @@ project is derived from git rev-parse --show-toplevel basename (or cwd basename
 for non-git dirs) at registration time. Addressing: bare <name> resolves if
 globally unique; ambiguous across projects requires <name>@<project>.
 
-DEPLOY NOTE: this schema is incompatible with the old single-key schema.
-Wipe ~/.agent-meeting/db/rooms.db before deploying.
+Schema preparation applies the supported legacy-column upgrades idempotently.
+Deployment must preserve ~/.agent-meeting/db/rooms.db; layout cleanup is
+handled by the dedicated legacy-layout migration.
 
 Usage:
   am-msgd [--port 8765] [--bind 0.0.0.0]
