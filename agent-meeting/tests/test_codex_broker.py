@@ -85,11 +85,10 @@ def test_normal_messages_are_coalesced_in_global_id_order():
 
     assert selected == [101, 104]
     assert text == (
-        "📬 New Message from alice@one [via woodor:agent-meeting]\n"
-        "  Message ID: 101\n"
-        "📬 New Message from bob@two in group review [via woodor:agent-meeting]\n"
-        "  Message ID: 104\n"
-        "Agent-meeting recipient: plugins@tools"
+        "📬 New Message from alice@one to plugins@tools "
+        "[via woodor:agent-meeting] Message ID: 101\n"
+        "📬 New Message from bob@two to plugins@tools "
+        "[via woodor:agent-meeting] Message ID: 104"
     )
 
 
@@ -183,8 +182,10 @@ def test_global_identity_and_sender_keep_canonical_star_suffix():
     _, text = broker.build_injection(session)
 
     assert session.identity == "global-agent@*"
-    assert "📬 New Message from global-peer@* [via woodor:agent-meeting]" in text
-    assert "Agent-meeting recipient: global-agent@*" in text
+    assert text == (
+        "📬 New Message from global-peer@* to global-agent@* "
+        "[via woodor:agent-meeting] Message ID: 1"
+    )
 
 
 def test_global_identity_cannot_start_twice_on_same_broker():

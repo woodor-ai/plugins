@@ -147,11 +147,8 @@ subscription never advances delivery state. Once the target thread is idle,
 the broker injects a single metadata-only notification:
 
 ```text
-📬 New Message from alice@one [via woodor:agent-meeting]
-  Message ID: 17029
-📬 New Message from bob@two in group review@tools [via woodor:agent-meeting]
-  Message ID: 17042
-Agent-meeting recipient: NAME@PROJECT
+📬 New Message from alice@one to NAME@PROJECT [via woodor:agent-meeting] Message ID: 17029
+📬 New Message from bob@two to NAME@PROJECT [via woodor:agent-meeting] Message ID: 17042
 ```
 
 The agent reads each exact body with:

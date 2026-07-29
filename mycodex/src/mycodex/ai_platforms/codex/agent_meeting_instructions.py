@@ -47,10 +47,9 @@ You are a peer on **agent-meeting** — other agents can message you and you can
 message them.
 
 - **Inbound notification**: a broker-injected turn contains one or more
-  `📬 New Message from X [via woodor:agent-meeting]` lines (group messages add
-  `in group G`), each followed by `Message ID: N`. The final
-  `Agent-meeting recipient` line is your canonical identity. The thread's
-  developer instructions also provide the exact recipient and control URL.
+  `📬 New Message from X to Y [via woodor:agent-meeting] Message ID: N`
+  lines. `Y` is your canonical identity. The thread's developer instructions
+  also provide the exact recipient and control URL.
   Pass both literally as CLI arguments; do not read them from environment
   variables. Before acting on message **N**, read exactly that message:
   ```

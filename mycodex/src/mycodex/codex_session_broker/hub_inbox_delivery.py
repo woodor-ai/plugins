@@ -87,24 +87,8 @@ def build_injection(
             break
         selected.append(message_id)
         sender = message_sender(message)
-        group = message.get("group")
-        ask = str(message.get("ask") or "").replace("\r", " ").replace(
-            "\n",
-            " ",
+        lines.append(
+            f"📬 New Message from {sender} to {session.identity} "
+            f"[via woodor:agent-meeting] Message ID: {message_id}"
         )
-        if len(ask) > 100:
-            ask = ask[:100] + "..."
-        if group:
-            notice = (
-                f"📬 New Message from {sender} in group {group} "
-                "[via woodor:agent-meeting]"
-            )
-        else:
-            notice = (
-                f"📬 New Message from {sender} [via woodor:agent-meeting]"
-            )
-        if ask:
-            notice += f": {ask}"
-        lines.extend((notice, f"  Message ID: {message_id}"))
-    lines.append(f"Agent-meeting recipient: {session.identity}")
     return selected, "\n".join(lines)

@@ -21,7 +21,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.16.2"
+    assert mycodex.__version__ == "0.16.3"
     assert mycodex.__version__ == agent_meeting.__version__
 
 
@@ -186,8 +186,11 @@ def test_meeting_inbox_renderer_uses_provenance_without_message_body():
     )
 
     assert selected == [7]
-    assert "peer@tools [via woodor:agent-meeting]: please review" in text
-    assert "Message ID: 7" in text
+    assert text == (
+        "📬 New Message from peer@tools to plugins@tools "
+        "[via woodor:agent-meeting] Message ID: 7"
+    )
+    assert "please review" not in text
     assert "private full body" not in text
 
 
