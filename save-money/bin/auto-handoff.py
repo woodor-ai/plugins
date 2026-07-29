@@ -275,7 +275,7 @@ def main():
         # Codex 0.140 requires the Claude-Code-isomorphic hookSpecificOutput
         # wrapper; a bare {"additionalContext": ...} is rejected ("hook Failed")
         # and the injected text is silently discarded. Verified by fire-test on
-        # Windows codex-cli 0.140.0. See docs/codex-adaptation-investigation.md §7.
+        # Windows codex-cli 0.140.0.
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",

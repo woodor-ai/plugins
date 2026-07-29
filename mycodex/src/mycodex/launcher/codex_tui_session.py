@@ -9,6 +9,7 @@ daemon or app-server.
 """
 
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -98,6 +99,54 @@ def default_control_url():
         return ""
 
 
+def normalize_am_msgd(value: str, default_port: int = 8765) -> str:
+    """Normalize a mycodex am-msgd endpoint to its internal HTTP URL."""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+
+    if "://" not in raw:
+        try:
+            address = ipaddress.ip_address(raw)
+        except ValueError:
+            endpoint = f"http://{raw}"
+        else:
+            endpoint = (
+                f"http://[{address}]"
+                if address.version == 6
+                else f"http://{address}"
+            )
+    else:
+        endpoint = raw
+
+    parsed = urlparse(endpoint)
+    if parsed.scheme.lower() != "http":
+        raise ValueError("am-msgd only supports HTTP endpoints")
+    if not parsed.hostname:
+        raise ValueError("am-msgd endpoint must include a host")
+    if parsed.username or parsed.password:
+        raise ValueError("am-msgd endpoint must not include credentials")
+    if parsed.path not in ("", "/") or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError("am-msgd endpoint must not include a path or query")
+    if parsed.netloc.endswith(":"):
+        raise ValueError("am-msgd endpoint has an empty port")
+    try:
+        port = parsed.port or default_port
+    except ValueError as error:
+        raise ValueError(f"invalid am-msgd port: {error}") from error
+    if not 1 <= port <= 65535:
+        raise ValueError("am-msgd port must be between 1 and 65535")
+
+    host = parsed.hostname
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        rendered_host = host
+    else:
+        rendered_host = f"[{address}]" if address.version == 6 else str(address)
+    return f"http://{rendered_host}:{port}"
+
+
 def default_name():
     host = re.sub(
         r"[^A-Za-z0-9-]", "-", socket.gethostname().split(".")[0]
@@ -123,6 +172,23 @@ def installed_plugin_version():
         return str(manifest.get("version") or "unknown")
     except Exception:
         return __version__
+
+
+def daemon_versions_compatible(running: str, installed: str) -> bool:
+    """Allow an active daemon to span patch releases within one minor line."""
+
+    def major_minor(version: str) -> tuple[int, int] | None:
+        release = version.split("+", 1)[0].split("-", 1)[0]
+        parts = release.split(".")
+        if len(parts) < 2 or not all(part.isdigit() for part in parts[:2]):
+            return None
+        return int(parts[0]), int(parts[1])
+
+    running_line = major_minor(running)
+    return (
+        running_line is not None
+        and running_line == major_minor(installed)
+    )
 
 
 def broker_request(method, path, body=None, params=None, timeout=45):
@@ -152,9 +218,14 @@ def ensure_daemon():
     if not DAEMON_COMMAND.exists():
         raise RuntimeError(f"am-codexd command not found at {DAEMON_COMMAND}")
     if __package__:
-        command = [str(DAEMON_COMMAND), "update"]
+        command = [str(DAEMON_COMMAND), "update", "--defer-if-active"]
     else:
-        command = [venv_python(), str(DAEMON_COMMAND), "update"]
+        command = [
+            venv_python(),
+            str(DAEMON_COMMAND),
+            "update",
+            "--defer-if-active",
+        ]
     result = subprocess.run(command, capture_output=True, text=True)
     detail = (result.stderr or result.stdout or "").strip()
     if result.returncode != 0:
@@ -165,6 +236,16 @@ def ensure_daemon():
     expected = installed_plugin_version()
     running = str(status.get("version") or "unknown")
     if running != expected:
+        sessions = int(status.get("sessions") or 0)
+        if sessions and daemon_versions_compatible(running, expected):
+            if detail:
+                log(detail)
+            log(
+                f"continuing with compatible am-codexd {running}; "
+                f"{expected} will activate after {sessions} active "
+                f"session(s) exit"
+            )
+            return
         raise RuntimeError(
             f"am-codexd version mismatch after update: "
             f"running {running}, installed {expected}"
@@ -292,7 +373,12 @@ class Launcher:
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="mycodex")
     parser.add_argument("name", nargs="?", default=None)
-    parser.add_argument("--control-url", default="")
+    parser.add_argument(
+        "--am-msgd",
+        default="",
+        metavar="HOST[:PORT]",
+        help="am-msgd address; defaults to port 8765",
+    )
     parser.add_argument(
         "--proj",
         default=None,
@@ -332,12 +418,16 @@ def main(argv=None):
                 "run mycodex <name> --proj <project> once, or use --global"
             )
 
-    control_url = (args.control_url or default_control_url()).strip()
-    if not control_url:
+    endpoint = args.am_msgd or default_control_url()
+    if not endpoint.strip():
         raise SystemExit(
-            "no central control URL is configured; reinstall agent-meeting or pass "
-            "--control-url http://<host>:8765"
+            "no central am-msgd is configured; reinstall agent-meeting or pass "
+            "--am-msgd <host>[:port]"
         )
+    try:
+        control_url = normalize_am_msgd(endpoint)
+    except ValueError as error:
+        raise SystemExit(f"invalid am-msgd endpoint: {error}") from error
 
     launcher = Launcher(args.name or default_name(), project, control_url)
     stop_event = threading.Event()

@@ -113,6 +113,37 @@ def _health(configuration) -> dict | None:
         return None
 
 
+def _connected_agents(
+    meeting_home: Path,
+    configuration,
+) -> list[dict]:
+    headers = {}
+    token = _business_token(meeting_home)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    rows = _request_json(
+        f"{_base_url(configuration)}/list",
+        headers=headers,
+    )
+    agents = [
+        {
+            "address": row.get("host") or "-",
+            "name": row["name"],
+            "proj": row["project"],
+        }
+        for row in rows
+        if row.get("status") == "online"
+    ]
+    agents.sort(
+        key=lambda agent: (
+            agent["proj"],
+            agent["name"],
+            agent["address"],
+        )
+    )
+    return agents
+
+
 def _admin_request(
     meeting_home: Path,
     configuration,
@@ -276,6 +307,7 @@ def _status(args, meeting_home: Path) -> int:
             _listener_label(address, configuration.port)
             for address in configuration.binds
         ],
+        "connected_agents": [],
     }
     if health:
         payload.update(
@@ -287,6 +319,14 @@ def _status(args, meeting_home: Path) -> int:
                 "mdns": health.get("mdns", "off"),
             }
         )
+        try:
+            payload["connected_agents"] = _connected_agents(
+                meeting_home,
+                configuration,
+            )
+        except RuntimeError as error:
+            payload["connected_agents"] = []
+            payload["agents_error"] = str(error)
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     else:
@@ -297,6 +337,8 @@ def _status(args, meeting_home: Path) -> int:
         )
         print(f"auth:       {payload['authentication']}")
         print(f"manager:    {payload['service_manager']}")
+        if payload.get("version"):
+            print(f"version:    {payload['version']}")
         print(f"port:       {payload['port']}")
         for listener in payload.get("active_listeners", []):
             print(f"listener:   {listener} active")
@@ -306,9 +348,23 @@ def _status(args, meeting_home: Path) -> int:
                 error = payload.get("listener_errors", {}).get(listener)
                 state = f"failed ({error})" if error else "configured"
                 print(f"listener:   {listener} {state}")
+        agents = payload.get("connected_agents", [])
+        print(f"agents:     {len(agents)} connected")
+        if agents:
+            print("ADDRESS\tNAME\tPROJ")
+            for agent in agents:
+                print(
+                    f"{agent['address']}\t{agent['name']}\t{agent['proj']}"
+                )
+        if payload.get("agents_error"):
+            print(f"agents:     unavailable ({payload['agents_error']})")
     if not health:
         return 1
-    return 2 if payload.get("listener_errors") else 0
+    return (
+        2
+        if payload.get("listener_errors") or payload.get("agents_error")
+        else 0
+    )
 
 
 def _agent_list(args, meeting_home: Path) -> int:

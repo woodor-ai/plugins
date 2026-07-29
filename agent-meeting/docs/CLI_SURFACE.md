@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-29 · version 0.16.0
+Last updated: 2026-07-29 · version 0.16.2
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -28,6 +28,14 @@ am-update --check
 
 `mycodex` is a session launcher only. `mycodex --update` exits with a migration
 message and does not perform installation work.
+
+The central hub can be selected without a URL scheme. A bare host defaults to
+port 8765:
+
+```text
+mycodex [name] --am-msgd localhost
+mycodex [name] --am-msgd 192.168.1.20:9000
+```
 
 ## User-facing commands
 
@@ -110,7 +118,7 @@ runtime entrypoint.
 
 | Command | Purpose |
 |---|---|
-| `am-msgd status [--json]` | Show service, autostart, listener and health state |
+| `am-msgd status [--json]` | Show service, listener, health, and connected agent address/name/project state |
 | `am-msgd start\|stop\|restart` | Manage the local user service |
 | `am-msgd agent-list [--json]` | List local hub identities and status |
 | `am-msgd --bind IP` | Add a listener without restarting the daemon |
@@ -165,7 +173,9 @@ am-codexd --help
 
 `update` activates the agent-meeting version selected by the current runtime.
 `stop`, `restart`, and a version-changing `update` refuse to interrupt active
-mycodex sessions.
+mycodex sessions. Launcher-triggered updates defer compatible patch-level
+transitions while sessions are active, so a new `mycodex` launch can reuse the
+healthy daemon; the next launch after all leases exit performs the update.
 
 See [`../codex/README.md`](../codex/README.md) for ports, lifecycle, ordered
 inbox semantics, and logs.

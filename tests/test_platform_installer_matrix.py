@@ -49,7 +49,7 @@ def test_platform_registration_supports_non_mutating_smoke_executable():
 
 def test_common_processes_delegate_os_service_and_spawn_primitives():
     meeting_cli = _text(
-        "agent-meeting/src/agent_meeting/commands/meeting_cli.py"
+        "agent-meeting/src/agent_meeting/commands/am_cli.py"
     )
     codex_broker = _text(
         "mycodex/src/mycodex/codex_session_broker/broker_process.py"

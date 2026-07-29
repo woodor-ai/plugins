@@ -389,7 +389,7 @@ def test_generate_mycodex_command_posix(tmp_path):
     assert dest.stat().st_mode & 0o111  # executable
     content = dest.read_text()
     assert content == (ROOT / "agent-meeting" / "codex" / "mycodex-posix.sh").read_text()
-    assert 'exec "$VPY" "$AM_CODEX_MEETING" "$@"' in content
+    assert 'exec "$VPY" "$AM_CODEX_SESSION" "$@"' in content
     assert '"$DEST/install-codex.py" "$@"' not in content
     # no .cmd/.ps1 siblings written on POSIX
     assert not (bin_dir / "mycodex.cmd").exists()

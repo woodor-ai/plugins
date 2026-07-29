@@ -47,6 +47,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from agent_meeting import __version__ as _runtime_version
 from agent_meeting.message_hub import service_configuration
 from agent_meeting.message_hub.listener_manager import ListenerManager
 from agent_meeting.message_hub.mdns_hub_advertiser import publish_message_hub
@@ -85,11 +86,7 @@ DB_PATH = os.path.join(MEETING_HOME, "db", "rooms.db")
 _CONFIG_PATH = os.path.join(MEETING_HOME, "config.json")
 PROCESS_INSTANCE_ID = uuid.uuid4().hex
 
-try:
-    with open(_CONFIG_PATH) as _f:
-        _plugin_version: str = json.load(_f).get("plugin_version") or "unknown"
-except Exception:
-    _plugin_version = "unknown"
+_plugin_version = _runtime_version
 
 # A session is considered online if last_seen is within this many seconds.
 ONLINE_THRESHOLD = 12

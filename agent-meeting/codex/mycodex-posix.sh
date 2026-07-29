@@ -3,7 +3,7 @@
 #
 #   am-update                             update agent-meeting and installed
 #                                         Claude Code/Codex integrations.
-#   mycodex [<name>] [--control-url URL] [--proj X] [--global] [--no-codex]
+#   mycodex [<name>] [--am-msgd HOST[:PORT]] [--proj X] [--global] [--no-codex]
 #                                         start a brokered Codex
 #                                         session — needs agent-meeting installed
 #                                         (run `am-update` first).

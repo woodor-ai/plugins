@@ -45,6 +45,13 @@ def _wait_for_health(port: int) -> dict:
     raise AssertionError("am-msgd did not become healthy")
 
 
+def test_message_hub_uses_runtime_package_version():
+    import agent_meeting
+    from agent_meeting.message_hub import message_hub_process
+
+    assert message_hub_process._plugin_version == agent_meeting.__version__
+
+
 def test_service_configuration_defaults_to_loopback(tmp_path):
     from agent_meeting.message_hub import service_configuration
 
@@ -281,6 +288,74 @@ def test_status_reports_business_authentication(tmp_path, monkeypatch, capsys):
 
     assert result == 1
     assert json.loads(capsys.readouterr().out)["authentication"] == "enabled"
+
+
+def test_status_reports_connected_agent_addresses(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from agent_meeting.commands import am_msgd_cli
+    from agent_meeting.message_hub import service_configuration
+
+    service_configuration.write(
+        tmp_path / "am-msgd.json",
+        service_configuration.MessageHubServiceConfiguration(),
+    )
+    monkeypatch.setattr(
+        am_msgd_cli,
+        "_health",
+        lambda _config: {
+            "version": "test",
+            "instance_id": "instance",
+            "active_listeners": ["127.0.0.1:8765"],
+            "listener_errors": {},
+            "mdns": "off",
+        },
+    )
+    monkeypatch.setattr(
+        am_msgd_cli,
+        "_request_json",
+        lambda *args, **kwargs: [
+            {
+                "name": "offline",
+                "project": "old",
+                "status": "empty",
+                "host": "old-host",
+            },
+            {
+                "name": "bob",
+                "project": "tools",
+                "status": "online",
+                "host": "10.0.0.8",
+            },
+            {
+                "name": "alice",
+                "project": "apps",
+                "status": "online",
+                "host": "client.local",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        am_msgd_cli.message_hub_user_service,
+        "service_state",
+        lambda _home: "running",
+    )
+
+    result = am_msgd_cli._status(
+        type("Args", (), {"json": False})(),
+        tmp_path,
+    )
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "version:    test" in output
+    assert "agents:     2 connected" in output
+    assert "ADDRESS\tNAME\tPROJ" in output
+    assert "client.local\talice\tapps" in output
+    assert "10.0.0.8\tbob\ttools" in output
+    assert "offline" not in output
 
 
 def test_lifecycle_updates_enabled_before_service_call(

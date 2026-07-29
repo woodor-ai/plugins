@@ -61,7 +61,8 @@ CONFIG_PATH = CODEX_HOME / "config.toml"
 # PostToolUse for a limited tool set (shell/apply_patch/MCP, per issue #20204) and
 # auto-handoff.py dedups per session + exits fast, so "" is cheap and correct here.
 # (The precise non-empty matcher token could not be pinned down — Codex matches an
-# internal identifier we couldn't extract. See docs/codex-adaptation-investigation.md §7.)
+# internal identifier we couldn't extract; see the Windows fire-test note in
+# this module's docstring.)
 MATCHER = ""
 EVENT_NAME = "post_tool_use"
 
@@ -72,10 +73,6 @@ EVENT_NAME = "post_tool_use"
 # (Path.as_posix()) because backslashes are invalid escape sequences inside a
 # TOML string, and Python accepts `/` paths on Windows. The script path is
 # double-quoted to tolerate spaces.
-# NOTE (Windows, pending fire-test): assumes Codex shell-executes this command
-# (cmd.exe `||` / `py -3` both work). Validated on macOS only — the Windows
-# Codex CLI was not yet installed on the test machine. See
-# docs/codex-adaptation-investigation.md §7.
 _HANDLER = HANDLER_SCRIPT.as_posix()
 HOOK_COMMAND = f'python3 "{_HANDLER}" || py -3 "{_HANDLER}" || python "{_HANDLER}"'
 

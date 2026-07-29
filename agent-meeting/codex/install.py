@@ -11,7 +11,7 @@ What run_install does (in order):
      bin/ wrappers including mycodex).
   2. Discover LAN controls via `am controls --json`; automatically reuse a
      discovered or previously saved reachable control URL.
-  3. Write the control_url to launcher.json so bare `mycodex` needs no --control-url.
+  3. Write the control_url to launcher.json so bare `mycodex` needs no --am-msgd.
   4. Remove the obsolete per-session Codex register hook.
   5. Windows: force [windows] sandbox = "unelevated" in config.toml.
   6. Write the agent-meeting usage block into ~/.codex/AGENTS.md.
@@ -323,7 +323,7 @@ message them.
 
 
 def _write_launcher_defaults(meeting_home: Path, control_url: str):
-    """Persist control_url so bare `mycodex` needs no --control-url."""
+    """Persist control_url so bare `mycodex` needs no --am-msgd."""
     if not control_url:
         return
     p = meeting_home / "codex" / "launcher.json"
@@ -590,7 +590,7 @@ def run_install(ctx: dict) -> None:
         prompt,
     )
     if not control_url:
-        print("  WARNING: no control URL set; re-run install or use --control-url with mycodex")
+        print("  WARNING: no control URL set; re-run install or use --am-msgd with mycodex")
 
     # 3. write launcher defaults
     _write_launcher_defaults(meeting_home, control_url)
@@ -631,7 +631,7 @@ def run_install(ctx: dict) -> None:
     if control_url:
         print("  (control URL is remembered — no flag needed)")
     else:
-        print("  mycodex <name> --control-url http://<control-host>:8765")
+        print("  mycodex <name> --am-msgd <control-host>[:port]")
 
 
 def main():

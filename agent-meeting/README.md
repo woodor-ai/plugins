@@ -13,7 +13,7 @@ Implementation design for local relay, multi-address listeners, direct
 [`docs/am-msgd-local-relay-multi-bind-design.md`](docs/am-msgd-local-relay-multi-bind-design.md).
 
 Repository-wide plugin rules:
-[`../docs/plugins-codex-architecture-audit.md`](../docs/plugins-codex-architecture-audit.md).
+[`../docs/plugin-architecture-guidelines.md`](../docs/plugin-architecture-guidelines.md).
 
 ## Install
 

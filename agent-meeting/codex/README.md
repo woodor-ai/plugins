@@ -105,7 +105,7 @@ available.
 ## Run
 
 ```sh
-mycodex [<name>] [--control-url URL] [--proj PROJECT | --global]
+mycodex [<name>] [--am-msgd HOST[:PORT]] [--proj PROJECT | --global]
 ```
 
 `--proj` declares and caches an authoritative project identity for the current
@@ -134,7 +134,9 @@ am-codexd --help
 
 `update` restarts an idle daemon onto the agent-meeting version selected by the
 current runtime. Commands that would stop the daemon refuse while mycodex
-sessions are active.
+sessions are active. When `mycodex` starts during a compatible patch-level
+version transition, it keeps using the healthy active daemon and defers the
+restart until all existing sessions exit.
 
 ## Message delivery
 

@@ -79,6 +79,108 @@ def test_repository_preparation_upgrades_legacy_columns(tmp_path):
     assert "joined_after_message_id" in group_member_columns
 
 
+def test_repository_preparation_migrates_single_name_schema(tmp_path):
+    module = _import("agent_meeting.message_hub.sqlite_message_database")
+    database = tmp_path / "rooms.db"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE sessions (
+          name TEXT PRIMARY KEY,
+          cwd TEXT,
+          host TEXT,
+          registered_at TEXT,
+          last_seen REAL,
+          role TEXT NOT NULL DEFAULT 'worker',
+          os TEXT
+        );
+        CREATE TABLE messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sender TEXT NOT NULL,
+          recipient TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          body TEXT NOT NULL,
+          ask TEXT,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_messages_recipient
+          ON messages(recipient, id);
+        CREATE INDEX idx_messages_sender_recipient
+          ON messages(sender, recipient, id);
+        CREATE TABLE read_cursors (
+          member_name TEXT PRIMARY KEY,
+          cursor INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE groups (
+          name TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL,
+          creator TEXT
+        );
+        CREATE TABLE group_members (
+          group_name TEXT NOT NULL,
+          member_name TEXT NOT NULL,
+          added_at INTEGER NOT NULL,
+          PRIMARY KEY (group_name, member_name)
+        );
+        INSERT INTO sessions
+          (name, cwd, host, registered_at, last_seen, role, os)
+          VALUES ('alice', '/work', 'client-a', 'now', 123, 'worker', 'macos');
+        INSERT INTO messages
+          (sender, recipient, kind, body, ask, created_at)
+          VALUES ('alice', 'team', '回应', 'hello', NULL, 456);
+        INSERT INTO read_cursors VALUES ('alice', 1, 456);
+        INSERT INTO groups VALUES ('team', 123, 'alice');
+        INSERT INTO group_members VALUES ('team', 'alice', 123);
+        """
+    )
+    connection.close()
+
+    module.prepare_message_database(database)
+    module.prepare_message_database(database)
+
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    assert tuple(
+        row[1]
+        for row in sorted(
+            connection.execute("PRAGMA table_info(sessions)").fetchall(),
+            key=lambda row: row[5],
+        )
+        if row[5]
+    ) == ("project", "name")
+    assert dict(
+        connection.execute(
+            "SELECT project, name, host FROM sessions"
+        ).fetchone()
+    ) == {"project": "*", "name": "alice", "host": "client-a"}
+    assert dict(
+        connection.execute(
+            "SELECT sender_project, sender, recipient_project, recipient,"
+            " body FROM messages"
+        ).fetchone()
+    ) == {
+        "sender_project": "*",
+        "sender": "alice",
+        "recipient_project": "*",
+        "recipient": "team",
+        "body": "hello",
+    }
+    assert tuple(
+        connection.execute(
+            "SELECT project, member_name, cursor FROM read_cursors"
+        ).fetchone()
+    ) == ("*", "alice", 1)
+    assert tuple(
+        connection.execute(
+            "SELECT group_project, group_name, member_project, member_name"
+            " FROM group_members"
+        ).fetchone()
+    ) == ("*", "team", "*", "alice")
+    assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    connection.close()
+
+
 def test_repository_conversation_clause_uses_both_composite_identities():
     module = _import("agent_meeting.message_hub.sqlite_message_database")
 

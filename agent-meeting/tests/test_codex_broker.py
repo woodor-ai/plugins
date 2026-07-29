@@ -929,7 +929,12 @@ def test_launcher_activates_daemon_before_requesting_a_session(monkeypatch):
     module.ensure_daemon()
 
     assert commands == [
-        [module.venv_python(), str(module.DAEMON_COMMAND), "update"]
+        [
+            module.venv_python(),
+            str(module.DAEMON_COMMAND),
+            "update",
+            "--defer-if-active",
+        ]
     ]
     assert requests == [("GET", "/health")]
 
@@ -962,7 +967,9 @@ def test_packaged_launcher_executes_windows_console_entrypoint_directly(
 
     module.ensure_daemon()
 
-    assert commands == [[str(module.DAEMON_COMMAND), "update"]]
+    assert commands == [
+        [str(module.DAEMON_COMMAND), "update", "--defer-if-active"]
+    ]
 
 
 def test_launcher_surfaces_daemon_update_failure(monkeypatch):
@@ -981,6 +988,59 @@ def test_launcher_surfaces_daemon_update_failure(monkeypatch):
 
     with pytest.raises(RuntimeError, match="2 mycodex sessions"):
         module.ensure_daemon()
+
+
+def test_launcher_reuses_compatible_active_daemon(
+    monkeypatch,
+    capsys,
+):
+    module = load(LAUNCHER_PATH, "codex_meeting_compatible_daemon")
+    commands = []
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **_kwargs: (
+            commands.append(command)
+            or subprocess.CompletedProcess(
+                command,
+                0,
+                (
+                    "deferring am-codexd update from 0.16.0 to 0.16.1 "
+                    "while 2 mycodex session(s) are active\n"
+                ),
+                "",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "broker_request",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "version": "0.16.0",
+            "sessions": 2,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "installed_plugin_version",
+        lambda: "0.16.1",
+    )
+
+    module.ensure_daemon()
+
+    assert commands == [
+        [
+            module.venv_python(),
+            str(module.DAEMON_COMMAND),
+            "update",
+            "--defer-if-active",
+        ]
+    ]
+    output = capsys.readouterr().out
+    assert "deferring am-codexd update from 0.16.0 to 0.16.1" in output
+    assert "continuing with compatible am-codexd 0.16.0" in output
 
 
 def test_launcher_rejects_a_healthy_daemon_from_the_wrong_version(monkeypatch):

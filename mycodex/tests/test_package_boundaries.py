@@ -21,7 +21,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.16.0"
+    assert mycodex.__version__ == "0.16.2"
     assert mycodex.__version__ == agent_meeting.__version__
 
 
@@ -196,6 +196,36 @@ def test_mycodex_update_is_deprecated(capsys):
 
     assert mycodex_cli.main(["update"]) == 2
     assert "has moved to am-update" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "expected"),
+    [
+        ("localhost", "http://localhost:8765"),
+        ("127.0.0.1", "http://127.0.0.1:8765"),
+        ("127.0.0.1:9000", "http://127.0.0.1:9000"),
+        ("10.0.0.8:9876", "http://10.0.0.8:9876"),
+        ("::1", "http://[::1]:8765"),
+        ("[::1]:9000", "http://[::1]:9000"),
+        ("http://localhost:8765/", "http://localhost:8765"),
+    ],
+)
+def test_mycodex_normalizes_am_msgd_endpoint(endpoint, expected):
+    from mycodex.launcher import codex_tui_session
+
+    assert codex_tui_session.normalize_am_msgd(endpoint) == expected
+
+
+def test_mycodex_help_exposes_am_msgd_not_control_url(capsys):
+    from mycodex.launcher import codex_tui_session
+
+    with pytest.raises(SystemExit) as error:
+        codex_tui_session.main(["--help"])
+
+    assert error.value.code == 0
+    output = capsys.readouterr().out
+    assert "--am-msgd HOST[:PORT]" in output
+    assert "--control-url" not in output
 
 
 def test_windows_background_process_policy_uses_detached_flags(tmp_path):

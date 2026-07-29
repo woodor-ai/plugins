@@ -501,13 +501,13 @@ mDNS 应发布实际可达的具体地址，不把 `0.0.0.0` 当作客户端连�
 第一阶段使用显式切换：
 
 ```bash
-mycodex --control-url http://127.0.0.1:8765
+mycodex --am-msgd 127.0.0.1
 ```
 
 或者让其他机器显式连接临时中转机：
 
 ```bash
-mycodex --control-url http://192.168.1.20:8765
+mycodex --am-msgd 192.168.1.20
 ```
 
 若未来需要自动故障转移，应先设计 hub identity、leader 选择、消息复制、cursor
