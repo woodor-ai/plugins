@@ -1,6 +1,6 @@
 # agent-meeting / amcodex / amclaude 运行时架构
 
-版本：0.17.0
+版本：0.17.1
 
 更新时间：2026-07-28
 

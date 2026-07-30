@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-30 · version 0.17.0
+Last updated: 2026-07-30 · version 0.17.1
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -55,7 +55,7 @@ in the original terminal. `amcodex` is the corresponding Codex wrapper.
 The old `myclaude` subscription/API selector is not part of agent-meeting and
 is neither invoked nor migrated by `amclaude`.
 
-In 0.17.0, `status`, `exit`, and same-terminal `restart` are available for both
+In 0.17.1, `status`, `exit`, and same-terminal `restart` are available for both
 wrappers. `compact` is available for idle, high-confidence `amcodex` and
 `amclaude` sessions. Codex `clear` sends the TUI's `/clear` only through a
 declared terminal adapter and verifies that the broker moved to a new idle

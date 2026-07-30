@@ -23,7 +23,7 @@ macOS 与 Windows；不管理 Claude/Codex 桌面 App。
 4. 新增始终运行的本机控制 daemon。服务进程名使用 `am-ctld`，用户 CLI
    使用 `am-ctl`。
 
-### 1.1 当前实现进度（0.17.0）
+### 1.1 当前实现进度（0.17.1）
 
 已实现：
 
@@ -302,7 +302,7 @@ handoff_token_pct = 80
 max_compactions = 2
 ```
 
-0.17.0 默认 `enabled=false`。Codex 从 app-server 读取 token utilization 与
+0.17.1 默认 `enabled=false`。Codex 从 app-server 读取 token utilization 与
 compaction count；Claude 从当前 transcript 的最后 usage/compact boundary
 读取对应指标。两者达到 compact 阈值时执行 compact，达到 handoff 阈值或
 compact 次数上限时执行 handoff。
@@ -566,7 +566,7 @@ PTY/ConPTY 控制端时，才能保证输入和原位 restart。
 跨平台可靠方案是由 amcodex/amclaude wrapper 持有 ConPTY和子进程，
 Windows Terminal仅作为显示前端。
 
-0.17.0 对普通 tty、Windows Terminal 和未由 wrapper 持有控制端的 ConPTY
+0.17.1 对普通 tty、Windows Terminal 和未由 wrapper 持有控制端的 ConPTY
 显式报告 `can_send_text=false`；compact/clear/handoff 因此 fail closed。
 不会尝试 `wt.exe`、未授权键盘模拟或根据操作系统猜测输入能力。ConPTY
 控制端实现与 Windows 真机验收作为延期项。

@@ -112,7 +112,7 @@ def load_rule_config(path: Path) -> dict:
         ),
         "codex": codex_config,
         "claude": claude_config,
-        # Keep the 0.17.0 pre-release flat keys readable for callers that only
+        # Keep the 0.17 pre-release flat keys readable for callers that only
         # understood Codex settings.
         **{
             key: codex_config[key]
