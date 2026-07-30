@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import time
+from collections import OrderedDict
 
 
 def reconcile_central_cursor(session, central_cursor) -> None:
@@ -45,6 +45,7 @@ def build_injection(
     *,
     control_stale_seconds: int,
     now: int | None = None,
+    max_messages: int | None = None,
 ) -> tuple[list[int], str]:
     if not session.pending:
         return [], ""
@@ -54,33 +55,16 @@ def build_injection(
         return [first_id], ""
     kind = first.get("kind") or ""
     if kind.startswith("control:"):
-        age = (int(time.time()) if now is None else now) - int(
-            first.get("created_at") or 0
-        )
-        if age > control_stale_seconds:
-            return [first_id], ""
-        action = kind.split(":", 1)[1]
-        directives = {
-            "restart": (
-                "Write a handoff card summarizing in-flight state now, then stop "
-                "accepting new tasks and wait for this session to end."
-            ),
-            "clear": (
-                "Abort whatever task is in flight, clear your working context, "
-                "and report back that you have been cleared."
-            ),
-        }
-        directive = directives.get(action)
-        if directive is None:
-            return [first_id], ""
-        sender = message_sender(first)
-        return [first_id], (
-            f"[control:{action} from peer={sender}] {directive}"
-        )
+        # Lifecycle control is no longer transported through agent-meeting.
+        # Consume historical control messages without rendering their body so
+        # a delayed durable message cannot become an executable instruction.
+        return [first_id], ""
 
     selected = []
     lines = []
     for message_id, message in session.pending.items():
+        if max_messages is not None and len(selected) >= max_messages:
+            break
         if (message.get("kind") or "").startswith("control:"):
             break
         if not message.get("deliver", True):
@@ -92,3 +76,61 @@ def build_injection(
             f"[via woodor:agent-meeting] Message ID: {message_id}"
         )
     return selected, "\n".join(lines)
+
+
+def build_steer_injection(
+    session,
+    *,
+    max_messages: int,
+) -> tuple[list[int], str]:
+    """Build one compact working-turn inbox update.
+
+    Bodies remain in am-msgd. The active agent receives exact durable message
+    ids and reads each body with ``am message`` at its next safe checkpoint.
+    """
+    if not session.pending:
+        return [], ""
+    first_id, first = next(iter(session.pending.items()))
+    if not first.get("deliver", True):
+        return [first_id], ""
+    if (first.get("kind") or "").startswith("control:"):
+        return [first_id], ""
+
+    selected: list[int] = []
+    senders: OrderedDict[str, int] = OrderedDict()
+    for message_id, message in session.pending.items():
+        if len(selected) >= max_messages:
+            break
+        if (message.get("kind") or "").startswith("control:"):
+            break
+        if not message.get("deliver", True):
+            break
+        selected.append(message_id)
+        sender = message_sender(message)
+        senders[sender] = senders.get(sender, 0) + 1
+
+    if not selected:
+        return [], ""
+    if len(selected) == 1:
+        message_id = selected[0]
+        message = session.pending[message_id]
+        return (
+            selected,
+            f"📬 New Message from {message_sender(message)} to "
+            f"{session.identity} [via woodor:agent-meeting] "
+            f"Message ID: {message_id}",
+        )
+
+    sender_summary = ", ".join(
+        f"{sender} ({count})" for sender, count in senders.items()
+    )
+    ids = ", ".join(str(message_id) for message_id in selected)
+    text = (
+        f"📬 {len(selected)} queued messages arrived while "
+        f"{session.identity} is working [via woodor:agent-meeting].\n"
+        f"Senders: {sender_summary}\n"
+        f"Message IDs: {ids}\n"
+        "Continue the current task unless a message is urgent. At the next safe "
+        "checkpoint, read each exact message by ID before acting on it."
+    )
+    return selected, text

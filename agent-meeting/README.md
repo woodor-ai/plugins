@@ -8,6 +8,10 @@ Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-sour
 
 Architecture: [`docs/agent-meeting-runtime-architecture.md`](docs/agent-meeting-runtime-architecture.md).
 
+Local session lifecycle control, including `am-ctld`, `am-ctl`, `amcodex`, and
+`amclaude`, is specified in
+[`docs/am-ctld-agent-lifecycle-control-design.md`](docs/am-ctld-agent-lifecycle-control-design.md).
+
 Implementation design for local relay, multi-address listeners, direct
 `am-msgd status|start|stop|restart` service management, and `agent-list`:
 [`docs/am-msgd-local-relay-multi-bind-design.md`](docs/am-msgd-local-relay-multi-bind-design.md).
@@ -45,7 +49,7 @@ refreshes the installed Claude Code and Codex integrations. `am-update` only
 targets clients detected on the machine; use `am-update --target claude-code`
 or `am-update --target codex` to select one explicitly, and `am-update --check`
 to inspect the current state. A Codex runtime switch refuses to interrupt active
-`mycodex` sessions. `mycodex` launches sessions only; `mycodex --update` is no
+`amcodex` sessions. `amcodex` launches sessions only; `amcodex --update` is no
 longer an update path.
 
 The existing Codex bootstrap remains supported:
@@ -61,6 +65,13 @@ The feature set is shared across Claude Code and Codex. Claude Code exposes
 skills as `/imagent` and `/talkto`; Codex invokes the same skills as `$imagent`
 and `$talkto`, or through its built-in `/skills` picker. Codex slash commands
 are TUI commands and are not aliases for installed skills.
+
+Start managed CLI sessions with `amcodex` or `amclaude`. The latter is a new
+terminal-owning wrapper and deliberately contains no subscription/API
+selection logic. Use `am-ctl status` for the local inventory and
+`am-ctl status --json` for machine-readable inventory. Lifecycle requests use
+`am-ctl agent --name NAME --proj PROJECT --cmd status|compact|clear|handoff|exit|restart`
+and unsupported actions fail closed.
 
 ## Commands
 
@@ -167,7 +178,7 @@ Clients can select another hub through `MEETING_HOST` or the `host` config key;
 when no external hub is available, the healthy local loopback hub is the
 fallback.
 
-For Codex, `mycodex` connects each foreground TUI to the machine-wide
+For Codex, `amcodex` connects each foreground TUI to the machine-wide
 `am-codexd` daemon. The daemon owns one shared official Codex app-server, one
 ordered inbox cursor per meeting identity, and the identity-to-thread mapping.
 Closing one Codex session releases only its own daemon lease; am-codexd,

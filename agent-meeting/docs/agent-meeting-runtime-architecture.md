@@ -1,18 +1,18 @@
-# agent-meeting / mycodex 运行时架构
+# agent-meeting / amcodex / amclaude 运行时架构
 
-版本：0.16.3
+版本：0.17.0
 
 更新时间：2026-07-28
 
 仓库级插件规范见
 [`../../docs/plugin-architecture-guidelines.md`](../../docs/plugin-architecture-guidelines.md)。
-本文只描述 agent-meeting 与 mycodex 的产品边界、四维安装/运行方式和兼容策略。
+本文描述 agent-meeting、amcodex 与 amclaude 的产品边界、安装/运行方式和兼容策略。
 
 ## 1. 架构结论
 
 本实现使用三条正交分类轴：
 
-- **产品域**：`agent-meeting` 与 `mycodex`；
+- **产品域**：`agent-meeting`、`amcodex` 与 `amclaude`；
 - **AI 平台**：Claude Code 与 Codex；
 - **操作系统**：macOS 与 Windows。
 
@@ -22,7 +22,9 @@
 |---|---|
 | `am` | 身份、会话、消息、群组和客户端操作 |
 | `am-msgd` | LAN 中央会话/消息中心的进程与运维 |
-| `mycodex` | 以 agent-meeting 身份启动 Codex TUI |
+| `amcodex` | 以 agent-meeting 身份启动 Codex TUI |
+| `amclaude` | 在受控终端 wrapper 中启动 Claude Code CLI |
+| `am-ctl` | 管理本机 Claude/Codex CLI 会话生命周期 |
 | `am-codexd` | 本机 Codex session broker 的进程与运维 |
 
 从 0.15.0 起：
@@ -50,11 +52,11 @@
 
 它不负责 Codex TUI/app-server 的生命周期。
 
-### 2.2 mycodex
+### 2.2 amcodex
 
-`mycodex` 是独立 Python 产品包，依赖 `woodor-agent-meeting`，负责：
+`amcodex` 是独立 Python 产品包，依赖 `woodor-agent-meeting`，负责：
 
-- `mycodex` 与 `am-codexd`；
+- `amcodex` 与 `am-codexd`；
 - 启动 `codex --remote`；
 - 一个本机共享 Codex app-server；
 - 每个 TUI 独立的 session lease 和 WebSocket proxy；
@@ -62,7 +64,7 @@
 - 收件箱投递和 Codex 上下文注入；
 - macOS/Windows 的后台进程、终端标题与 PATH 适配。
 
-依赖方向是 `mycodex → agent-meeting`，禁止反向依赖。
+依赖方向是 `amcodex → agent-meeting`，禁止反向依赖。
 
 ## 3. 代码边界
 
@@ -79,8 +81,8 @@ agent-meeting/src/agent_meeting/
 │   └── windows/              # Startup、Task Scheduler、supervisor
 └── installation/             # Python 环境、版本激活、旧布局迁移
 
-mycodex/src/mycodex/
-├── commands/                 # mycodex、am-codexd、Codex 用户配置
+amcodex/src/amcodex/
+├── commands/                 # amcodex、am-codexd、Codex 用户配置
 ├── launcher/                 # 单次 TUI session
 ├── codex_session_broker/     # broker、lease、proxy、消息投递
 ├── ai_platforms/
@@ -118,7 +120,7 @@ mycodex/src/mycodex/
 
 共同步骤：
 
-1. 读取 `agent-meeting` 与 `mycodex` 的包版本并要求一致；
+1. 读取 `agent-meeting` 与 `amcodex` 的包版本并要求一致；
 2. 在 `~/.agent-meeting/runtimes/<version>/venv` 安装两个包；
 3. 校验所有公共及内部 entrypoint；
 4. 原子激活到 `~/.agent-meeting/bin`；
@@ -156,8 +158,8 @@ wrapper；存在有效 `active-runtime.json` 时使用版本化运行时。
 |---|---|---|---|---|
 | macOS × Claude Code | Claude macOS 安装器 | `/imagent`、`/talkto` | SessionStart + `am-session-monitor` | host 上 launchd 管理 `am-msgd` |
 | Windows × Claude Code | Claude Windows 安装器 | `/imagent`、`/talkto` | SessionStart + `.exe` monitor | host 上 Startup + MINUTE task 管理 supervisor/`am-msgd` |
-| macOS × Codex | Codex macOS 安装器 | `mycodex`、`$imagent`、`$talkto` | TUI → session proxy → app-server | `am-codexd`；host 可另运行 launchd `am-msgd` |
-| Windows × Codex | Codex Windows 安装器 | `mycodex.exe`、`$imagent`、`$talkto` | 同上，使用 Windows process adapter | `am-codexd.exe`；host 可另运行 Windows `am-msgd` supervisor |
+| macOS × Codex | Codex macOS 安装器 | `amcodex`、`$imagent`、`$talkto` | TUI → session proxy → app-server | `am-codexd`；host 可另运行 launchd `am-msgd` |
+| Windows × Codex | Codex Windows 安装器 | `amcodex.exe`、`$imagent`、`$talkto` | 同上，使用 Windows process adapter | `am-codexd.exe`；host 可另运行 Windows `am-msgd` supervisor |
 
 ### 6.1 Claude Code
 
@@ -176,10 +178,10 @@ SessionStart 的包内入口为 `am-claude-session-start`。插件 hook 中的
 
 ### 6.2 Codex
 
-`mycodex` 的启动链：
+`amcodex` 的启动链：
 
 ```text
-mycodex
+amcodex
   → 确保 am-codexd 可用
   → 获取当前 meeting 身份的 session lease
   → 创建本次 TUI 独立的 loopback WebSocket proxy
@@ -191,13 +193,29 @@ mycodex
 `am-codexd` 绑定 `127.0.0.1`，拥有一个共享 app-server。存在活动 lease 时，
 会中断会话的 stop/restart/update 继续被拒绝。
 
+消息投递按 thread 状态分两条路径：
+
+- idle thread 使用 `turn/start` 投递；大批积压改为只含发送方统计和精确
+  Message ID 列表的摘要，并设置单批硬上限；
+- working thread 使用 app-server 的 `turn/steer` 追加同类摘要，不中断正在运行
+  的 shell/tool。调用必须携带当前 active turn 的 `expectedTurnId`，并按 turn
+  执行 debounce、cooldown、次数和批量上限；
+- 只有 `turn/start` 或 `turn/steer` 被 app-server 接受后才推进 delivery cursor。
+  active turn 竞态、不可 steer 或调用失败时不 ack，消息保留到下一 active turn
+  或 idle fallback；
+- lifecycle 管理把 ingress 标记为 pending/draining 时，两条投递路径都暂停；
+  恢复后才允许继续注入。
+
+这使 working 期间的消息能尽早成为当前 turn 的补充输入，又避免长任务结束时一次
+渲染大量逐条通知。`turn/steer` 不是 `turn/interrupt`，不会取消当前工具调用。
+
 ## 6.1 统一更新入口
 
 `am-update` 是唯一的发布更新入口，属于 `agent-meeting` 核心 runtime，而非
-`mycodex`。它从公开仓库获取纯语义版本的 release，安装并原子切换新的共享 runtime，
+`amcodex`。它从公开仓库获取纯语义版本的 release，安装并原子切换新的共享 runtime，
 再分别刷新已安装的 Claude Code 和 Codex adapter。Claude Code 只在下一个会话读取
-新的 hook；Codex 的 daemon 切换仍会在存在活动 lease 时拒绝执行。`mycodex` 只负责
-启动 Codex 会话，`mycodex --update` 不再承担更新职责。
+新的 hook；Codex 的 daemon 切换仍会在存在活动 lease 时拒绝执行。`amcodex` 只负责
+启动 Codex 会话，`amcodex --update` 不再承担更新职责。
 
 ## 7. OS 运行态
 
@@ -270,7 +288,7 @@ supervisor 直接执行 `~/.agent-meeting/bin/am-msgd.exe`，不使用
 ```text
 am
 am-msgd
-mycodex
+amcodex
 am-codexd
 ```
 
@@ -310,20 +328,21 @@ am-configure-codex-user-environment
 
 本轮已完成：
 
-- `agent-meeting` 全量 pytest：180 passed，1 skipped；
-- `mycodex` 全量 pytest：15 passed；
+- plugins 工作区全量 pytest：385 passed，1 skipped；
+- lifecycle control 定向 pytest：56 passed；
 - Windows 相关 adapter、版本激活、旧布局迁移和命令构造模拟测试；
 - WebSocket、identity、prune、monitor 和动态 listener 集成测试；
 - POSIX shell 语法校验；
-- 隔离 venv 的两个 Python 包安装，以及 `am`/`am-msgd` entrypoint smoke；
+- 隔离 venv 的两个 Python 包安装，以及 `am`/`am-msgd`/`am-ctld`/
+  `am-ctl`/`am-codexd` entrypoint smoke；
 - `.codex-plugin` validator；
 - `imagent`、`talkto` skill validator；
 - Windows `.exe` 激活和命令构造的本地模拟测试。
 
 按本轮约定暂不执行 Windows 真机安装和进程生命周期测试。因此 Windows 真机的
-Startup、Task Scheduler、`am-msgd.exe`、
-`am-codexd.exe` 与 Codex `--remote` 联调状态是 **延期/未验证**，不能解释为已经
-通过。
+Startup、Task Scheduler、wrapper 持有的 ConPTY 输入、`am-msgd.exe`、
+`am-ctld.exe`、`am-codexd.exe` 与 Codex `--remote` 联调状态是
+**延期/未验证**，不能解释为已经通过。
 
 后续 Windows release smoke 应至少覆盖：
 
@@ -332,6 +351,6 @@ Startup、Task Scheduler、`am-msgd.exe`、
 3. 旧 `amctl` 服务与文件清理；
 4. Startup + MINUTE task 的启动、崩溃恢复、stop/restart；
 5. `X-Meeting-Instance` HTTP/WS 协议；
-6. `mycodex` lease 和 `am-codexd` 保护；
+6. `amcodex` lease 和 `am-codexd` 保护；
 7. Claude Code `/imagent` 与 SessionStart；
 8. Unicode、空格、引号和 shell 特殊字符 argv。

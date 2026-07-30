@@ -92,7 +92,69 @@ def test_normal_messages_are_coalesced_in_global_id_order():
     )
 
 
-def test_control_message_is_not_batched_with_normal_messages():
+def test_working_turn_backlog_uses_compact_message_id_digest():
+    module = load(BROKER_PATH, "codex_broker_steer_digest")
+    broker = module.Broker()
+    session = make_session(module)
+    session.pending = OrderedDict(
+        [
+            (
+                101,
+                {
+                    "id": 101,
+                    "sender_identity": "alice@tools",
+                    "kind": "request",
+                    "body": "secret body one",
+                },
+            ),
+            (
+                104,
+                {
+                    "id": 104,
+                    "sender_identity": "alice@tools",
+                    "kind": "request",
+                    "body": "secret body two",
+                },
+            ),
+            (
+                108,
+                {
+                    "id": 108,
+                    "sender_identity": "bob@tools",
+                    "kind": "request",
+                    "body": "secret body three",
+                },
+            ),
+        ]
+    )
+
+    selected, text = broker.build_steer_injection(session)
+
+    assert selected == [101, 104, 108]
+    assert "alice@tools (2), bob@tools (1)" in text
+    assert "Message IDs: 101, 104, 108" in text
+    assert "secret body" not in text
+
+
+def test_idle_injection_has_a_hard_batch_limit(monkeypatch):
+    module = load(BROKER_PATH, "codex_broker_idle_batch_limit")
+    broker = module.Broker()
+    session = make_session(module)
+    for message_id in range(101, 106):
+        session.pending[message_id] = {
+            "id": message_id,
+            "sender_identity": "alice@tools",
+            "kind": "request",
+        }
+    monkeypatch.setattr(module, "IDLE_MAX_MESSAGES", 2)
+
+    selected, text = broker.build_injection(session)
+
+    assert selected == [101, 102]
+    assert "Message ID: 103" not in text
+
+
+def test_retired_control_message_is_consumed_without_injection():
     module = load(BROKER_PATH, "codex_broker_control")
     broker = module.Broker()
     session = make_session(module)
@@ -121,7 +183,7 @@ def test_control_message_is_not_batched_with_normal_messages():
     selected, text = broker.build_injection(session)
 
     assert selected == [101]
-    assert text.startswith("[control:restart from peer=director@tools]")
+    assert text == ""
 
 
 def test_stale_control_is_consumed_without_injection():
@@ -223,7 +285,7 @@ def test_shutdown_refuses_active_sessions_and_closes_the_start_gate_atomically()
     async def run():
         session = make_session(module)
         broker.sessions[session.launch_id] = session
-        with pytest.raises(ValueError, match="1 mycodex session"):
+        with pytest.raises(ValueError, match="1 amcodex session"):
             await broker.request_shutdown()
         assert broker.accepting_sessions is True
 
@@ -580,6 +642,221 @@ def test_broker_injected_turn_carries_runtime_context(monkeypatch):
     assert acknowledgements == [(100, [101])]
 
 
+def test_working_turn_uses_expected_turn_id_for_steer(monkeypatch):
+    module = load(BROKER_PATH, "codex_broker_working_steer")
+    broker = module.Broker()
+    session = make_session(module)
+    session.pending = OrderedDict(
+        [
+            (
+                101,
+                {
+                    "id": 101,
+                    "sender_identity": "alice@tools",
+                    "kind": "request",
+                },
+            ),
+            (
+                102,
+                {
+                    "id": 102,
+                    "sender_identity": "bob@tools",
+                    "kind": "request",
+                },
+            ),
+        ]
+    )
+    session.active_turn_id = "turn-active"
+    session.steer_turn_id = "turn-active"
+    session.steer_pending_since = 0
+    calls = []
+    acknowledgements = []
+
+    async def fake_app_call(method, params=None, timeout=30):
+        calls.append((method, params))
+        if method == "thread/read":
+            return {"thread": {"status": {"type": "active"}}}
+        assert method == "turn/steer"
+        return {"turnId": "turn-active"}
+
+    async def fake_ack(target, message_ids):
+        acknowledgements.append(list(message_ids))
+        target.cursor = max(message_ids)
+
+    async def fake_fetch(_target):
+        return None
+
+    monkeypatch.setattr(module, "STEER_DEBOUNCE_S", 0)
+    monkeypatch.setattr(module, "STEER_COOLDOWN_S", 0)
+    monkeypatch.setattr(broker, "app_call", fake_app_call)
+    monkeypatch.setattr(broker, "acknowledge", fake_ack)
+    monkeypatch.setattr(broker, "fetch_inbox", fake_fetch)
+
+    asyncio.run(broker.try_inject(session))
+
+    steer = next(params for method, params in calls if method == "turn/steer")
+    assert steer["threadId"] == "thread-1"
+    assert steer["expectedTurnId"] == "turn-active"
+    assert "Message IDs: 101, 102" in steer["input"][0]["text"]
+    assert acknowledgements == [[101, 102]]
+    assert session.pending == {}
+    assert session.steer_count == 1
+
+
+def test_working_turn_recovers_active_turn_id_before_steering(monkeypatch):
+    module = load(BROKER_PATH, "codex_broker_recover_active_turn")
+    broker = module.Broker()
+    session = make_session(module)
+    session.pending[101] = {
+        "id": 101,
+        "sender_identity": "alice@tools",
+        "kind": "request",
+    }
+    calls = []
+    acknowledgements = []
+
+    async def fake_app_call(method, params=None, timeout=30):
+        calls.append((method, params))
+        if method == "thread/read" and not params["includeTurns"]:
+            return {"thread": {"status": {"type": "active"}}}
+        if method == "thread/read":
+            return {
+                "thread": {
+                    "status": {"type": "active"},
+                    "turns": [
+                        {"id": "turn-old", "status": "completed"},
+                        {"id": "turn-active", "status": "inProgress"},
+                    ],
+                }
+            }
+        assert method == "turn/steer"
+        return {}
+
+    async def fake_ack(_target, message_ids):
+        acknowledgements.append(list(message_ids))
+
+    async def fake_fetch(_target):
+        return None
+
+    monkeypatch.setattr(module, "STEER_DEBOUNCE_S", 0)
+    monkeypatch.setattr(module, "STEER_COOLDOWN_S", 0)
+    monkeypatch.setattr(broker, "app_call", fake_app_call)
+    monkeypatch.setattr(broker, "acknowledge", fake_ack)
+    monkeypatch.setattr(broker, "fetch_inbox", fake_fetch)
+
+    asyncio.run(broker.try_inject(session))
+    asyncio.run(broker.try_inject(session))
+
+    steer = next(params for method, params in calls if method == "turn/steer")
+    assert steer["expectedTurnId"] == "turn-active"
+    assert session.active_turn_id == "turn-active"
+    assert acknowledgements == [[101]]
+
+
+def test_large_idle_backlog_uses_one_compact_digest(monkeypatch):
+    module = load(BROKER_PATH, "codex_broker_idle_digest")
+    broker = module.Broker()
+    session = make_session(module)
+    for message_id, sender in ((101, "alice@tools"), (102, "bob@tools")):
+        session.pending[message_id] = {
+            "id": message_id,
+            "sender_identity": sender,
+            "kind": "request",
+        }
+    turns = []
+
+    async def fake_app_call(method, params=None, timeout=30):
+        if method == "thread/read":
+            return {"thread": {"status": {"type": "idle"}}}
+        turns.append(params)
+        return {}
+
+    async def fake_ack(target, message_ids):
+        target.cursor = max(message_ids)
+
+    async def fake_fetch(_target):
+        return None
+
+    monkeypatch.setattr(module, "IDLE_DIGEST_THRESHOLD", 1)
+    monkeypatch.setattr(broker, "app_call", fake_app_call)
+    monkeypatch.setattr(broker, "acknowledge", fake_ack)
+    monkeypatch.setattr(broker, "fetch_inbox", fake_fetch)
+
+    asyncio.run(broker.try_inject(session))
+
+    assert len(turns) == 1
+    text = turns[0]["input"][0]["text"]
+    assert "2 queued messages" in text
+    assert "Message IDs: 101, 102" in text
+    assert "New Message from" not in text
+
+
+def test_failed_steer_keeps_pending_messages_for_idle_fallback(monkeypatch):
+    module = load(BROKER_PATH, "codex_broker_failed_steer")
+    broker = module.Broker()
+    session = make_session(module)
+    session.pending[101] = {
+        "id": 101,
+        "sender_identity": "alice@tools",
+        "kind": "request",
+    }
+    session.active_turn_id = "turn-active"
+    session.steer_turn_id = "turn-active"
+    session.steer_pending_since = 0
+    acknowledgements = []
+
+    async def fake_app_call(method, params=None, timeout=30):
+        if method == "thread/read":
+            return {"thread": {"status": {"type": "active"}}}
+        raise RuntimeError("activeTurnNotSteerable")
+
+    async def fake_ack(_target, message_ids):
+        acknowledgements.append(list(message_ids))
+
+    monkeypatch.setattr(module, "STEER_DEBOUNCE_S", 0)
+    monkeypatch.setattr(module, "STEER_COOLDOWN_S", 0)
+    monkeypatch.setattr(broker, "app_call", fake_app_call)
+    monkeypatch.setattr(broker, "acknowledge", fake_ack)
+
+    asyncio.run(broker.try_inject(session))
+
+    assert acknowledgements == []
+    assert list(session.pending) == [101]
+    assert session.awaiting_ack is None
+    assert session.steer_count == module.STEER_MAX_PER_TURN
+    assert session.active_turn_id is None
+
+
+def test_working_turn_never_exceeds_configured_steer_limit(monkeypatch):
+    module = load(BROKER_PATH, "codex_broker_steer_limit")
+    broker = module.Broker()
+    session = make_session(module)
+    session.pending[101] = {
+        "id": 101,
+        "sender_identity": "alice@tools",
+        "kind": "request",
+    }
+    session.active_turn_id = "turn-active"
+    session.steer_turn_id = "turn-active"
+    session.steer_pending_since = 0
+    session.steer_count = module.STEER_MAX_PER_TURN
+    calls = []
+
+    async def fake_app_call(method, params=None, timeout=30):
+        calls.append(method)
+        assert method == "thread/read"
+        return {"thread": {"status": {"type": "active"}}}
+
+    monkeypatch.setattr(module, "STEER_DEBOUNCE_S", 0)
+    monkeypatch.setattr(module, "STEER_COOLDOWN_S", 0)
+    monkeypatch.setattr(broker, "app_call", fake_app_call)
+
+    asyncio.run(broker.try_inject(session))
+
+    assert calls == ["thread/read"]
+    assert list(session.pending) == [101]
+
+
 def test_failed_injection_does_not_ack(monkeypatch):
     module = load(BROKER_PATH, "codex_broker_failed_injection")
     broker = module.Broker()
@@ -874,11 +1151,24 @@ def test_launcher_does_not_export_meeting_identity_or_host(monkeypatch):
         def stop(self):
             pass
 
-    def fake_run(command):
+    class FakeProcess:
+        pid = 123
+
+        def poll(self):
+            return None
+
+        def wait(self):
+            return 0
+
+    def fake_popen(command, **kwargs):
         observed["command"] = command
+        observed["kwargs"] = kwargs
+        return FakeProcess()
 
     monkeypatch.setattr(module, "TitlePinner", FakePinner)
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(launcher, "start_control_server", lambda: None)
+    monkeypatch.setattr(launcher, "publish_descriptor", lambda: None)
 
     launcher.run_codex()
 
@@ -887,6 +1177,7 @@ def test_launcher_does_not_export_meeting_identity_or_host(monkeypatch):
         "--remote",
         "ws://127.0.0.1:49152",
     ]
+    assert "env" not in observed["kwargs"]
 
 
 def test_session_proxy_url_is_a_codex_compatible_host_port():
@@ -983,11 +1274,11 @@ def test_launcher_surfaces_daemon_update_failure(monkeypatch):
             command,
             1,
             "",
-            "ERROR: cannot update while 2 mycodex sessions are active\n",
+            "ERROR: cannot update while 2 amcodex sessions are active\n",
         ),
     )
 
-    with pytest.raises(RuntimeError, match="2 mycodex sessions"):
+    with pytest.raises(RuntimeError, match="2 amcodex sessions"):
         module.ensure_daemon()
 
 
@@ -1008,7 +1299,7 @@ def test_launcher_reuses_compatible_active_daemon(
                 0,
                 (
                     "deferring am-codexd update from 0.16.0 to 0.16.1 "
-                    "while 2 mycodex session(s) are active\n"
+                    "while 2 amcodex session(s) are active\n"
                 ),
                 "",
             )

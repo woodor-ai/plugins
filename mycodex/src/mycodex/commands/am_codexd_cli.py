@@ -180,7 +180,7 @@ def stop():
     sessions = int(info.get("sessions") or 0)
     if sessions:
         raise RuntimeError(
-            f"cannot stop am-codexd while {sessions} mycodex session(s) are active"
+            f"cannot stop am-codexd while {sessions} amcodex session(s) are active"
         )
     request("POST", "/shutdown", timeout=3)
     if not wait_until(lambda: not status_info(), timeout=12):
@@ -219,12 +219,12 @@ def update(*, defer_if_active: bool = False):
         if defer_if_active:
             print(
                 f"deferring am-codexd update from {running} to {expected} while "
-                f"{sessions} mycodex session(s) are active"
+                f"{sessions} amcodex session(s) are active"
             )
             return
         raise RuntimeError(
             f"cannot update am-codexd from {running} to {expected} while "
-            f"{sessions} mycodex session(s) are active"
+            f"{sessions} amcodex session(s) are active"
         )
     if running == expected:
         print(f"restarting unhealthy am-codexd {running}")

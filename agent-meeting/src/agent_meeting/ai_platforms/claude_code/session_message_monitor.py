@@ -33,6 +33,9 @@ from agent_meeting.clients import (
     am_process_client,
 )
 from agent_meeting.messaging import project_identity
+from agent_meeting.lifecycle_control.claude_monitor_endpoint import (
+    ClaudeMonitorControl,
+)
 
 if sys.platform.startswith("win"):
     for _stream in (sys.stdout, sys.stderr):
@@ -285,6 +288,15 @@ _register()
 
 print(f"[meeting {_display_id}] monitor started (pid={os.getpid()})", flush=True)
 
+_delivery_control = ClaudeMonitorControl(
+    meeting_home=DATA,
+    name=SELF,
+    project=_PROJECT,
+    instance_id=INSTANCE,
+    cwd=_CWD,
+)
+_delivery_control.start()
+atexit.register(_delivery_control.stop)
 
 # ---------- WS client wiring (kernel lives in am_common.WSSubscribeClient) ----------
 
@@ -362,5 +374,7 @@ _ws_client = hub_subscription_client.HubSubscriptionClient(
     self_name=SELF, project=lambda: _PROJECT,
     resolve_addr=_resolve_ws_addr, read_token=_read_token,
     on_text=_on_text, instance=INSTANCE, on_connect=_on_connect, log=_log,
+    pause_event=_delivery_control.pause_event,
+    paused_ack_event=_delivery_control.paused_ack_event,
 )
 _ws_client.run_forever()

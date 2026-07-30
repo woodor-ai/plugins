@@ -1,15 +1,15 @@
 #!/bin/sh
-# mycodex: bridge a Codex session into agent-meeting.
+# amcodex: bridge a Codex session into agent-meeting.
 #
 #   am-update                             update agent-meeting and installed
 #                                         Claude Code/Codex integrations.
-#   mycodex [<name>] [--am-msgd HOST[:PORT]] [--proj X] [--global] [--no-codex]
+#   amcodex [<name>] [--am-msgd HOST[:PORT]] [--proj X] [--global] [--no-codex]
 #                                         start a brokered Codex
 #                                         session — needs agent-meeting installed
 #                                         (run `am-update` first).
 #
 # Single source of truth, copied verbatim (no per-install templating) into
-# ~/.agent-meeting/bin/mycodex by both install-codex.py (root installer,
+# ~/.agent-meeting/bin/amcodex by both install-codex.py (root installer,
 # unconditional — makes the launcher available after installation)
 # and session-bootstrap.py (agent-meeting's own SessionStart hook — self-heals
 # this file if bin/ is ever wiped and rebuilt). Fully self-locating: no absolute
@@ -26,12 +26,12 @@ AM_CODEX_SESSION="$PLUGIN_ROOT/codex/codex-session.py"
 VPY="$MEETING_HOME/venv/bin/python"
 
 if [ "${1:-}" = "--update" ]; then
-    echo "mycodex --update has moved to am-update. Run: am-update" >&2
+    echo "amcodex --update has moved to am-update. Run: am-update" >&2
     exit 2
 fi
 
 if [ -z "$PLUGIN_BIN" ] || [ ! -x "$VPY" ] || [ ! -f "$AM_CODEX_SESSION" ]; then
-    echo "mycodex: agent-meeting is not installed — run 'am-update' to install it, then retry." >&2
+    echo "amcodex: agent-meeting is not installed — run 'am-update' to install it, then retry." >&2
     exit 1
 fi
 

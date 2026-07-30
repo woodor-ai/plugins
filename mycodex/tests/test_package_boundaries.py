@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -21,8 +22,28 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.16.3"
+    assert mycodex.__version__ == "0.17.0"
     assert mycodex.__version__ == agent_meeting.__version__
+
+
+def test_amcodex_descriptor_does_not_persist_launch_arguments(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("MEETING_HOME", str(tmp_path))
+    from mycodex.launcher.codex_tui_session import Launcher
+
+    launcher = Launcher("worker", "tools", "http://127.0.0.1:8765")
+    launcher.session = {
+        "identity": "worker@tools",
+        "proxy_url": "ws://127.0.0.1:9999",
+    }
+    descriptor = launcher.descriptor()
+
+    assert descriptor["wrapper"] == "amcodex"
+    assert descriptor["identity"] == "worker@tools"
+    assert descriptor["launch_recipe"]["args_persisted"] is False
+    assert "ws://127.0.0.1:9999" not in json.dumps(descriptor)
 
 
 def test_codex_app_server_environment_marks_mycodex_runtime(monkeypatch):
@@ -50,7 +71,7 @@ def test_daemon_update_defers_when_a_session_is_active(monkeypatch, capsys):
     assert am_codexd_cli.main(["update", "--defer-if-active"]) == 0
     assert capsys.readouterr().out == (
         "deferring am-codexd update from 0.15.2 to 0.15.1 while "
-        "1 mycodex session(s) are active\n"
+            "1 amcodex session(s) are active\n"
     )
 
 

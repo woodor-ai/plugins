@@ -80,7 +80,15 @@ def test_windows_activation_copies_console_exes_without_cmd_forwarders(
         is_windows=True,
     )
 
-    for command in ("am", "am-msgd", "mycodex", "am-codexd"):
+    for command in (
+        "am",
+        "am-ctl",
+        "am-msgd",
+        "amclaude",
+        "amcodex",
+        "mycodex",
+        "am-codexd",
+    ):
         destination = tmp_path / "bin" / f"{command}.exe"
         assert destination.read_bytes() == (
             runtime / "venv" / "Scripts" / f"{command}.exe"

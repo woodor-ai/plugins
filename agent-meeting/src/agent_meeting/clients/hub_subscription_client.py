@@ -88,6 +88,8 @@ class HubSubscriptionClient:
         on_text,
         instance=None,
         on_connect=None,
+        pause_event=None,
+        paused_ack_event=None,
         log=None,
     ):
         self.self_name = self_name
@@ -97,6 +99,8 @@ class HubSubscriptionClient:
         self.on_text = on_text
         self.instance = instance
         self.on_connect = on_connect
+        self.pause_event = pause_event
+        self.paused_ack_event = paused_ack_event
         self.log = log or (lambda message: None)
 
     def _connect(self):
@@ -176,14 +180,26 @@ class HubSubscriptionClient:
         )
         return min(backoff * jitter, self.BACKOFF_MAX)
 
+    def _wait_for_retry(self, delay: float) -> None:
+        if self.pause_event is None:
+            time.sleep(delay)
+            return
+        if self.pause_event.wait(delay) and self.paused_ack_event is not None:
+            self.paused_ack_event.set()
+
     def run_forever(self) -> None:
         backoff = self.BACKOFF_BASE
         while True:
+            if self.pause_event is not None and self.pause_event.is_set():
+                if self.paused_ack_event is not None:
+                    self.paused_ack_event.set()
+                time.sleep(0.1)
+                continue
             sock = self._connect()
             if sock is None:
                 delay = self._jitter_delay(backoff)
                 self.log(f"reconnect in {delay:.1f}s")
-                time.sleep(delay)
+                self._wait_for_retry(delay)
                 backoff = min(backoff * 2, self.BACKOFF_MAX)
                 continue
 
@@ -196,6 +212,11 @@ class HubSubscriptionClient:
             last_frame_time = time.time()
             last_ping_time = time.time()
             while not disconnected:
+                if self.pause_event is not None and self.pause_event.is_set():
+                    self.log("delivery paused; closing subscription")
+                    if self.paused_ack_event is not None:
+                        self.paused_ack_event.set()
+                    break
                 try:
                     readable, _, _ = select.select([sock], [], [], 1.0)
                 except Exception:
@@ -250,7 +271,12 @@ class HubSubscriptionClient:
                 sock.close()
             except Exception:
                 pass
+            if self.pause_event is not None and self.pause_event.is_set():
+                if self.paused_ack_event is not None:
+                    self.paused_ack_event.set()
+                backoff = self.BACKOFF_BASE
+                continue
             delay = self._jitter_delay(backoff)
             self.log(f"reconnecting in {delay:.1f}s")
-            time.sleep(delay)
+            self._wait_for_retry(delay)
             backoff = min(backoff * 2, self.BACKOFF_MAX)

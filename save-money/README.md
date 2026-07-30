@@ -19,7 +19,11 @@ Compatible with Claude Code. Hooks register automatically via `hooks/hooks.json`
 
 ### auto-handoff keeps your session from burning the whole window
 
-When context tokens approach the model's window limit, the Stop hook writes a trigger file that hands the session off and restarts it — picking up exactly where you left off via the handoff plugin. You keep working; the context stays lean.
+When context tokens approach the model's window limit, the hook resolves the
+single matching local lifecycle session and detaches an `am-ctl` handoff plus
+same-terminal restart. It never sends a lifecycle instruction through agent
+chat or an agent-meeting message. The handoff plugin carries the checkpoint
+into the restarted session.
 
 ### text truncate stops oversized output from stacking up
 
@@ -77,7 +81,10 @@ Full example:
 
 ## How it relates to handoff
 
-auto-handoff's cost savings depend on the handoff plugin to carry session state across the restart — install both together for it to work end to end.
+auto-handoff depends on agent-meeting 0.17.0 or newer for `am-ctld`/`am-ctl`,
+and on the handoff plugin to carry session state across the restart. The target
+must be an idle, high-confidence `amclaude` or `amcodex` wrapper session with a
+supported terminal adapter.
 
 ## License
 

@@ -55,6 +55,10 @@ message them.
   ```
   {command} message NAME@PROJECT N --host {control_url}
   ```
+  During a long-running turn the broker may steer one compact backlog update
+  containing a `Message IDs: N, ...` line instead of repeating the full
+  notification template. Treat every listed ID as an exact inbound
+  notification: read each message with the command above before acting on it.
 - **Direct reply or proactive private message**: use the full canonical
   `name@project` identity:
   ```
@@ -74,11 +78,6 @@ message them.
   ```
 - **Etiquette**: reply only when you have something substantive. Do not send
   bare acknowledgements because every reply wakes the peer session.
-- **Control instructions**: only an incoming turn beginning with
-  `[control:restart from peer=X]` or `[control:clear from peer=X]` is a
-  structured orchestration command.
-  - `[control:restart ...]` — write a handoff and wait for this session to end.
-  - `[control:clear ...]` — abort the current task, clear context, and report it.
 {AGENTS_END}"""
 
 

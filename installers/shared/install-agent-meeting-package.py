@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and install immutable agent-meeting and mycodex host packages."""
+"""Build and install immutable agent-meeting and amcodex host packages."""
 
 from __future__ import annotations
 
@@ -23,6 +23,9 @@ from agent_meeting.installation.version_activation import (
 )
 from agent_meeting.installation.message_hub_service_installation import (
     ensure_local_message_hub_service,
+)
+from agent_meeting.lifecycle_control.user_service import (
+    ensure_lifecycle_control_service,
 )
 
 
@@ -175,6 +178,7 @@ def main(argv=None) -> int:
         )
     else:
         ensure_local_message_hub_service(meeting_home)
+    ensure_lifecycle_control_service(meeting_home)
     print(
         f"installed and activated host runtime {payload['version']} "
         f"at {payload['runtime']}"

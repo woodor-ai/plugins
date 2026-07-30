@@ -24,7 +24,7 @@ Room state lives in SQLite at `~/.agent-meeting/db/rooms.db`, accessed via the `
 ## Steps
 
 1. **Resolve self identity**:
-   - Codex launched through `mycodex`: use the exact `Agent-meeting recipient`
+   - Codex launched through `amcodex`: use the exact `Agent-meeting recipient`
      and `Agent-meeting control` values from the thread's developer
      instructions. Pass the recipient as `<self>` and append
      `--host <control-url>` to every direct message CLI call. Do not use

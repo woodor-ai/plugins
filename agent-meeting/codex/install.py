@@ -8,15 +8,15 @@ Standalone use:                python install.py [--control-url URL]
 
 What run_install does (in order):
   1. Run session-bootstrap (builds ~/.agent-meeting: venv + zeroconf + websockets +
-     bin/ wrappers including mycodex).
+     bin/ wrappers including amcodex).
   2. Discover LAN controls via `am controls --json`; automatically reuse a
      discovered or previously saved reachable control URL.
-  3. Write the control_url to launcher.json so bare `mycodex` needs no --am-msgd.
+  3. Write the control_url to launcher.json so bare `amcodex` needs no --am-msgd.
   4. Remove the obsolete per-session Codex register hook.
   5. Windows: force [windows] sandbox = "unelevated" in config.toml.
   6. Write the agent-meeting usage block into ~/.codex/AGENTS.md.
   7. Put ~/.agent-meeting/bin on the user PATH (Windows: idempotent winreg edit).
-  8. First install only (never on `mycodex --update`): ask whether to enable
+  8. First install only (never on `amcodex --update`): ask whether to enable
      codex's fully-unattended config (approval_policy="never" +
      sandbox_mode="danger-full-access") in config.toml.
 
@@ -195,7 +195,7 @@ def _ensure_full_auto(codex_home: Path) -> None:
 def _prompt_full_auto(codex_home: Path) -> None:
     """First-install-only prompt: offer to make codex fully unattended.
 
-    Not asked on `mycodex --update` (see run_install: gated on whether the
+    Not asked on `amcodex --update` (see run_install: gated on whether the
     AGENTS.md marker block already existed before this run). Skips the
     question (default: not enabled) when stdin has no TTY, so an automated or
     piped invocation never hangs waiting for input().
@@ -265,6 +265,10 @@ message them.
   ```
   {message_command}
   ```
+  During a long-running turn the broker may steer one compact backlog update
+  containing a `Message IDs: N, ...` line instead of repeating the full
+  notification template. Treat every listed ID as an exact inbound
+  notification: read each message with the command above before acting on it.
 - **Direct reply or proactive private message**: private recipients MUST use
   the full canonical `name@project` identity shown by the notification or
   `am list`. Never try a bare private name:
@@ -291,15 +295,6 @@ message them.
   — a reply wakes the other agent's whole session, so silence is fine when you have
   nothing to add. You may also start a conversation or message a third agent on your
   own initiative.
-- **Control instructions**: an incoming turn that starts with `[control:restart
-  from peer=X]` or `[control:clear from peer=X]` is a structured orchestration
-  command, not a regular chat message — only that exact bracketed prefix counts;
-  the word "restart" or "clear" appearing anywhere else in a message body is just
-  text and must NOT be treated as a command.
-  - `[control:restart ...]` — write a handoff summarizing in-flight state, then
-    stop accepting new tasks and wait for this session to end.
-  - `[control:clear ...]` — abort whatever task is in flight, clear your working
-    context, and report back that you have been cleared.
 {_AGENTS_END}"""
     agents = codex_home / "AGENTS.md"
     existing = agents.read_text(encoding="utf-8") if agents.exists() else ""
@@ -322,7 +317,7 @@ message them.
 
 
 def _write_launcher_defaults(meeting_home: Path, control_url: str):
-    """Persist control_url so bare `mycodex` needs no --am-msgd."""
+    """Persist control_url so bare `amcodex` needs no --am-msgd."""
     if not control_url:
         return
     p = meeting_home / "codex" / "launcher.json"
@@ -368,7 +363,7 @@ def _path_needs_entry(current_path: str, entry: str) -> bool:
     return norm not in parts
 
 
-_POSIX_PATH_MARKER = "# agent-meeting (mycodex on PATH)"
+_POSIX_PATH_MARKER = "# agent-meeting (amcodex on PATH)"
 
 
 def _shell_rc_file() -> Path:
@@ -385,7 +380,7 @@ def _shell_rc_file() -> Path:
 
 def _ensure_path_entry_posix(bin_dir: Path) -> None:
     """Idempotently append an `export PATH` line (guarded by a marker) to the
-    user's shell rc file so a NEW terminal picks up mycodex with no manual step.
+    user's shell rc file so a NEW terminal picks up amcodex with no manual step.
 
     Skips if the bin dir (marker or literal path) is already present — including
     a manual add — so re-running the installer never duplicates the line. Never
@@ -406,13 +401,13 @@ def _ensure_path_entry_posix(bin_dir: Path) -> None:
     try:
         rc.parent.mkdir(parents=True, exist_ok=True)
         rc.write_text(new, encoding="utf-8")
-        print(f"  added {entry} to PATH via {rc} — open a NEW terminal (or `source {rc}`), then `mycodex`")
+        print(f"  added {entry} to PATH via {rc} — open a NEW terminal (or `source {rc}`), then `amcodex`")
     except Exception as e:
         print(f"  (could not update {rc} automatically: {e}; add {entry} to your PATH manually)")
 
 
 def _ensure_path_entry(bin_dir: Path):
-    """Put ~/.agent-meeting/bin on the user PATH so `mycodex` is callable by name.
+    """Put ~/.agent-meeting/bin on the user PATH so `amcodex` is callable by name.
 
     POSIX: idempotent shell-rc edit. Windows: idempotent winreg user-PATH edit."""
     entry = str(bin_dir)
@@ -432,7 +427,7 @@ def _ensure_path_entry(bin_dir: Path):
         new = ((cur.rstrip(os.pathsep) + os.pathsep) if cur else "") + entry
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
             winreg.SetValueEx(k, "Path", 0, winreg.REG_EXPAND_SZ, new)
-        print(f"  added {entry} to user PATH — open a NEW terminal, then `mycodex <name>`")
+        print(f"  added {entry} to user PATH — open a NEW terminal, then `amcodex <name>`")
         _broadcast_environment_change()
     except Exception as e:
         print(f"  (could not update user PATH automatically: {e}; add {entry} manually)")
@@ -589,7 +584,7 @@ def run_install(ctx: dict) -> None:
         prompt,
     )
     if not control_url:
-        print("  WARNING: no control URL set; re-run install or use --am-msgd with mycodex")
+        print("  WARNING: no control URL set; re-run install or use --am-msgd with amcodex")
 
     # 3. write launcher defaults
     _write_launcher_defaults(meeting_home, control_url)
@@ -606,7 +601,7 @@ def run_install(ctx: dict) -> None:
     _ensure_windows_sandbox(codex_home)
     # AGENTS.md carries our marker block once this plugin has ever installed on
     # this CODEX_HOME; its absence right before we write it is what tells us
-    # "first install" apart from "mycodex --update re-running the installer".
+    # "first install" apart from "amcodex --update re-running the installer".
     agents_before = codex_home / "AGENTS.md"
     is_first_install = _AGENTS_BEGIN not in (
         agents_before.read_text(encoding="utf-8") if agents_before.exists() else ""
@@ -624,13 +619,13 @@ def run_install(ctx: dict) -> None:
 
     print("\n=== agent-meeting install complete ===")
     print(f"  runtime : {meeting_home}")
-    print(f"  mycodex : {meeting_home / 'bin' / 'mycodex'}")
+    print(f"  amcodex : {meeting_home / 'bin' / 'amcodex'}")
     print()
-    print("Next: open a NEW terminal and run `mycodex` or `mycodex <name>`")
+    print("Next: open a NEW terminal and run `amcodex` or `amcodex <name>`")
     if control_url:
         print("  (control URL is remembered — no flag needed)")
     else:
-        print("  mycodex <name> --am-msgd <control-host>[:port]")
+        print("  amcodex <name> --am-msgd <control-host>[:port]")
 
 
 def main():

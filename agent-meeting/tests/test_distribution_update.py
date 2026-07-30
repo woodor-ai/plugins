@@ -103,7 +103,8 @@ def test_package_installer_applies_service_to_explicit_isolated_home(
     installer = _load_package_installer()
     source_root = tmp_path / "source"
     meeting_home = tmp_path / "isolated-home"
-    calls = []
+    hub_calls = []
+    lifecycle_calls = []
 
     monkeypatch.setattr(installer.sys, "platform", "darwin")
     monkeypatch.setattr(
@@ -117,7 +118,12 @@ def test_package_installer_applies_service_to_explicit_isolated_home(
     monkeypatch.setattr(
         installer,
         "ensure_local_message_hub_service",
-        calls.append,
+        hub_calls.append,
+    )
+    monkeypatch.setattr(
+        installer,
+        "ensure_lifecycle_control_service",
+        lifecycle_calls.append,
     )
 
     assert installer.main(
@@ -128,7 +134,8 @@ def test_package_installer_applies_service_to_explicit_isolated_home(
             str(meeting_home),
         ]
     ) == 0
-    assert calls == [meeting_home.resolve()]
+    assert hub_calls == [meeting_home.resolve()]
+    assert lifecycle_calls == [meeting_home.resolve()]
 
 
 def test_refresh_checkout_fast_forwards_existing_public_checkout(tmp_path):

@@ -37,6 +37,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -122,6 +123,20 @@ APP_PORT_LAST = int(os.environ.get("MEETING_BROKER_APP_PORT_LAST", "8841"))
 
 INJECT_POLL_S = 2.0
 CONTROL_STALE_S = 600
+STEER_DEBOUNCE_S = float(os.environ.get("MEETING_STEER_DEBOUNCE_S", "3"))
+STEER_COOLDOWN_S = float(os.environ.get("MEETING_STEER_COOLDOWN_S", "30"))
+STEER_MAX_PER_TURN = int(
+    os.environ.get("MEETING_STEER_MAX_PER_TURN", "3")
+)
+STEER_MAX_MESSAGES = int(
+    os.environ.get("MEETING_STEER_MAX_MESSAGES", "100")
+)
+IDLE_MAX_MESSAGES = int(
+    os.environ.get("MEETING_IDLE_MAX_MESSAGES", "100")
+)
+IDLE_DIGEST_THRESHOLD = int(
+    os.environ.get("MEETING_IDLE_DIGEST_THRESHOLD", "10")
+)
 
 
 class NameTakenError(RuntimeError):
@@ -541,7 +556,7 @@ class Broker:
         if self.sessions:
             raise ValueError(
                 f"cannot stop am-codexd while {len(self.sessions)} "
-                "mycodex session(s) are active"
+                "amcodex session(s) are active"
             )
         self.accepting_sessions = False
         self.stop_event.set()
@@ -560,18 +575,213 @@ class Broker:
             "launch_id": launch_id,
         }
 
-    async def session_status(self, launch_id):
+    async def runtime_snapshot(self, session):
+        if not session.thread_id:
+            return {
+                "runtime_state": "unknown",
+                "compactions": 0,
+                "context_utilization_pct": None,
+            }
+        try:
+            result = await self.app_call(
+                "thread/read",
+                {"threadId": session.thread_id, "includeTurns": True},
+                timeout=5,
+            )
+        except Exception:
+            return {
+                "runtime_state": "unknown",
+                "compactions": 0,
+                "context_utilization_pct": None,
+            }
+        thread = result.get("thread") or {}
+        status = thread.get("status")
+        if self.is_idle(status):
+            runtime_state = "idle"
+        else:
+            status_type = status.get("type") if isinstance(status, dict) else status
+            runtime_state = (
+                "working"
+                if status_type in {"active", "running", "working"}
+                else str(status_type or "unknown")
+            )
+        token_usage = session.token_usage or {}
+        context_window = token_usage.get("modelContextWindow")
+        current_tokens = (token_usage.get("last") or {}).get("totalTokens")
+        utilization = None
+        if context_window and current_tokens is not None:
+            utilization = round(100 * int(current_tokens) / int(context_window), 2)
+        return {
+            "runtime_state": runtime_state,
+            "compactions": self.compaction_count(thread),
+            "context_utilization_pct": utilization,
+        }
+
+    async def session_status(self, launch_id, *, include_runtime=False):
         session = self.sessions.get(launch_id)
         if session is None:
             return {}
-        return {
+        result = {
             "active": session.active,
             "thread_id": session.thread_id,
             "identity": session.identity,
             "proxy_url": session.proxy_url,
             "central_registered": session.central_registered,
             "central_error": session.central_error,
+            "ingress_paused": session.ingress_paused,
+            "pending_messages": len(session.pending),
+            "active_turn_id": session.active_turn_id,
+            "steers_this_turn": session.steer_count,
+            "steer_limit_per_turn": STEER_MAX_PER_TURN,
         }
+        if include_runtime:
+            result.update(await self.runtime_snapshot(session))
+        return result
+
+    async def sessions_status(self):
+        return [
+            {
+                "launch_id": launch_id,
+                "name": session.name,
+                "project": session.project,
+                "identity": session.identity,
+                "cwd": session.cwd,
+                **(await self.session_status(launch_id, include_runtime=True)),
+            }
+            for launch_id, session in self.sessions.items()
+        ]
+
+    async def pause_ingress(self, launch_id):
+        session = self.sessions.get(launch_id)
+        if session is None:
+            raise ValueError("unknown session")
+        token = uuid.uuid4().hex
+        session.ingress_pause_tokens.add(token)
+        log(f"meeting ingress paused identity={session.identity} launch={launch_id}")
+        return {"ok": True, "pause_token": token}
+
+    async def resume_ingress(self, launch_id, pause_token):
+        session = self.sessions.get(launch_id)
+        if session is None:
+            raise ValueError("unknown session")
+        if pause_token not in session.ingress_pause_tokens:
+            raise ValueError("invalid pause token")
+        session.ingress_pause_tokens.remove(pause_token)
+        log(f"meeting ingress resumed identity={session.identity} launch={launch_id}")
+        return {"ok": True, "ingress_paused": session.ingress_paused}
+
+    @staticmethod
+    def compaction_count(thread):
+        total = 0
+        for turn in thread.get("turns") or []:
+            for item in turn.get("items") or []:
+                if item.get("type") in {"contextCompaction", "compact"}:
+                    total += 1
+        return total
+
+    async def compact_session(self, launch_id, pause_token):
+        session = self.sessions.get(launch_id)
+        if session is None:
+            raise ValueError("unknown session")
+        if pause_token not in session.ingress_pause_tokens:
+            raise ValueError("matching ingress pause token is required")
+        if not session.thread_id:
+            raise ValueError("session thread is not ready")
+        before = await self.app_call(
+            "thread/read",
+            {"threadId": session.thread_id, "includeTurns": True},
+            timeout=10,
+        )
+        thread = before.get("thread") or {}
+        if not self.is_idle(thread.get("status")):
+            raise ValueError("session is not idle")
+        previous_count = self.compaction_count(thread)
+        await self.app_call(
+            "thread/compact/start",
+            {"threadId": session.thread_id},
+            timeout=10,
+        )
+        deadline = asyncio.get_running_loop().time() + 60
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.25)
+            current = await self.app_call(
+                "thread/read",
+                {"threadId": session.thread_id, "includeTurns": True},
+                timeout=10,
+            )
+            current_thread = current.get("thread") or {}
+            if (
+                self.compaction_count(current_thread) > previous_count
+                and self.is_idle(current_thread.get("status"))
+            ):
+                return {
+                    "ok": True,
+                    "compactions": self.compaction_count(current_thread),
+                }
+        raise ValueError("context compaction did not complete within 60 seconds")
+
+    async def handoff_session(self, launch_id, pause_token):
+        session = self.sessions.get(launch_id)
+        if session is None:
+            raise ValueError("unknown session")
+        if pause_token not in session.ingress_pause_tokens:
+            raise ValueError("matching ingress pause token is required")
+        if not session.thread_id:
+            raise ValueError("session thread is not ready")
+        before = await self.app_call(
+            "thread/read",
+            {"threadId": session.thread_id, "includeTurns": True},
+            timeout=10,
+        )
+        thread = before.get("thread") or {}
+        if not self.is_idle(thread.get("status")):
+            raise ValueError("session is not idle")
+        previous_turns = len(thread.get("turns") or [])
+        handoff_path = Path(session.cwd) / ".codex" / "handoff-pending.md"
+        previous_mtime = (
+            handoff_path.stat().st_mtime_ns if handoff_path.exists() else 0
+        )
+        await self.app_call(
+            "turn/start",
+            {
+                "threadId": session.thread_id,
+                "input": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "[am-ctld lifecycle request] Use the installed "
+                            "woodor handoff skill now. Write the Codex handoff "
+                            "card for the current work, then stop after reporting "
+                            "that the handoff is complete."
+                        ),
+                    }
+                ],
+            },
+            timeout=10,
+        )
+        deadline = asyncio.get_running_loop().time() + 180
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.5)
+            current = await self.app_call(
+                "thread/read",
+                {"threadId": session.thread_id, "includeTurns": True},
+                timeout=10,
+            )
+            current_thread = current.get("thread") or {}
+            if not self.is_idle(current_thread.get("status")):
+                continue
+            if len(current_thread.get("turns") or []) <= previous_turns:
+                continue
+            if not handoff_path.exists() or handoff_path.stat().st_size == 0:
+                continue
+            if handoff_path.stat().st_mtime_ns <= previous_mtime:
+                continue
+            return {
+                "ok": True,
+                "handoff_path": str(handoff_path),
+                "ingress_paused": True,
+            }
+        raise ValueError("handoff did not complete within 180 seconds")
 
     async def update_thread(self, session, thread_id):
         if not thread_id or session.thread_id == thread_id:
@@ -668,7 +878,30 @@ class Broker:
         return hub_inbox_delivery.build_injection(
             session,
             control_stale_seconds=CONTROL_STALE_S,
+            max_messages=IDLE_MAX_MESSAGES,
         )
+
+    @staticmethod
+    def build_steer_injection(session):
+        return hub_inbox_delivery.build_steer_injection(
+            session,
+            max_messages=STEER_MAX_MESSAGES,
+        )
+
+    @staticmethod
+    def active_turn_from_thread(thread):
+        for turn in reversed(thread.get("turns") or []):
+            if turn.get("status") == "inProgress" and turn.get("id"):
+                return str(turn["id"])
+        return None
+
+    @staticmethod
+    def reset_steer_state(session, active_turn_id=None):
+        session.active_turn_id = active_turn_id
+        session.steer_turn_id = active_turn_id
+        session.steer_count = 0
+        session.last_steer_at = 0.0
+        session.steer_pending_since = None
 
     async def finish_ack(self, session):
         selected = session.awaiting_ack
@@ -689,6 +922,8 @@ class Broker:
         return True
 
     async def try_inject(self, session):
+        if session.ingress_paused:
+            return
         if session.awaiting_ack:
             await self.finish_ack(session)
             return
@@ -701,37 +936,106 @@ class Broker:
             session.awaiting_ack = selected
             await self.finish_ack(session)
             return
+        steer_attempted = False
         try:
             read_result = await self.app_call(
                 "thread/read",
                 {"threadId": session.thread_id, "includeTurns": False},
                 timeout=10,
             )
-            status = (read_result.get("thread") or {}).get("status")
-            if not self.is_idle(status):
+            thread = read_result.get("thread") or {}
+            status = thread.get("status")
+            if session.ingress_paused:
                 return
-            await self.app_call(
-                "turn/start",
-                {
-                    "threadId": session.thread_id,
-                    "input": [{"type": "text", "text": text}],
-                    "additionalContext": {
-                        "agent-meeting-runtime": {
-                            "kind": "application",
-                            "value": self.runtime_instructions(session),
-                        }
+            if self.is_idle(status):
+                self.reset_steer_state(session)
+                if len(selected) > IDLE_DIGEST_THRESHOLD:
+                    selected, text = self.build_steer_injection(session)
+                await self.app_call(
+                    "turn/start",
+                    {
+                        "threadId": session.thread_id,
+                        "input": [{"type": "text", "text": text}],
+                        "additionalContext": {
+                            "agent-meeting-runtime": {
+                                "kind": "application",
+                                "value": self.runtime_instructions(session),
+                            }
+                        },
                     },
-                },
-                timeout=30,
-            )
+                    timeout=30,
+                )
+                injection_kind = "turn/start"
+            else:
+                active_turn_id = session.active_turn_id
+                if not active_turn_id:
+                    active_result = await self.app_call(
+                        "thread/read",
+                        {
+                            "threadId": session.thread_id,
+                            "includeTurns": True,
+                        },
+                        timeout=10,
+                    )
+                    active_thread = active_result.get("thread") or {}
+                    active_turn_id = self.active_turn_from_thread(active_thread)
+                    if active_turn_id:
+                        session.active_turn_id = active_turn_id
+                if not active_turn_id:
+                    return
+                if session.steer_turn_id != active_turn_id:
+                    self.reset_steer_state(session, active_turn_id)
+                now = time.monotonic()
+                if session.steer_pending_since is None:
+                    session.steer_pending_since = now
+                    return
+                if now - session.steer_pending_since < STEER_DEBOUNCE_S:
+                    return
+                if session.steer_count >= STEER_MAX_PER_TURN:
+                    return
+                if now - session.last_steer_at < STEER_COOLDOWN_S:
+                    return
+                steer_selected, steer_text = self.build_steer_injection(session)
+                if not steer_selected:
+                    return
+                if not steer_text:
+                    session.awaiting_ack = steer_selected
+                    await self.finish_ack(session)
+                    return
+                steer_attempted = True
+                await self.app_call(
+                    "turn/steer",
+                    {
+                        "threadId": session.thread_id,
+                        "expectedTurnId": active_turn_id,
+                        "input": [{"type": "text", "text": steer_text}],
+                        "additionalContext": {
+                            "agent-meeting-runtime": {
+                                "kind": "application",
+                                "value": self.runtime_instructions(session),
+                            }
+                        },
+                    },
+                    timeout=30,
+                )
+                selected = steer_selected
+                session.steer_count += 1
+                session.last_steer_at = now
+                session.steer_pending_since = None
+                injection_kind = "turn/steer"
         except Exception as exc:
+            if steer_attempted:
+                session.active_turn_id = None
+                session.last_steer_at = time.monotonic()
+                session.steer_pending_since = session.last_steer_at
+                session.steer_count = STEER_MAX_PER_TURN
             log(f"inject {session.identity} failed: {exc}")
             return
         session.awaiting_ack = selected
         await self.finish_ack(session)
         log(
-            f"injected {len(selected)} message(s) into {session.identity} "
-            f"thread={session.thread_id}"
+            f"injected {len(selected)} message(s) via {injection_kind} into "
+            f"{session.identity} thread={session.thread_id}"
         )
 
     async def scheduler(self):
@@ -777,6 +1081,7 @@ class Broker:
 
         session.proxy_clients.add(client)
         pending_thread_requests = {}
+        pending_turn_requests = set()
         app_url = self.appserver.ws_url
         try:
             async with websockets.connect(app_url, max_size=None) as upstream:
@@ -788,6 +1093,8 @@ class Broker:
                             method = message.get("method")
                             if method in ("thread/start", "thread/fork", "thread/resume"):
                                 pending_thread_requests[message.get("id")] = method
+                            if method == "turn/start" and message.get("id") is not None:
+                                pending_turn_requests.add(message["id"])
                             raw = json.dumps(message)
                         except Exception:
                             pass
@@ -797,6 +1104,41 @@ class Broker:
                     async for raw in upstream:
                         try:
                             message = json.loads(raw)
+                            if (
+                                message.get("method")
+                                == "thread/tokenUsage/updated"
+                            ):
+                                params = message.get("params") or {}
+                                if params.get("threadId") == session.thread_id:
+                                    session.token_usage = params.get("tokenUsage")
+                            if message.get("method") == "turn/started":
+                                params = message.get("params") or {}
+                                if params.get("threadId") == session.thread_id:
+                                    turn_id = (params.get("turn") or {}).get("id")
+                                    if turn_id:
+                                        self.reset_steer_state(session, str(turn_id))
+                            if message.get("method") == "turn/completed":
+                                params = message.get("params") or {}
+                                if params.get("threadId") == session.thread_id:
+                                    turn_id = (params.get("turn") or {}).get("id")
+                                    if (
+                                        turn_id
+                                        and str(turn_id) == session.active_turn_id
+                                    ):
+                                        self.reset_steer_state(session)
+                            if message.get("id") in pending_turn_requests:
+                                pending_turn_requests.discard(message.get("id"))
+                                if "error" not in message:
+                                    result = message.get("result") or {}
+                                    turn_id = (
+                                        (result.get("turn") or {}).get("id")
+                                        or result.get("turnId")
+                                    )
+                                    if turn_id:
+                                        self.reset_steer_state(
+                                            session,
+                                            str(turn_id),
+                                        )
                             if message.get("id") in pending_thread_requests:
                                 pending_thread_requests.pop(message.get("id"), None)
                                 if "error" not in message:
@@ -881,6 +1223,10 @@ class Broker:
                     launch_id = query.get("launch_id", [""])[0]
                     result = self.invoke(broker.session_status(launch_id))
                     return self.send_json(200 if result else 404, result or {"error": "unknown session"})
+                if parsed.path == "/sessions":
+                    return self.send_json(
+                        200, {"sessions": self.invoke(broker.sessions_status())}
+                    )
                 return self.send_json(404, {"error": "not found"})
 
             def do_POST(self):
@@ -891,6 +1237,39 @@ class Broker:
                     if self.path == "/session/stop":
                         body = self.read_body()
                         result = self.invoke(broker.stop_session(str(body["launch_id"])))
+                        return self.send_json(200, result)
+                    if self.path == "/session/ingress/pause":
+                        body = self.read_body()
+                        result = self.invoke(
+                            broker.pause_ingress(str(body["launch_id"]))
+                        )
+                        return self.send_json(200, result)
+                    if self.path == "/session/ingress/resume":
+                        body = self.read_body()
+                        result = self.invoke(
+                            broker.resume_ingress(
+                                str(body["launch_id"]),
+                                str(body["pause_token"]),
+                            )
+                        )
+                        return self.send_json(200, result)
+                    if self.path == "/session/compact":
+                        body = self.read_body()
+                        result = self.invoke(
+                            broker.compact_session(
+                                str(body["launch_id"]),
+                                str(body["pause_token"]),
+                            )
+                        )
+                        return self.send_json(200, result)
+                    if self.path == "/session/handoff":
+                        body = self.read_body()
+                        result = self.invoke(
+                            broker.handoff_session(
+                                str(body["launch_id"]),
+                                str(body["pause_token"]),
+                            )
+                        )
                         return self.send_json(200, result)
                     if self.path == "/shutdown":
                         result = self.invoke(broker.request_shutdown())

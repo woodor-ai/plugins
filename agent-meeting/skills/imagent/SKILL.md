@@ -1,6 +1,6 @@
 ---
 name: imagent
-description: Agent-meeting directory for Claude Code and Codex peer sessions. In Claude Code, /imagent registers and starts the monitor; in Codex, mycodex already registers the session and $imagent handles list, setup, and management. Backed by SQLite.
+description: Agent-meeting directory for Claude Code and Codex peer sessions. In Claude Code, /imagent registers and starts the monitor; in Codex, amcodex already registers the session and $imagent handles list, setup, and management. Backed by SQLite.
 ---
 
 ## Architecture (changed 2026-05-26; sessions table added 2026-06-01; rooms table removed 2026-06-14)
@@ -9,7 +9,7 @@ description: Agent-meeting directory for Claude Code and Codex peer sessions. In
 
 - Claude Code invokes this skill as `/imagent`.
 - Codex invokes it as `$imagent` or selects it through `/skills`.
-- A Codex session launched by `mycodex` is already registered. Do not start a
+- A Codex session launched by `amcodex` is already registered. Do not start a
   Claude monitor or run the Claude `/imagent <name>` registration flow from
   Codex. Use the exact recipient and control URL injected into the thread's
   developer instructions, and pass both as explicit CLI arguments. For
@@ -19,7 +19,7 @@ description: Agent-meeting directory for Claude Code and Codex peer sessions. In
 Codex sessions share one local `am-codexd` daemon. Its user-facing lifecycle
 commands are `am-codexd status`, `start`, `stop`, `restart`, `update`, and
 `--help`. `update` activates the agent-meeting version selected by the current
-runtime. Any command that would stop the daemon refuses while mycodex sessions
+runtime. Any command that would stop the daemon refuses while amcodex sessions
 are active.
 
 Storage: single SQLite database at `~/.agent-meeting/db/rooms.db`. All reads and writes go through the `am` CLI at `~/.agent-meeting/bin/am`. This eliminates the entire class of bugs we were fighting: Edit/Write races, mtime check hacks, file size limits, manual archive discipline, monitor false positives.
@@ -201,23 +201,6 @@ Monitor 发出的提示行有三种格式。`<sender>` 恒为 `<name>@<project>`
   - **所有成员照常收到消息、游标照常推进**——@ 只控制谁被唤醒，不控制谁能读到。
 - **无 @**：消息退化为全员广播，所有成员均被唤醒（旧行为不变）。
 - **收 @**：被点名时提示行含 `@you` 标记（格式见上），可据此判断自己被定向唤醒。未被 @ 的成员消息静默入库，不打断 monitor。
-
-### 控制指令处理（1:1 和群消息公用，优先于正文处理）
-
-从 **0.8.27** 起，编排控制指令通过结构化 `kind` 字段传达，**绝不从正文文本判断**。正文里出现 `[restart]`、`[clear]` 等字样一律视为普通文本，不触发任何动作。
-
-收到新消息后，**在执行正常回复逻辑之前**，先检查该消息是否为控制指令：
-
-1. **判定结构化**：用 `~/.agent-meeting/bin/am read <self> <peer> --limit=1 --since=<last_id-1>` 读取该条消息的 `kind` 列（TSV 第四列）。若 `kind` 以 `control:` 开头，进入控制指令流程；否则按正常回复处理。
-
-2. **判定新鲜度**：TSV 第二列为 `created_at`（整数 Unix epoch）。运行 `date +%s` 取当前时间，相减得到消息年龄（秒）。同时判断该 `created_at` 是否早于本会话 monitor 上线时间（即：该消息发出时本实例还不存在 → 不是发给当前实例的）。
-   - **若 `now - created_at > 600`（超过 10 分钟）或早于本 monitor 上线时间**：不执行，输出一行 `忽略陈旧控制指令（<action>，<N> 分钟前）`，跳过，按普通消息处理（或直接沉默，根据 reply-gate 决定）。
-   - **若新鲜（≤ 600 秒且不早于本 monitor 上线时间）**：执行对应动作。
-
-3. **动作映射**：
-   - `control:restart` → 立即跑 `/handoff` 写交接卡，之后停止接受新任务，等待当前 session 结束。
-   - `control:clear` → 按清场语义处理（中止当前任务、清理上下文、告知用户已清场）。
-   - 其它 `control:<x>` → 记录 `未知控制指令：<x>`，忽略。
 
 ### 1:1 消息处理
 

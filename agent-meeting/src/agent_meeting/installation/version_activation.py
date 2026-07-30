@@ -11,12 +11,17 @@ from pathlib import Path
 
 PUBLIC_COMMANDS = (
     "am",
+    "am-ctl",
     "am-msgd",
     "am-update",
+    "amclaude",
+    "amcodex",
+    # One-release compatibility alias for existing scripts.
     "mycodex",
     "am-codexd",
 )
 RUNTIME_COMMANDS = PUBLIC_COMMANDS + (
+    "am-ctld",
     "am-session-monitor",
     "am-statusline",
     "am-message-hub-supervisor",

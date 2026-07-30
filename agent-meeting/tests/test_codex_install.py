@@ -353,7 +353,7 @@ def test_session_context_defers_codex_identity_to_thread_params(
     meeting_home.mkdir()
     mod = _load_bootstrap(meeting_home, plugin_root)
     # The shared Codex app-server has no per-thread environment variable.  A
-    # mycodex launch supplies this persistent runtime marker instead.
+    # amcodex launch supplies this persistent runtime marker instead.
     monkeypatch.setenv("AGENT_MEETING_CODEX_RUNTIME", "1")
     monkeypatch.setattr(mod, "online_peers_str", lambda: "(none online)")
 
@@ -361,7 +361,7 @@ def test_session_context_defers_codex_identity_to_thread_params(
 
     payload = json.loads(capsys.readouterr().out)
     context = payload["hookSpecificOutput"]["additionalContext"]
-    assert "A `mycodex` launch supplies its exact agent-meeting recipient" in context
+    assert "An `amcodex` launch supplies its exact agent-meeting recipient" in context
     assert "thread and turn request parameters" in context
     assert "This session has NO meeting name yet" not in context
 

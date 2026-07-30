@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "woodor-agent-meeting"
-version = "0.16.3"
+version = "0.17.0"
 description = "Cross-platform session and messaging runtime for Claude Code and Codex agents."
 requires-python = ">=3.10"
 dependencies = [
@@ -13,6 +13,9 @@ dependencies = [
 
 [project.scripts]
 am = "agent_meeting.commands.am_cli:main"
+am-ctl = "agent_meeting.commands.am_ctl_cli:main"
+am-ctld = "agent_meeting.commands.am_ctld_cli:main"
+amclaude = "agent_meeting.commands.amclaude_cli:main"
 am-msgd = "agent_meeting.commands.am_msgd_cli:main"
 am-update = "agent_meeting.commands.am_update_cli:main"
 am-session-monitor = "agent_meeting.commands.session_monitor_cli:main"

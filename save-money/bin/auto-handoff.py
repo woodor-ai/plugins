@@ -5,15 +5,15 @@ cost-auto-handoff hook — dual-host (Claude Code Stop / Codex PostToolUse)
 Claude Code path (hook_event_name == "Stop"):
   Reads the session transcript JSONL for the last assistant usage block,
   derives context_tokens, compares against per-family thresholds from
-  ~/.claude/cost-opt.json, and if exceeded writes a trigger file at
-  ~/.ambridge/handoff-triggers/<agent>.json for AMBridge to pick up.
+  ~/.claude/cost-opt.json, and if exceeded dispatches a local am-ctl
+  handoff+restart operation after the hook returns.
 
 Codex path (hook_event_name == "PostToolUse"):
   Reads the session transcript JSONL for the latest token_count event,
   derives input_tokens and model_context_window directly from the JSONL
   (no static WINDOW_TOKENS lookup needed — Codex embeds the window size).
-  If context_pct >= configured threshold, outputs {"additionalContext": "..."}
-  to stdout to inject a handoff-now prompt into the running agent.
+  If context_pct >= configured threshold, dispatches the same local am-ctl
+  operation. No lifecycle instruction is sent through agent chat/messages.
 
 Dedup: ~/.cache/cost-auto-handoff/fired/<session_id> prevents repeat fires
 within the same session on both hosts.
@@ -21,7 +21,6 @@ within the same session on both hosts.
 
 import json
 import os
-import socket
 import subprocess
 import sys
 import time
@@ -42,18 +41,10 @@ WINDOW_TOKENS = {"opus": 1_000_000, "sonnet": 1_000_000, "haiku": 200_000}
 MIN_FIRE_TOKENS = 100_000
 
 CONFIG_PATH = os.path.expanduser("~/.claude/cost-opt.json")
-TRIGGERS_DIR = os.path.expanduser("~/.ambridge/handoff-triggers")
 FIRED_DIR = os.path.expanduser("~/.cache/cost-auto-handoff/fired")
-MEETING_BIN = os.path.expanduser("~/.agent-meeting/bin/meeting")
+AM_CTL_BIN = os.path.expanduser("~/.agent-meeting/bin/am-ctl")
 
 FAMILIES = ("opus", "sonnet", "haiku")
-
-CODEX_HANDOFF_PROMPT = (
-    "⚠️ AUTO-HANDOFF: Your session context has exceeded the configured threshold. "
-    "Before your next response, call the /handoff skill to write a handoff card, "
-    "then tell the user to open a new session. Do this now."
-)
-
 
 def load_config():
     """Return (enabled, thresholds_pct) or (False, {}) on any error."""
@@ -153,63 +144,139 @@ def model_family(model_id):
     return None
 
 
-def resolve_agent_name(cwd):
-    """
-    Query `meeting list` for a session that is online, matches this host and
-    cwd. Returns the name string, or None if not found / ambiguous.
-    """
-    hostname = socket.gethostname()
+def lifecycle_sessions():
+    """Return the authenticated local am-ctld inventory."""
     try:
         result = subprocess.run(
-            [MEETING_BIN, "list"],
+            [AM_CTL_BIN, "status", "--json"],
             capture_output=True,
             text=True,
             timeout=5,
         )
         if result.returncode != 0:
-            return None
-        matches = []
-        for line in result.stdout.splitlines():
-            parts = line.split("\t")
-            if len(parts) < 6:
-                continue
-            status, name, _msgs, _role, sess_cwd, sess_host = (
-                parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
-            )
-            if (
-                status == "online"
-                and sess_cwd == cwd
-                and sess_host == hostname
-            ):
-                matches.append(name)
-        if len(matches) == 1:
-            return matches[0]
+            return []
+        payload = json.loads(result.stdout)
+        sessions = payload.get("sessions") or []
+        return sessions if isinstance(sessions, list) else []
+    except Exception:
+        return []
+
+
+def resolve_lifecycle_agent(cwd, platform, session_id=None):
+    """Resolve one local lifecycle identity without guessing among matches."""
+    matches = []
+    normalized_cwd = os.path.realpath(cwd) if cwd else ""
+    for session in lifecycle_sessions():
+        session_cwd = session.get("cwd") or ""
+        if normalized_cwd and os.path.realpath(session_cwd) != normalized_cwd:
+            continue
+        if session.get("platform") != platform:
+            continue
+        matches.append(session)
+    if session_id:
+        exact = [
+            session
+            for session in matches
+            if session_id
+            in {
+                session.get("transcript_session_id"),
+                session.get("thread_id"),
+            }
+        ]
+        if len(exact) == 1:
+            matches = exact
+    if len(matches) != 1:
         if len(matches) > 1:
             print(
-                f"cost-auto-handoff: ambiguous meeting matches for cwd={cwd}: "
-                f"{matches}; skipping trigger",
+                "cost-auto-handoff: local lifecycle identity is ambiguous for "
+                f"cwd={cwd}; skipping",
                 file=sys.stderr,
             )
         return None
-    except Exception:
+    name = matches[0].get("name")
+    project = matches[0].get("project")
+    if not name or not project:
         return None
+    return str(name), str(project)
 
 
-def write_trigger(agent, context_tokens, threshold_tokens):
-    """Atomically write trigger file to TRIGGERS_DIR."""
-    os.makedirs(TRIGGERS_DIR, exist_ok=True)
-    payload = json.dumps({
-        "agent": agent,
-        "reason": "auto-handoff",
-        "context_tokens": context_tokens,
-        "threshold_tokens": threshold_tokens,
-        "ts": int(time.time()),
-    })
-    target = os.path.join(TRIGGERS_DIR, f"{agent}.json")
-    tmp = target + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(payload)
-    os.rename(tmp, target)
+def dispatch_lifecycle(name, project):
+    """Wait for idle, then checkpoint and restart through the local control plane."""
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        matches = [
+            session
+            for session in lifecycle_sessions()
+            if session.get("name") == name and session.get("project") == project
+        ]
+        if (
+            len(matches) == 1
+            and matches[0].get("state") == "idle"
+            and matches[0].get("confidence") == "high"
+        ):
+            break
+        time.sleep(1)
+    else:
+        return False
+
+    common = [
+        AM_CTL_BIN,
+        "agent",
+        "--name",
+        name,
+        "--proj",
+        project,
+        "--cmd",
+    ]
+    handoff = subprocess.run(
+        [*common, "handoff"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=240,
+        check=False,
+    )
+    if handoff.returncode != 0:
+        return False
+    restarted = subprocess.run(
+        [*common, "restart"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=90,
+        check=False,
+    )
+    return restarted.returncode == 0
+
+
+def spawn_lifecycle_dispatch(name, project):
+    """Detach orchestration so a Stop/PostToolUse hook cannot deadlock its TUI."""
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(
+            [
+                sys.executable,
+                os.path.abspath(__file__),
+                "--dispatch",
+                name,
+                project,
+            ],
+            **kwargs,
+        )
+        return True
+    except OSError:
+        return False
 
 
 def mark_fired(session_id):
@@ -232,6 +299,8 @@ def already_fired(session_id):
 
 
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "--dispatch":
+        raise SystemExit(0 if dispatch_lifecycle(sys.argv[2], sys.argv[3]) else 1)
     try:
         stdin_data = json.load(sys.stdin)
     except Exception:
@@ -271,17 +340,9 @@ def main():
         if input_tokens <= effective_threshold:
             sys.exit(0)
 
-        mark_fired(session_id)
-        # Codex 0.140 requires the Claude-Code-isomorphic hookSpecificOutput
-        # wrapper; a bare {"additionalContext": ...} is rejected ("hook Failed")
-        # and the injected text is silently discarded. Verified by fire-test on
-        # Windows codex-cli 0.140.0.
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": CODEX_HANDOFF_PROMPT,
-            }
-        }))
+        identity = resolve_lifecycle_agent(cwd, "codex", session_id)
+        if identity and spawn_lifecycle_dispatch(*identity):
+            mark_fired(session_id)
 
     else:
         # Claude Code path (hook_event_name == "Stop" or unset)
@@ -303,12 +364,9 @@ def main():
         if context_tokens <= effective_threshold:
             sys.exit(0)
 
-        agent = resolve_agent_name(cwd)
-        if agent is None:
-            sys.exit(0)
-
-        write_trigger(agent, context_tokens, effective_threshold)
-        mark_fired(session_id)
+        identity = resolve_lifecycle_agent(cwd, "claude", session_id)
+        if identity and spawn_lifecycle_dispatch(*identity):
+            mark_fired(session_id)
 
 
 if __name__ == "__main__":

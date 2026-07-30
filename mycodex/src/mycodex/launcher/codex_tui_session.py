@@ -9,13 +9,16 @@ daemon or app-server.
 """
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import os
 import re
+import secrets
 import signal
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -26,6 +29,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
+
+from agent_meeting.lifecycle_control.terminals import current_terminal_handle
 
 from mycodex import __version__
 
@@ -52,6 +57,7 @@ else:
     DAEMON_COMMAND = PLUGIN_ROOT / "bin" / "am-codexd"
 BROKER_API_PORT = int(os.environ.get("MEETING_BROKER_API_PORT", "8788"))
 BROKER_BASE = f"http://127.0.0.1:{BROKER_API_PORT}"
+WRAPPER_DIR = DATA / "control" / "wrappers"
 
 sys.path.insert(0, str(DATA / "bin"))
 try:
@@ -86,7 +92,7 @@ except ImportError:
 
 
 def log(message):
-    print(f"[mycodex] {time.strftime('%H:%M:%S')} {message}", flush=True)
+    print(f"[amcodex] {time.strftime('%H:%M:%S')} {message}", flush=True)
 
 
 def default_control_url():
@@ -303,6 +309,15 @@ class Launcher:
         self.launch_id = uuid.uuid4().hex
         self.session = None
         self.torn_down = False
+        self.auth_token = secrets.token_urlsafe(32)
+        self.started_at = int(time.time())
+        self.process = None
+        self.restart_requested = False
+        self.stop_requested = False
+        self.lock = threading.RLock()
+        self.control_server = None
+        self.control_thread = None
+        self.descriptor_path = WRAPPER_DIR / f"amcodex-{self.launch_id}.json"
 
     def setup(self):
         ensure_daemon()
@@ -322,16 +337,229 @@ class Launcher:
             "(shared app-server; TUI will create the thread)"
         )
 
+    def descriptor(self):
+        with self.lock:
+            process = self.process
+            command = (
+                build_codex_launch_cmd(self.session["proxy_url"])
+                if self.session is not None
+                else []
+            )
+            try:
+                tty = os.ttyname(sys.stdin.fileno()) if sys.stdin.isatty() else None
+            except OSError:
+                tty = None
+            terminal_handle = {
+                **current_terminal_handle(),
+                "tty": tty,
+            }
+            return {
+                "schema_version": 1,
+                "wrapper": "amcodex",
+                "platform": "codex",
+                "name": self.name,
+                "project": self.project,
+                "identity": f"{self.name}@{self.project}",
+                "instance_id": self.launch_id,
+                "launch_id": self.launch_id,
+                "wrapper_pid": os.getpid(),
+                "child_pid": (
+                    process.pid
+                    if process is not None and process.poll() is None
+                    else None
+                ),
+                "cwd": os.getcwd(),
+                "tty": tty,
+                "terminal_handle": terminal_handle,
+                "started_at": self.started_at,
+                "status": (
+                    "restarting"
+                    if self.restart_requested
+                    else "stopping"
+                    if self.stop_requested
+                    else "running"
+                    if process is not None and process.poll() is None
+                    else "exited"
+                ),
+                "control": {
+                    "transport": "tcp",
+                    "host": "127.0.0.1",
+                    "port": (
+                        self.control_server.server_address[1]
+                        if self.control_server is not None
+                        else None
+                    ),
+                    "token": self.auth_token,
+                },
+                "launch_recipe": {
+                    "executable": command[0] if command else "codex",
+                    "args_persisted": False,
+                    "args_sha256": hashlib.sha256(
+                        "\0".join(command[1:]).encode("utf-8")
+                    ).hexdigest(),
+                },
+                "capabilities": [
+                    "observe",
+                    "interrupt",
+                    "exit",
+                    "restart_same_terminal",
+                    *(
+                        ["send_text"]
+                        if terminal_handle.get("type") in {"tmux", "iterm2"}
+                        else []
+                    ),
+                ],
+            }
+
+    def publish_descriptor(self):
+        WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            WRAPPER_DIR.chmod(0o700)
+        except OSError:
+            pass
+        temporary = self.descriptor_path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(self.descriptor(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            temporary.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(temporary, self.descriptor_path)
+
+    def interrupt(self, count=2):
+        with self.lock:
+            process = self.process
+        if process is None or process.poll() is not None:
+            return False
+        delivered = False
+        for index in range(max(1, count)):
+            try:
+                if IS_WINDOWS:
+                    process.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    process.send_signal(signal.SIGINT)
+                delivered = True
+            except (OSError, ProcessLookupError):
+                if not delivered:
+                    return False
+                break
+            if index + 1 < count:
+                time.sleep(0.2)
+        return delivered
+
+    def request_exit(self):
+        with self.lock:
+            self.stop_requested = True
+            self.restart_requested = False
+            process = self.process
+        self.publish_descriptor()
+        delivered = self.interrupt(2)
+        if not delivered:
+            return False
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if process is None or process.poll() is not None:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def request_restart(self):
+        with self.lock:
+            self.restart_requested = True
+            self.stop_requested = False
+            previous = self.process
+            previous_pid = previous.pid if previous is not None else None
+        self.publish_descriptor()
+        delivered = self.interrupt(2)
+        if not delivered:
+            return False
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            with self.lock:
+                current = self.process
+            if (
+                current is not None
+                and current.pid != previous_pid
+                and current.poll() is None
+            ):
+                return True
+            time.sleep(0.1)
+        return False
+
+    def start_control_server(self):
+        launcher = self
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                try:
+                    request = json.loads(self.rfile.readline().decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    request = {}
+                if request.get("token") != launcher.auth_token:
+                    response = {"ok": False, "error": "unauthorized"}
+                elif request.get("cmd") == "status":
+                    response = {"ok": True, "session": launcher.descriptor()}
+                elif request.get("cmd") == "exit":
+                    response = {"ok": launcher.request_exit()}
+                elif request.get("cmd") == "restart":
+                    response = {"ok": launcher.request_restart()}
+                else:
+                    response = {"ok": False, "error": "unsupported command"}
+                self.wfile.write(
+                    (json.dumps(response, ensure_ascii=False) + "\n").encode(
+                        "utf-8"
+                    )
+                )
+
+        class Server(socketserver.ThreadingTCPServer):
+            allow_reuse_address = False
+            daemon_threads = True
+
+        self.control_server = Server(("127.0.0.1", 0), Handler)
+        self.control_thread = threading.Thread(
+            target=self.control_server.serve_forever,
+            name=f"amcodex-control-{self.launch_id}",
+            daemon=True,
+        )
+        self.control_thread.start()
+
     def run_codex(self):
         command = build_codex_launch_cmd(self.session["proxy_url"])
         pinner = TitlePinner(title_text(self.name, self.project, self.control_url))
         pinner.start()
         log(f"launching foreground: {' '.join(command)}")
+        self.start_control_server()
         try:
-            subprocess.run(command)
+            while True:
+                kwargs = {}
+                if IS_WINDOWS:
+                    kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                with self.lock:
+                    self.restart_requested = False
+                    self.process = subprocess.Popen(command, **kwargs)
+                self.publish_descriptor()
+                self.process.wait()
+                with self.lock:
+                    self.process = None
+                    should_restart = (
+                        self.restart_requested and not self.stop_requested
+                    )
+                self.publish_descriptor()
+                if not should_restart:
+                    break
         except FileNotFoundError:
             raise RuntimeError("`codex` was not found on PATH")
         finally:
+            if self.control_server is not None:
+                self.control_server.shutdown()
+                self.control_server.server_close()
+                self.control_server = None
+            try:
+                self.descriptor_path.unlink()
+            except FileNotFoundError:
+                pass
             pinner.stop()
 
     def hold(self, stop_event):
@@ -356,6 +584,14 @@ class Launcher:
         if self.torn_down:
             return
         self.torn_down = True
+        with self.lock:
+            process = self.process
+        if process is not None and process.poll() is None:
+            self.interrupt(2)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate()
         set_terminal_title(DEFAULT_TITLE)
         if self.session is not None:
             try:
@@ -371,7 +607,7 @@ class Launcher:
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="mycodex")
+    parser = argparse.ArgumentParser(prog="amcodex")
     parser.add_argument("name", nargs="?", default=None)
     parser.add_argument(
         "--am-msgd",

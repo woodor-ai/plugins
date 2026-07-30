@@ -284,12 +284,13 @@ def ensure_bin_wrappers():
             name = src.name if (src.suffix == ".py" or not IS_WINDOWS) else src.with_suffix(".cmd").name
             if not (BIN_LINK / name).exists():
                 return False
-        # Also check the codex/ wrapper entries: an upgrade from an install that had
-        # codex-meeting to one that expects mycodex would be skipped by the sentinel
-        # even though mycodex is absent.
-        if not (BIN_LINK / ("mycodex.cmd" if IS_WINDOWS else "mycodex")).exists():
+        # Plugin-path equality alone cannot prove that the canonical launcher
+        # was installed.
+        if not (BIN_LINK / ("amcodex.cmd" if IS_WINDOWS else "amcodex")).exists():
             return False
         if IS_WINDOWS and not (BIN_LINK / "mycodex-impl.ps1").exists():
+            return False
+        if IS_WINDOWS and not (BIN_LINK / "amcodex-impl.ps1").exists():
             return False
         return True
 
@@ -348,11 +349,19 @@ def ensure_bin_wrappers():
         _mycodex_src_dir = PLUGIN_ROOT / "codex"
         if IS_WINDOWS and (_mycodex_src_dir / "mycodex-impl.ps1").exists():
             _shutil.copyfile(str(_mycodex_src_dir / "mycodex-impl.ps1"), str(tmp_bin / "mycodex-impl.ps1"))
+            _shutil.copyfile(str(_mycodex_src_dir / "mycodex-impl.ps1"), str(tmp_bin / "amcodex-impl.ps1"))
             _shutil.copyfile(str(_mycodex_src_dir / "mycodex.cmd"), str(tmp_bin / "mycodex.cmd"))
+            (tmp_bin / "amcodex.cmd").write_text(
+                (_mycodex_src_dir / "mycodex.cmd")
+                .read_text(encoding="utf-8")
+                .replace("mycodex-impl.ps1", "amcodex-impl.ps1"),
+                encoding="utf-8",
+            )
         elif not IS_WINDOWS and (_mycodex_src_dir / "mycodex-posix.sh").exists():
-            _dest_sh = tmp_bin / "mycodex"
-            _shutil.copyfile(str(_mycodex_src_dir / "mycodex-posix.sh"), str(_dest_sh))
-            _dest_sh.chmod(0o755)
+            for _launcher_name in ("amcodex", "mycodex"):
+                _dest_sh = tmp_bin / _launcher_name
+                _shutil.copyfile(str(_mycodex_src_dir / "mycodex-posix.sh"), str(_dest_sh))
+                _dest_sh.chmod(0o755)
 
     except Exception:
         _shutil.rmtree(str(tmp_bin), ignore_errors=True)

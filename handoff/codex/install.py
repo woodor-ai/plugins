@@ -19,14 +19,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 
-def _upsert_codex_instruction() -> None:
-    """Keep Codex's handoff instruction aligned with its .codex card path."""
+def _remove_retired_codex_instruction() -> None:
+    """Remove the retired autonomous handoff block from global instructions."""
     bootstrap = HERE.parent / "bin" / "handoff-bootstrap.py"
     spec = importlib.util.spec_from_file_location(f"handoff_bootstrap_{id(bootstrap)}", bootstrap)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-    mod.upsert(codex_home / "AGENTS.md", mod.INJECT_TEXT_CODEX, mod.INJECT_VERSION)
+    mod.remove_managed_block(codex_home / "AGENTS.md")
 
 
 def _load_hook_installer():
@@ -44,7 +44,7 @@ def run_install(ctx: dict) -> None:
     """Install the handoff SessionStart hook into ~/.codex/config.toml."""
     mod = _load_hook_installer()
     mod.install(None)
-    _upsert_codex_instruction()
+    _remove_retired_codex_instruction()
 
 
 def main():
@@ -61,7 +61,7 @@ def main():
         if project_path:
             project_path = str(Path(project_path).resolve())
         mod.install(project_path)
-        _upsert_codex_instruction()
+        _remove_retired_codex_instruction()
 
 
 if __name__ == "__main__":

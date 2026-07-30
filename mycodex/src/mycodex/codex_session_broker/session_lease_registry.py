@@ -38,6 +38,13 @@ class SessionLease:
         self.central_error = None
         self.central_register_task = None
         self.delivery_lock = asyncio.Lock()
+        self.ingress_pause_tokens = set()
+        self.token_usage = None
+        self.active_turn_id = None
+        self.steer_turn_id = None
+        self.steer_count = 0
+        self.last_steer_at = 0.0
+        self.steer_pending_since = None
 
     @property
     def identity(self):
@@ -48,3 +55,7 @@ class SessionLease:
         if self.proxy_port is None:
             raise RuntimeError("session proxy is not running")
         return f"ws://{self.proxy_host}:{self.proxy_port}"
+
+    @property
+    def ingress_paused(self):
+        return bool(self.ingress_pause_tokens)

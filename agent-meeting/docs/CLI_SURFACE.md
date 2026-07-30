@@ -1,11 +1,12 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-29 · version 0.16.3
+Last updated: 2026-07-30 · version 0.17.0
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
 pip-generated `~/.agent-meeting/bin/am.exe` console launcher. The same
-rule applies to `am-msgd`, `am-update`, `mycodex`, and `am-codexd`.
+rule applies to `am-ctl`, `am-msgd`, `am-update`, `amclaude`, `amcodex`, and
+`am-codexd`. `mycodex` is retained for one release as a compatibility alias.
 
 Claude Code exposes the workflows as `/imagent` and `/talkto`. Codex loads the
 same skills from the native plugin and exposes them through `/skills` or
@@ -26,16 +27,54 @@ am-update --target codex
 am-update --check
 ```
 
-`mycodex` is a session launcher only. `mycodex --update` exits with a migration
+`amcodex` is a session launcher only. `amcodex --update` exits with a migration
 message and does not perform installation work.
+
+## Local lifecycle control
+
+`am-ctld` is the per-user lifecycle daemon. `am-ctl` is its public CLI:
+
+```text
+am-ctl status
+am-ctl status --json
+am-ctl start
+am-ctl stop
+am-ctl restart
+am-ctl update
+am-ctl agent --name NAME --proj PROJECT --cmd status
+am-ctl agent --name NAME --proj PROJECT --cmd compact
+am-ctl agent --name NAME --proj PROJECT --cmd clear
+am-ctl agent --name NAME --proj PROJECT --cmd handoff
+am-ctl agent --name NAME --proj PROJECT --cmd exit
+am-ctl agent --name NAME --proj PROJECT --cmd restart
+```
+
+`amclaude [name] [--proj PROJECT] -- [claude arguments...]` launches Claude
+Code without subscription/API selection policy and keeps a lifecycle wrapper
+in the original terminal. `amcodex` is the corresponding Codex wrapper.
+The old `myclaude` subscription/API selector is not part of agent-meeting and
+is neither invoked nor migrated by `amclaude`.
+
+In 0.17.0, `status`, `exit`, and same-terminal `restart` are available for both
+wrappers. `compact` is available for idle, high-confidence `amcodex` and
+`amclaude` sessions. Codex `clear` sends the TUI's `/clear` only through a
+declared terminal adapter and verifies that the broker moved to a new idle
+thread. Maintenance actions pause meeting ingress until verification.
+Unsupported platform/action combinations fail closed instead of injecting a
+chat message. `handoff` is implemented for both wrappers: the old instance
+remains draining until a successful controller restart resumes ingress.
 
 The central hub can be selected without a URL scheme. A bare host defaults to
 port 8765:
 
 ```text
-mycodex [name] --am-msgd localhost
-mycodex [name] --am-msgd 192.168.1.20:9000
+amcodex [name] --am-msgd localhost
+amcodex [name] --am-msgd 192.168.1.20:9000
 ```
+
+`am-ctl status --json` is the machine-readable local inventory used by
+save-money and other local integrations. Control tokens remain private; the
+JSON only exposes public session fields and declared capabilities.
 
 ## User-facing commands
 
@@ -78,6 +117,14 @@ Common options:
 `msg_id=17029` must be followed by `am message SELF 17029`; opening a
 whole conversation can expose later messages and lead to the wrong task being
 handled.
+
+For an `amcodex` session, `am-codexd` may deliver one compact working-turn
+notification through Codex app-server `turn/steer`. Such a notification contains
+`Message IDs: ...`, not peer-authored bodies. The agent must read every listed ID
+with `am message`; the daemon advances the delivery cursor only after the steer
+request succeeds. Steer delivery is bounded by debounce, cooldown, per-turn, and
+per-batch limits, and automatically falls back to idle `turn/start` delivery
+without dropping unacknowledged messages.
 
 Private `send` recipients must be written as `name@project` or `name@*`.
 The CLI never auto-selects a private project from a bare name. A bare group
@@ -150,7 +197,7 @@ names so both services cannot run at once.
 
 ## Codex-only local daemon
 
-`mycodex` starts or reuses `am-codexd`. This daemon is distinct from central
+`amcodex` starts or reuses `am-codexd`. This daemon is distinct from central
 am-msgd:
 
 - am-msgd is the LAN-wide canonical session/message hub.
@@ -173,8 +220,8 @@ am-codexd --help
 
 `update` activates the agent-meeting version selected by the current runtime.
 `stop`, `restart`, and a version-changing `update` refuse to interrupt active
-mycodex sessions. Launcher-triggered updates defer compatible patch-level
-transitions while sessions are active, so a new `mycodex` launch can reuse the
+amcodex sessions. Launcher-triggered updates defer compatible patch-level
+transitions while sessions are active, so a new `amcodex` launch can reuse the
 healthy daemon; the next launch after all leases exit performs the update.
 
 See [`../codex/README.md`](../codex/README.md) for ports, lifecycle, ordered

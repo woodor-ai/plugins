@@ -132,13 +132,25 @@ def test_reinstall_replaces_legacy_direct_pickup_hooks(tmp_path):
     assert all(block["hooks"][0]["command"] == mod.HOOK_COMMAND for block in blocks)
 
 
-def test_codex_install_writes_dot_codex_handoff_instruction(tmp_path):
-    entry = _load_entry(tmp_path / "codex_home")
+def test_codex_install_removes_retired_auto_handoff_instruction(tmp_path):
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    agents = codex_home / "AGENTS.md"
+    agents.write_text(
+        "user content\n"
+        "<!-- BEGIN woodor-handoff v2 -->\n"
+        "## Auto-handoff trigger strategy\n"
+        "retired instructions\n"
+        "<!-- END woodor-handoff v2 -->\n",
+        encoding="utf-8",
+    )
+
+    entry = _load_entry(codex_home)
     entry.run_install({})
 
-    text = (tmp_path / "codex_home" / "AGENTS.md").read_text(encoding="utf-8")
-    assert ".codex/handoff-pending.md" in text
-    assert ".claude/handoff-pending.md" not in text
+    text = agents.read_text(encoding="utf-8")
+    assert text == "user content\n"
+    assert "woodor-handoff" not in text
 
 
 if __name__ == "__main__":

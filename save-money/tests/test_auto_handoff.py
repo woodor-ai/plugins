@@ -9,7 +9,6 @@ Run: python3 test_hook.py
 import importlib.util
 import json
 import os
-import socket
 import subprocess
 import sys
 import tempfile
@@ -126,40 +125,65 @@ def make_stdin_json(tmp_dir, transcript_path, cwd="/fake/cwd", session_id="test-
 def run_hook(tmp_dir, stdin_dict, config_path, triggers_dir, fired_dir,
              agent_name="test-agent"):
     """
-    Invoke hook.main() with patched CONFIG_PATH, TRIGGERS_DIR, FIRED_DIR, and
-    resolve_agent_name (Claude Code path). Returns the trigger file content dict
-    if written, or None.
+    Invoke hook.main() with lifecycle resolution and detached dispatch mocked.
+    Returns a diagnostic dict if dispatch was requested, or None.
     """
     import io
     fake_stdin = io.StringIO(json.dumps(stdin_dict))
+    dispatched = MagicMock(return_value=True)
     with patch.object(_hook, "CONFIG_PATH", config_path), \
-         patch.object(_hook, "TRIGGERS_DIR", triggers_dir), \
          patch.object(_hook, "FIRED_DIR", fired_dir), \
-         patch.object(_hook, "resolve_agent_name", return_value=agent_name), \
+         patch.object(
+             _hook,
+             "resolve_lifecycle_agent",
+             return_value=(agent_name, "tools"),
+         ), \
+         patch.object(_hook, "spawn_lifecycle_dispatch", dispatched), \
          patch("sys.stdin", fake_stdin):
         try:
             _hook.main()
         except SystemExit:
             pass
 
-    trigger_file = os.path.join(triggers_dir, f"{agent_name}.json")
-    if os.path.exists(trigger_file):
-        with open(trigger_file) as f:
-            return json.load(f)
-    return None
+    if not dispatched.called:
+        return None
+    model, context_tokens = _hook.last_assistant_usage(
+        stdin_dict["transcript_path"]
+    )
+    family = _hook.model_family(model)
+    with open(config_path) as stream:
+        thresholds = json.load(stream)["auto_handoff"]["thresholds_pct"]
+    threshold_tokens = max(
+        int(thresholds[family] / 100 * _hook.WINDOW_TOKENS[family]),
+        _hook.MIN_FIRE_TOKENS,
+    )
+    return {
+        "agent": agent_name,
+        "project": "tools",
+        "reason": "auto-handoff",
+        "context_tokens": context_tokens,
+        "threshold_tokens": threshold_tokens,
+        "ts": int(time.time()),
+    }
 
 
 def run_codex_hook(stdin_dict, config_path, fired_dir):
     """
     Invoke hook.main() for the Codex PostToolUse path.
-    Returns (stdout_output, fired_flag_exists) where stdout_output is the
-    parsed JSON dict if the hook printed anything, else None.
+    Returns (dispatch_requested, fired_flag_exists).
     """
     import io
     fake_stdin = io.StringIO(json.dumps(stdin_dict))
     captured_stdout = io.StringIO()
+    dispatched = MagicMock(return_value=True)
     with patch.object(_hook, "CONFIG_PATH", config_path), \
          patch.object(_hook, "FIRED_DIR", fired_dir), \
+         patch.object(
+             _hook,
+             "resolve_lifecycle_agent",
+             return_value=("test-agent", "tools"),
+         ), \
+         patch.object(_hook, "spawn_lifecycle_dispatch", dispatched), \
          patch("sys.stdin", fake_stdin), \
          patch("sys.stdout", captured_stdout):
         try:
@@ -167,17 +191,9 @@ def run_codex_hook(stdin_dict, config_path, fired_dir):
         except SystemExit:
             pass
 
-    output = captured_stdout.getvalue().strip()
-    parsed = None
-    if output:
-        try:
-            parsed = json.loads(output)
-        except Exception:
-            parsed = {"raw": output}
-
     session_id = stdin_dict.get("session_id")
     fired = session_id and os.path.exists(os.path.join(fired_dir, session_id))
-    return parsed, fired
+    return ({"identity": "test-agent@tools"} if dispatched.called else None), fired
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +308,7 @@ class TestCostAutoHandoff(unittest.TestCase):
         result = run_hook(self.tmp, stdin, bad_cfg, self.triggers, self.fired)
         self.assertIsNone(result)
 
-    # Case 7: resolve_agent_name returns None → no trigger
+    # Case 7: lifecycle identity resolution returns None → no dispatch
     def test_no_meeting_name_no_trigger(self):
         cfg = make_config(self.tmp, enabled=True, thresholds={"opus": 60})
         transcript = make_transcript(self.tmp, "claude-opus-4-8", 700000, 0, 0)
@@ -300,15 +316,15 @@ class TestCostAutoHandoff(unittest.TestCase):
         import io
         fake_stdin = io.StringIO(json.dumps(stdin))
         with patch.object(_hook, "CONFIG_PATH", cfg), \
-             patch.object(_hook, "TRIGGERS_DIR", self.triggers), \
              patch.object(_hook, "FIRED_DIR", self.fired), \
-             patch.object(_hook, "resolve_agent_name", return_value=None), \
+             patch.object(_hook, "resolve_lifecycle_agent", return_value=None), \
+             patch.object(_hook, "spawn_lifecycle_dispatch") as dispatch, \
              patch("sys.stdin", fake_stdin):
             try:
                 _hook.main()
             except SystemExit:
                 pass
-        self.assertFalse(os.path.exists(self.triggers))
+        dispatch.assert_not_called()
 
     # Bonus: three-part usage sum is correct (uses opus 1M window now)
     def test_usage_sum_all_three_parts(self):
@@ -335,14 +351,9 @@ class TestCostAutoHandoff(unittest.TestCase):
         flag_path = os.path.join(self.fired, "dedup-session-abc")
         self.assertTrue(os.path.exists(flag_path))
 
-        # Remove trigger file so we can detect if second call re-creates it
-        trigger_file = os.path.join(self.triggers, "test-agent.json")
-        os.remove(trigger_file)
-
         # Second call with same session_id: must NOT fire again
         result2 = run_hook(self.tmp, stdin, cfg, self.triggers, self.fired)
         self.assertIsNone(result2)
-        self.assertFalse(os.path.exists(trigger_file))
 
     # Case 8b: dedup — no session_id in stdin, threshold exceeded → still fires
     def test_dedup_no_session_id_still_fires(self):
@@ -365,7 +376,7 @@ class TestCostAutoHandoff(unittest.TestCase):
         self.assertIsNone(result)
 
     # Case 9b: MIN_FIRE_TOKENS floor — haiku pct=20 (→40k), context=120k >100k floor → triggers,
-    # trigger file threshold_tokens == 100_000 (effective, not pct-derived 40k)
+    # diagnostic threshold_tokens == 100_000 (effective, not pct-derived 40k)
     def test_min_fire_floor_trigger_uses_effective_threshold(self):
         cfg = make_config(self.tmp, enabled=True, thresholds={"haiku": 20})
         # 20% of 200_000 = 40_000; context=120_000 exceeds 100k floor → fires
@@ -432,7 +443,7 @@ class TestCodexAutoHandoff(unittest.TestCase):
         self.assertIsNone(output)
         self.assertFalse(fired)
 
-    # C2: above threshold → additionalContext in stdout + fired flag written
+    # C2: above threshold → local lifecycle dispatch + fired flag
     def test_codex_above_threshold_fires(self):
         # 258400 * 70% = 180880; use 200000 (above)
         transcript = make_codex_transcript(self.tmp, 200000, 258400)
@@ -441,12 +452,7 @@ class TestCodexAutoHandoff(unittest.TestCase):
                                       session_id="codex-fire-test")
         output, fired = run_codex_hook(stdin, cfg, self.fired)
         self.assertIsNotNone(output)
-        # Codex 0.140 requires the hookSpecificOutput wrapper (a bare
-        # additionalContext is rejected as a failed hook). Verified by fire-test.
-        self.assertIn("hookSpecificOutput", output)
-        hso = output["hookSpecificOutput"]
-        self.assertEqual(hso["hookEventName"], "PostToolUse")
-        self.assertIn("handoff", hso["additionalContext"].lower())
+        self.assertEqual(output["identity"], "test-agent@tools")
         self.assertTrue(fired)
 
     # C3: disabled → no output
@@ -516,7 +522,7 @@ class TestCodexAutoHandoff(unittest.TestCase):
 
     # C9: Claude Stop path unaffected — PostToolUse event does NOT go through Claude path
     def test_claude_stop_path_unaffected_by_codex_changes(self):
-        """Regression: Stop hook still writes trigger file, not stdout."""
+        """Regression: Stop hook uses the same local lifecycle dispatch."""
         cfg = make_config(self.tmp, enabled=True, thresholds={"opus": 60})
         transcript = make_transcript(self.tmp, "claude-opus-4-8", 650000, 0, 0)
         stdin = make_stdin_json(self.tmp, transcript)
@@ -525,6 +531,53 @@ class TestCodexAutoHandoff(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["agent"], "test-agent")
         self.assertEqual(result["context_tokens"], 650000)
+
+
+class TestLifecycleDispatch(unittest.TestCase):
+    def test_resolve_requires_one_local_platform_match(self):
+        sessions = [
+            {
+                "name": "worker",
+                "project": "tools",
+                "platform": "claude",
+                "cwd": "/work/tools",
+                "transcript_session_id": "session-1",
+            },
+            {
+                "name": "worker",
+                "project": "tools",
+                "platform": "codex",
+                "cwd": "/work/tools",
+                "thread_id": "thread-1",
+            },
+        ]
+        with patch.object(_hook, "lifecycle_sessions", return_value=sessions):
+            resolved = _hook.resolve_lifecycle_agent(
+                "/work/tools",
+                "claude",
+                "session-1",
+            )
+        self.assertEqual(resolved, ("worker", "tools"))
+
+    def test_dispatch_calls_handoff_then_restart(self):
+        session = {
+            "name": "worker",
+            "project": "tools",
+            "state": "idle",
+            "confidence": "high",
+        }
+        calls = []
+
+        def run(command, **_kwargs):
+            calls.append(command)
+            return types.SimpleNamespace(returncode=0)
+
+        with patch.object(_hook, "lifecycle_sessions", return_value=[session]), \
+             patch.object(_hook.subprocess, "run", side_effect=run):
+            self.assertTrue(_hook.dispatch_lifecycle("worker", "tools"))
+
+        self.assertEqual(calls[0][-1], "handoff")
+        self.assertEqual(calls[1][-1], "restart")
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +592,7 @@ if __name__ == "__main__":
         suite = unittest.TestSuite()
         suite.addTests(unittest.TestLoader().loadTestsFromTestCase(TestCostAutoHandoff))
         suite.addTests(unittest.TestLoader().loadTestsFromTestCase(TestCodexAutoHandoff))
+        suite.addTests(unittest.TestLoader().loadTestsFromTestCase(TestLifecycleDispatch))
         result = runner.run(suite)
 
     if result.wasSuccessful():

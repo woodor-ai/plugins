@@ -1,23 +1,23 @@
-# mycodex: bridge a Codex session into agent-meeting.
+# amcodex: bridge a Codex session into agent-meeting.
 #
 #   am-update                             update agent-meeting and installed
 #                                         Claude Code/Codex integrations.
-#   mycodex [<name>] [--am-msgd HOST[:PORT]] [--proj X] [--global] [--no-codex]
+#   amcodex [<name>] [--am-msgd HOST[:PORT]] [--proj X] [--global] [--no-codex]
 #                                         start a brokered Codex
 #                                         session — needs agent-meeting installed
 #                                         (run `am-update` first).
 #
 # Single source of truth, copied verbatim (no per-install templating) into
-# ~/.agent-meeting/bin/mycodex-impl.ps1 by both install-codex.py (root installer,
+# ~/.agent-meeting/bin/amcodex-impl.ps1 by both install-codex.py (root installer,
 # unconditional — makes the launcher available after installation)
 # and session-bootstrap.py (agent-meeting's own SessionStart hook — self-heals
 # this file if bin/ is ever wiped and rebuilt). Fully self-locating: no absolute
 # path is baked in, so the file is byte-identical everywhere it is copied.
 #
-# Named mycodex-impl.ps1 (not mycodex.ps1) deliberately: PowerShell resolves a
-# bare `mycodex` to a same-named .ps1 before the .cmd sibling, and a .ps1 with
+# Named amcodex-impl.ps1 (not amcodex.ps1) deliberately: PowerShell resolves a
+# bare `amcodex` to a same-named .ps1 before the .cmd sibling, and a .ps1 with
 # the command's own name is blocked by the default Restricted execution policy
-# in a real user shell. mycodex.cmd is the only PATH entry and invokes this
+# in a real user shell. amcodex.cmd is the only PATH entry and invokes this
 # file explicitly with -ExecutionPolicy Bypass, sidestepping that resolution
 # order entirely.
 param(
@@ -37,12 +37,12 @@ $AmCodexSession = if ($PluginRoot) { Join-Path $PluginRoot "codex\codex-session.
 $Vpy = Join-Path $MeetingHome "venv\Scripts\python.exe"
 
 if ($RestArgs.Count -gt 0 -and $RestArgs[0] -eq "--update") {
-    Write-Error "mycodex --update has moved to am-update. Run: am-update"
+    Write-Error "amcodex --update has moved to am-update. Run: am-update"
     exit 2
 }
 
 if (-not $PluginBin -or -not (Test-Path $Vpy) -or -not (Test-Path $AmCodexSession)) {
-    Write-Error "mycodex: agent-meeting is not installed - run 'am-update' to install it, then retry."
+    Write-Error "amcodex: agent-meeting is not installed - run 'am-update' to install it, then retry."
     exit 1
 }
 

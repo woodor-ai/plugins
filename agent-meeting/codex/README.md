@@ -8,18 +8,18 @@ sharing one machine-wide `am-codexd` daemon and one official Codex app-server.
 The process model is:
 
 ```text
-mycodex launcher A ─ ws://127.0.0.1:<ephemeral-A> ─┐
-mycodex launcher B ─ ws://127.0.0.1:<ephemeral-B> ─┼─
-mycodex launcher C ─ ws://127.0.0.1:<ephemeral-C> ─┘
+amcodex launcher A ─ ws://127.0.0.1:<ephemeral-A> ─┐
+amcodex launcher B ─ ws://127.0.0.1:<ephemeral-B> ─┼─
+amcodex launcher C ─ ws://127.0.0.1:<ephemeral-C> ─┘
                                                    ▼
                            am-codexd (one per machine)
                            ├─ one Codex app-server
-                           ├─ one lease per mycodex session
+                           ├─ one lease per amcodex session
                            ├─ one transient pending queue per identity
                            └─ one notify-only central subscription per identity
 ```
 
-Each `mycodex` process owns only its foreground TUI and daemon lease. Closing
+Each `amcodex` process owns only its foreground TUI and daemon lease. Closing
 one TUI unregisters that identity without stopping am-codexd, app-server, or
 other Codex sessions. The daemon stays resident for later launches.
 
@@ -45,22 +45,22 @@ thread has no rollout that the resume bootstrap can load.
 The proxy also stamps the lease's launch directory onto `thread/start`,
 `thread/resume`, and `thread/fork`. Without that rewrite, a remote TUI that
 omits `cwd` inherits the shared app-server process directory—the directory of
-whichever `mycodex` invocation happened to start the broker first.
+whichever `amcodex` invocation happened to start the broker first.
 
 ## Components
 
 | File | Role |
 |---|---|
-| `mycodex/src/mycodex/commands/am_codexd_cli.py` | Public daemon lifecycle command |
-| `mycodex/src/mycodex/codex_session_broker/` | Daemon, leases, inbox delivery, and TUI proxy |
-| `mycodex/src/mycodex/launcher/codex_tui_session.py` | Foreground `mycodex` launcher and broker lease |
-| `mycodex/src/mycodex/ai_platforms/codex/` | Codex instructions and user configuration |
-| `mycodex/src/mycodex/operating_systems/{macos,windows}/` | OS process, terminal, and PATH adapters |
+| `amcodex/src/amcodex/commands/am_codexd_cli.py` | Public daemon lifecycle command |
+| `amcodex/src/amcodex/codex_session_broker/` | Daemon, leases, inbox delivery, and TUI proxy |
+| `amcodex/src/amcodex/launcher/codex_tui_session.py` | Foreground `amcodex` launcher and broker lease |
+| `amcodex/src/amcodex/ai_platforms/codex/` | Codex instructions and user configuration |
+| `amcodex/src/amcodex/operating_systems/{macos,windows}/` | OS process, terminal, and PATH adapters |
 | `installers/codex/` | macOS and Windows Codex installer entrypoints |
 
 The files under `agent-meeting/codex/` are compatibility entrypoints for
 pre-0.15 copied-plugin installations. New installations execute the packaged
-`mycodex` and `am-codexd` console launchers.
+`amcodex` and `am-codexd` console launchers.
 
 `codex app-server` is an official Codex process. agent-meeting starts and owns
 one shared instance because Homebrew and other unmanaged Codex installations
@@ -93,7 +93,7 @@ powershell -ExecutionPolicy Bypass -File <repo>\installers\codex\install-on-wind
 
 The installer builds the immutable
 `~/.agent-meeting/runtimes/<version>/venv`, atomically activates the stable
-`am`, `am-msgd`, `mycodex`, and `am-codexd` launchers, stores the selected
+`am`, `am-msgd`, `amcodex`, and `am-codexd` launchers, stores the selected
 central am-msgd URL, removes the legacy Codex hook, and refreshes the
 agent-meeting instructions in `~/.codex/AGENTS.md`. It also refreshes the
 Woodor Codex marketplace and installs the native `agent-meeting` plugin, which
@@ -105,7 +105,7 @@ available.
 ## Run
 
 ```sh
-mycodex [<name>] [--am-msgd HOST[:PORT]] [--proj PROJECT | --global]
+amcodex [<name>] [--am-msgd HOST[:PORT]] [--proj PROJECT | --global]
 ```
 
 `--proj` declares and caches an authoritative project identity for the current
@@ -115,7 +115,7 @@ repository. A later launch from the same repository can omit it. Use
 For lifecycle-only diagnostics:
 
 ```sh
-mycodex <name> --proj PROJECT --no-codex
+amcodex <name> --proj PROJECT --no-codex
 ```
 
 This acquires a broker lease without opening the TUI and holds it until
@@ -133,8 +133,8 @@ am-codexd --help
 ```
 
 `update` restarts an idle daemon onto the agent-meeting version selected by the
-current runtime. Commands that would stop the daemon refuse while mycodex
-sessions are active. When `mycodex` starts during a compatible patch-level
+current runtime. Commands that would stop the daemon refuse while amcodex
+sessions are active. When `amcodex` starts during a compatible patch-level
 version transition, it keeps using the healthy active daemon and defers the
 restart until all existing sessions exit.
 
