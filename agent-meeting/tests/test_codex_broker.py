@@ -1091,7 +1091,22 @@ def test_launcher_always_connects_through_session_proxy():
         "codex",
         "--remote",
         "ws://127.0.0.1:49152",
+        "--config",
+        "tui.terminal_title=[]",
     ]
+
+
+def test_launcher_title_preserves_explicit_hyphenated_name():
+    module = load(LAUNCHER_PATH, "codex_meeting_launcher_title")
+
+    assert (
+        module.title_text(
+            "plugins-test",
+            "plugins",
+            "http://localhost:8765",
+        )
+        == "plugins-test@plugins | localhost:8765"
+    )
 
 
 def test_no_codex_launcher_exits_when_background_registration_is_rejected(
@@ -1140,16 +1155,7 @@ def test_launcher_does_not_export_meeting_identity_or_host(monkeypatch):
         "proxy_url": "ws://127.0.0.1:49152",
     }
     observed = {}
-
-    class FakePinner:
-        def __init__(self, _title):
-            pass
-
-        def start(self):
-            pass
-
-        def stop(self):
-            pass
+    titles = []
 
     class FakeProcess:
         pid = 123
@@ -1165,7 +1171,7 @@ def test_launcher_does_not_export_meeting_identity_or_host(monkeypatch):
         observed["kwargs"] = kwargs
         return FakeProcess()
 
-    monkeypatch.setattr(module, "TitlePinner", FakePinner)
+    monkeypatch.setattr(module, "set_terminal_title", titles.append)
     monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(launcher, "start_control_server", lambda: None)
     monkeypatch.setattr(launcher, "publish_descriptor", lambda: None)
@@ -1176,7 +1182,10 @@ def test_launcher_does_not_export_meeting_identity_or_host(monkeypatch):
         "codex",
         "--remote",
         "ws://127.0.0.1:49152",
+        "--config",
+        "tui.terminal_title=[]",
     ]
+    assert titles == ["alice@proj | 10.0.0.114:8765"]
     assert "env" not in observed["kwargs"]
 
 

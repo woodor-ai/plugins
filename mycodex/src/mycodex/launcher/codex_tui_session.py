@@ -261,11 +261,16 @@ def ensure_daemon():
 
 
 def build_codex_launch_cmd(proxy_url):
-    return ["codex", "--remote", proxy_url]
+    return [
+        "codex",
+        "--remote",
+        proxy_url,
+        "--config",
+        "tui.terminal_title=[]",
+    ]
 
 
 DEFAULT_TITLE = "codex"
-TITLE_REFRESH_INTERVAL_S = 5.0
 
 
 def title_text(name, project, control_url):
@@ -280,25 +285,6 @@ def title_text(name, project, control_url):
 
 def set_terminal_title(title):
     codex_terminal_title.set_title(title)
-
-
-class TitlePinner:
-    def __init__(self, title):
-        self.title = title
-        self.stop_event = threading.Event()
-        self.thread = threading.Thread(target=self.run, daemon=True)
-
-    def start(self):
-        set_terminal_title(self.title)
-        self.thread.start()
-
-    def run(self):
-        while not self.stop_event.wait(TITLE_REFRESH_INTERVAL_S):
-            set_terminal_title(self.title)
-
-    def stop(self):
-        self.stop_event.set()
-        self.thread.join(timeout=2)
 
 
 class Launcher:
@@ -527,8 +513,7 @@ class Launcher:
 
     def run_codex(self):
         command = build_codex_launch_cmd(self.session["proxy_url"])
-        pinner = TitlePinner(title_text(self.name, self.project, self.control_url))
-        pinner.start()
+        set_terminal_title(title_text(self.name, self.project, self.control_url))
         log(f"launching foreground: {' '.join(command)}")
         self.start_control_server()
         try:
@@ -560,7 +545,6 @@ class Launcher:
                 self.descriptor_path.unlink()
             except FileNotFoundError:
                 pass
-            pinner.stop()
 
     def hold(self, stop_event):
         log("--no-codex: daemon lease active; waiting for SIGINT/SIGTERM")
