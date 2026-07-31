@@ -342,8 +342,8 @@ def ensure_bin_wrappers():
 
         # `mycodex`: copied verbatim from agent-meeting/codex/mycodex-posix.sh (+
         # mycodex.cmd/mycodex-impl.ps1 on Windows) — the single source of truth
-        # also used by the root installer (install-codex.py), so both sites
-        # regenerate the exact same file. Unconditional: mycodex must always
+        # also used by the legacy standalone installer, so both sites regenerate
+        # the exact same file. Unconditional: mycodex must always
         # self-heal here even if codex-session.py itself is (temporarily)
         # missing — its own "not installed" check handles that case at runtime.
         _mycodex_src_dir = PLUGIN_ROOT / "codex"

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-agent-meeting codex install — unified entry point for the interactive installer
-(install-codex.py) and direct standalone use.
+Legacy standalone installer for pre-0.15 copied-plugin installations.
+
+Current installations use the native Codex marketplace plus the platform
+installers under ``installers/codex``.
 
 Entry point for the installer: run_install(ctx)
 Standalone use:                python install.py [--control-url URL]
@@ -20,8 +22,8 @@ What run_install does (in order):
      codex's fully-unattended config (approval_policy="never" +
      sandbox_mode="danger-full-access") in config.toml.
 
-All paths are resolved from __file__ so when called from the installed copy every
-hook, wrapper, and script path points to the install directory — not plugins-src.
+All paths are resolved from __file__ so when called from an old copied-plugin
+installation every hook, wrapper, and script path remains self-contained.
 Honors MEETING_HOME / CODEX_HOME for isolated testing.
 """
 
@@ -525,7 +527,7 @@ def _select_control_url(
 
 
 def run_install(ctx: dict) -> None:
-    """Unified install entry point called by install-codex.py (and usable standalone).
+    """Legacy standalone entry point for copied-plugin installs.
 
     ctx keys: install_dir, plugins_src_dir, prompt (callable), is_windows.
     Paths are derived from __file__ so they always point to the installed copy.

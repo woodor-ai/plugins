@@ -8,9 +8,8 @@
 #                                         (run `am-update` first).
 #
 # Single source of truth, copied verbatim (no per-install templating) into
-# ~/.agent-meeting/bin/amcodex-impl.ps1 by both install-codex.py (root installer,
-# unconditional — makes the launcher available after installation)
-# and session-bootstrap.py (agent-meeting's own SessionStart hook — self-heals
+# ~/.agent-meeting/bin/amcodex-impl.ps1 by the compatibility installer and
+# session-bootstrap.py (agent-meeting's own SessionStart hook — self-heals
 # this file if bin/ is ever wiped and rebuilt). Fully self-locating: no absolute
 # path is baked in, so the file is byte-identical everywhere it is copied.
 #

@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""
-handoff codex install — unified entry point for the interactive installer.
+"""Legacy standalone installer for pre-native Codex handoff installations.
 
-Wraps install-codex-hook.py so the handoff plugin satisfies the codex/install.py
-convention required by install-codex.py.
-
-When called from the installed copy (via install-codex.py), __file__ points to the
-installed directory, so install-codex-hook.py is imported from the same installed
-copy and PICKUP_SCRIPT resolves to the install dir's .codex-aware wrapper — not
-the plugins-src original.
+Current installations use the native plugin manifest and bundled lifecycle
+hooks. This entry point remains only for uninstalling or migrating old global
+hook configuration.
 """
 import argparse
 import importlib.util

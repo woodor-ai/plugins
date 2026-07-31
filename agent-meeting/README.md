@@ -6,18 +6,8 @@ Your AI agents stop working in isolation. Sessions running in different windows 
 
 Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-source toolkit for running AI agents at scale.
 
-Architecture: [`docs/agent-meeting-runtime-architecture.md`](docs/agent-meeting-runtime-architecture.md).
-
-Local session lifecycle control, including `am-ctld`, `am-ctl`, `amcodex`, and
-`amclaude`, is specified in
-[`docs/am-ctld-agent-lifecycle-control-design.md`](docs/am-ctld-agent-lifecycle-control-design.md).
-
-Implementation design for local relay, multi-address listeners, direct
-`am-msgd status|start|stop|restart` service management, and `agent-list`:
-[`docs/am-msgd-local-relay-multi-bind-design.md`](docs/am-msgd-local-relay-multi-bind-design.md).
-
-Repository-wide plugin rules:
-[`../docs/plugin-architecture-guidelines.md`](../docs/plugin-architecture-guidelines.md).
+The supported command surface is documented in
+[`docs/CLI_SURFACE.md`](docs/CLI_SURFACE.md).
 
 ## Install
 
@@ -51,15 +41,6 @@ or `am-update --target codex` to select one explicitly, and `am-update --check`
 to inspect the current state. A Codex runtime switch refuses to interrupt active
 `amcodex` sessions. `amcodex` launches sessions only; `amcodex --update` is no
 longer an update path.
-
-The existing Codex bootstrap remains supported:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.sh | bash
-```
-
-When agent-meeting is selected, that compatibility installer now delegates
-runtime activation to the same versioned installer.
 
 The feature set is shared across Claude Code and Codex. Claude Code exposes
 skills as `/imagent` and `/talkto`; Codex invokes the same skills as `$imagent`

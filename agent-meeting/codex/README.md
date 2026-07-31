@@ -68,19 +68,15 @@ cannot use Codex's managed app-server service lifecycle.
 
 ## Install
 
-PowerShell:
-
-```powershell
-iwr -useb https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.ps1 | iex
-```
-
-macOS or Linux:
+Install the native Codex plugin from the Woodor marketplace:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/woodor-ai/plugins/main/install-codex-plugins.sh | bash
+codex plugin marketplace add woodor-ai/plugins
+codex plugin add agent-meeting@woodor
 ```
 
-From a checkout, use the platform installer:
+To install the managed host runtime and the `amcodex`/`am-codexd` launchers,
+clone the repository and use the platform installer:
 
 ```sh
 git clone https://github.com/woodor-ai/plugins
