@@ -6,7 +6,7 @@
 
 | Profile | Codex | Claude Code | 用途 |
 |---|---|---|---|
-| `explore` | `gpt-5.6-terra` / medium | `claude-sonnet-5` / medium | 只读调查、定位、证据收集 |
+| `explore` | `gpt-5.6-terra` / high | `claude-sonnet-5` / medium | 只读调查、定位、证据收集 |
 | `rd` | `gpt-5.6-terra` / high | `claude-sonnet-5` / high | 边界明确的实现、修复、测试 |
 | `planner` | `gpt-5.6-sol` / high | `claude-opus-5` / high | 架构取舍、复杂分析、独立审查 |
 

@@ -49,11 +49,13 @@ am-ctl agent --name NAME --proj PROJECT --cmd exit
 am-ctl agent --name NAME --proj PROJECT --cmd restart
 ```
 
-`amclaude [name] [--proj PROJECT] -- [claude arguments...]` launches Claude
-Code without subscription/API selection policy and keeps a lifecycle wrapper
-in the original terminal. `amcodex` is the corresponding Codex wrapper.
-The old `myclaude` subscription/API selector is not part of agent-meeting and
-is neither invoked nor migrated by `amclaude`.
+`amclaude [name] [--proj PROJECT] [--model fable-5|opus-5|sonnet-5]
+[--effort ultracode|max|extra|high|medium] -- [claude arguments...]` launches
+Claude Code in its lifecycle wrapper. It defaults to `opus-5` with `high`
+effort. `amcodex` is the corresponding Codex wrapper and accepts
+`--model sol|terra` (default `sol`) plus `--effort xhigh|high|medium` (default
+`high`). The old `myclaude` subscription/API selector is not part of
+agent-meeting and is neither invoked nor migrated by `amclaude`.
 
 In 0.17.1, `status`, `exit`, and same-terminal `restart` are available for both
 wrappers. `compact` is available for idle, high-confidence `amcodex` and

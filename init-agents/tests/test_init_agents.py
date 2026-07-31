@@ -49,7 +49,7 @@ def test_apply_creates_valid_codex_profiles(tmp_path):
     assert result.returncode == 0
     assert result.stdout.count("created") == 3
     expected = {
-        "explore": ("gpt-5.6-terra", "medium", "read-only"),
+        "explore": ("gpt-5.6-terra", "high", "read-only"),
         "rd": ("gpt-5.6-terra", "high", "workspace-write"),
         "planner": ("gpt-5.6-sol", "high", "read-only"),
     }

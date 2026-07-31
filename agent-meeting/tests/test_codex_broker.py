@@ -1091,6 +1091,32 @@ def test_launcher_always_connects_through_session_proxy():
         "codex",
         "--remote",
         "ws://127.0.0.1:49152",
+        "--model",
+        "gpt-5.6-sol",
+        "--config",
+        'model_reasoning_effort="high"',
+        "--config",
+        "tui.terminal_title=[]",
+    ]
+
+
+def test_launcher_supports_codex_model_and_effort_choices():
+    module = load(LAUNCHER_PATH, "codex_meeting_launcher_choices")
+
+    command = module.build_codex_launch_cmd(
+        "ws://127.0.0.1:49152",
+        model="gpt-5.6-terra",
+        effort="xhigh",
+    )
+
+    assert command == [
+        "codex",
+        "--remote",
+        "ws://127.0.0.1:49152",
+        "--model",
+        "gpt-5.6-terra",
+        "--config",
+        'model_reasoning_effort="xhigh"',
         "--config",
         "tui.terminal_title=[]",
     ]
@@ -1182,6 +1208,10 @@ def test_launcher_does_not_export_meeting_identity_or_host(monkeypatch):
         "codex",
         "--remote",
         "ws://127.0.0.1:49152",
+        "--model",
+        "gpt-5.6-sol",
+        "--config",
+        'model_reasoning_effort="high"',
         "--config",
         "tui.terminal_title=[]",
     ]

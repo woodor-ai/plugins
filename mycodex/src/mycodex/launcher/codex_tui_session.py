@@ -260,11 +260,28 @@ def ensure_daemon():
         log(detail)
 
 
-def build_codex_launch_cmd(proxy_url):
+CODEX_MODELS = {
+    "sol": "gpt-5.6-sol",
+    "terra": "gpt-5.6-terra",
+}
+CODEX_EFFORTS = ("xhigh", "high", "medium")
+
+
+def build_codex_launch_cmd(
+    proxy_url,
+    *,
+    model="gpt-5.6-sol",
+    effort="high",
+):
+    """Build the managed Codex TUI invocation with its session settings."""
     return [
         "codex",
         "--remote",
         proxy_url,
+        "--model",
+        model,
+        "--config",
+        f'model_reasoning_effort="{effort}"',
         "--config",
         "tui.terminal_title=[]",
     ]
@@ -288,10 +305,20 @@ def set_terminal_title(title):
 
 
 class Launcher:
-    def __init__(self, name, project, control_url):
+    def __init__(
+        self,
+        name,
+        project,
+        control_url,
+        *,
+        model="gpt-5.6-sol",
+        effort="high",
+    ):
         self.name = name
         self.project = project
         self.control_url = control_url
+        self.model = model
+        self.effort = effort
         self.launch_id = uuid.uuid4().hex
         self.session = None
         self.torn_down = False
@@ -327,7 +354,11 @@ class Launcher:
         with self.lock:
             process = self.process
             command = (
-                build_codex_launch_cmd(self.session["proxy_url"])
+                build_codex_launch_cmd(
+                    self.session["proxy_url"],
+                    model=self.model,
+                    effort=self.effort,
+                )
                 if self.session is not None
                 else []
             )
@@ -512,7 +543,11 @@ class Launcher:
         self.control_thread.start()
 
     def run_codex(self):
-        command = build_codex_launch_cmd(self.session["proxy_url"])
+        command = build_codex_launch_cmd(
+            self.session["proxy_url"],
+            model=self.model,
+            effort=self.effort,
+        )
         set_terminal_title(title_text(self.name, self.project, self.control_url))
         log(f"launching foreground: {' '.join(command)}")
         self.start_control_server()
@@ -610,6 +645,18 @@ def main(argv=None):
         action="store_true",
         help="register a global identity instead of a project identity",
     )
+    parser.add_argument(
+        "--model",
+        choices=CODEX_MODELS,
+        default="sol",
+        help="Codex model variant (default: sol)",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=CODEX_EFFORTS,
+        default="high",
+        help="reasoning effort (default: high)",
+    )
     parser.add_argument("--no-codex", action="store_true")
     args = parser.parse_args(argv)
 
@@ -649,7 +696,13 @@ def main(argv=None):
     except ValueError as error:
         raise SystemExit(f"invalid am-msgd endpoint: {error}") from error
 
-    launcher = Launcher(args.name or default_name(), project, control_url)
+    launcher = Launcher(
+        args.name or default_name(),
+        project,
+        control_url,
+        model=CODEX_MODELS[args.model],
+        effort=args.effort,
+    )
     stop_event = threading.Event()
 
     def stop(_signum, _frame):

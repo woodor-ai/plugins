@@ -27,6 +27,20 @@ from agent_meeting.lifecycle_control.terminals import current_terminal_handle
 from agent_meeting.messaging import project_identity
 
 
+CLAUDE_MODELS = ("fable-5", "opus-5", "sonnet-5")
+CLAUDE_EFFORTS = ("ultracode", "max", "extra", "high", "medium")
+
+
+def build_claude_launch_cmd(
+    claude_args: list[str],
+    *,
+    model: str = "opus-5",
+    effort: str = "high",
+) -> list[str]:
+    """Build the managed Claude invocation with its session settings."""
+    return ["claude", "--model", model, "--effort", effort, *claude_args]
+
+
 def _meeting_home() -> Path:
     return Path(
         os.environ.get("MEETING_HOME") or (Path.home() / ".agent-meeting")
@@ -67,10 +81,14 @@ class ClaudeSupervisor:
         *,
         name: str,
         project: str | None,
+        model: str = "opus-5",
+        effort: str = "high",
     ):
         self.claude_args = list(claude_args)
         self.name = name
         self.project = project
+        self.model = model
+        self.effort = effort
         self.instance_id = uuid.uuid4().hex
         self.auth_token = secrets.token_urlsafe(32)
         self.started_at = int(time.time())
@@ -125,9 +143,19 @@ class ClaudeSupervisor:
                 },
                 "launch_recipe": {
                     "command": "claude",
-                    "args_count": len(self.claude_args),
+                    "args_count": len(build_claude_launch_cmd(
+                        self.claude_args,
+                        model=self.model,
+                        effort=self.effort,
+                    )) - 1,
                     "args_sha256": hashlib.sha256(
-                        "\0".join(self.claude_args).encode("utf-8")
+                        "\0".join(
+                            build_claude_launch_cmd(
+                                self.claude_args,
+                                model=self.model,
+                                effort=self.effort,
+                            )[1:]
+                        ).encode("utf-8")
                     ).hexdigest(),
                     "args_persisted": False,
                 },
@@ -246,7 +274,11 @@ class ClaudeSupervisor:
         self.server_thread.start()
 
     def _spawn(self) -> subprocess.Popen:
-        command = ["claude", *self.claude_args]
+        command = build_claude_launch_cmd(
+            self.claude_args,
+            model=self.model,
+            effort=self.effort,
+        )
         kwargs = {}
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -302,6 +334,18 @@ def main(argv=None) -> int:
     parser.add_argument("--proj", default=None)
     parser.add_argument("--global", dest="is_global", action="store_true")
     parser.add_argument(
+        "--model",
+        choices=CLAUDE_MODELS,
+        default="opus-5",
+        help="Claude model variant (default: opus-5)",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=CLAUDE_EFFORTS,
+        default="high",
+        help="reasoning effort (default: high)",
+    )
+    parser.add_argument(
         "--amclaude-help",
         action="store_true",
         help="show wrapper help; all other arguments are passed to claude",
@@ -336,6 +380,8 @@ def main(argv=None) -> int:
             claude_args,
             name=name,
             project=project,
+            model=known.model,
+            effort=known.effort,
         ).run()
     except KeyboardInterrupt:
         return 130

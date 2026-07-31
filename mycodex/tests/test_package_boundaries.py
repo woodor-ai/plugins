@@ -249,6 +249,8 @@ def test_mycodex_help_exposes_am_msgd_not_control_url(capsys):
     assert error.value.code == 0
     output = capsys.readouterr().out
     assert "--am-msgd HOST[:PORT]" in output
+    assert "--model {sol,terra}" in output
+    assert "--effort {xhigh,high,medium}" in output
     assert "--control-url" not in output
 
 

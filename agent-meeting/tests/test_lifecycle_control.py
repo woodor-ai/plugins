@@ -237,6 +237,33 @@ def test_amclaude_descriptor_does_not_persist_arguments(tmp_path, monkeypatch):
     assert "secret" not in json.dumps(descriptor)
 
 
+def test_amclaude_builds_model_and_effort_into_child_command():
+    from agent_meeting.launcher.amclaude_session import build_claude_launch_cmd
+
+    assert build_claude_launch_cmd(
+        ["--verbose"],
+        model="sonnet-5",
+        effort="max",
+    ) == [
+        "claude",
+        "--model",
+        "sonnet-5",
+        "--effort",
+        "max",
+        "--verbose",
+    ]
+
+
+def test_amclaude_help_exposes_model_and_effort_choices(capsys):
+    from agent_meeting.launcher.amclaude_session import main
+
+    assert main(["--amclaude-help"]) == 0
+
+    output = capsys.readouterr().out
+    assert "--model {fable-5,opus-5,sonnet-5}" in output
+    assert "--effort {ultracode,max,extra,high,medium}" in output
+
+
 def test_amclaude_exit_sends_exactly_two_interrupts(tmp_path, monkeypatch):
     monkeypatch.setenv("MEETING_HOME", str(tmp_path))
     from agent_meeting.launcher.amclaude_session import ClaudeSupervisor
