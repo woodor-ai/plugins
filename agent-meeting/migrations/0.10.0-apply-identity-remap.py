@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Stage 0.3 of docs/contracts/0.10.0-composite-key-identity.md: apply an
-explicit identity remap table (docs/contracts/identity-remap-schema.md v1)
+Stage 0.3 of docs/archive/contracts/0.10.0-composite-key-identity.md: apply an
+explicit identity remap table (docs/archive/contracts/identity-remap-schema.md v1)
 to the central meeting DB ($MEETING_HOME/db/rooms.db).
 
 WHY: stage 0.2's generator (0.10.0-identity-remap.py) produces a read-only

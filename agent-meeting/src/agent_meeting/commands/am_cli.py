@@ -712,7 +712,7 @@ def cmd_online(args):
         # Authoritative identity only: an explicit --proj (this call or a past
         # one cached for this repo root). No path-based fallback -- a session
         # with neither must not silently register under a cwd-derived guess
-        # (see docs/contracts/0.10.0-composite-key-identity.md).
+        # (see docs/archive/contracts/0.10.0-composite-key-identity.md).
         project = project_identity.resolve_authoritative_project(
             cwd,
             explicit_proj,

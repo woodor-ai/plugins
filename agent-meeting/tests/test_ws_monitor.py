@@ -432,7 +432,7 @@ def check(name: str, cond: bool, detail: str = ""):
 # LIVE mDNS/LAN DISCOVERY as a fallback. MEETING_HOME only redirects local
 # file paths (db, config.json, pidfiles); it does nothing to stop that mDNS
 # fallback from finding a real central am-msgd elsewhere on the LAN and registering
-# this test's throwaway session names against it (see docs/contracts/
+# this test's throwaway session names against it (see docs/archive/contracts/
 # 0.10.0-composite-key-identity.md 阶段 3, incident 2026-07-22). So every subprocess
 # that runs this installed CLI MUST also get MEETING_HOST set in its env
 # (start_monitor does) -- that env check short-circuits `_resolve_host()`

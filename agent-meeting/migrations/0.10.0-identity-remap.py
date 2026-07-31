@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Produce the identity remap table (docs/contracts/identity-remap-schema.md
-v1) for stage 0.2 of docs/contracts/0.10.0-composite-key-identity.md.
+Produce the identity remap table (docs/archive/contracts/identity-remap-schema.md
+v1) for stage 0.2 of docs/archive/contracts/0.10.0-composite-key-identity.md.
 
 WHY: session identity is authoritatively the composite key (name, project).
 Historically "project" was derived from cwd folder name, so the same real

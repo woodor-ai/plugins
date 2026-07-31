@@ -136,7 +136,8 @@ init-agents/
 - `init_agents.py` 只向用户项目写入配置，采用原子替换并保护冲突；
 - 本插件没有后台进程、共享 Python 包或用户数据，不需要 `codex/install.py`，也不进入 agent-meeting/mycodex 的共享主机运行时安装链。
 
-详细分析见 [docs/codex-agent-profile-analysis.zh-CN.md](docs/codex-agent-profile-analysis.zh-CN.md)。
+历史决策背景见
+[Codex Agent Profile 适配分析](../docs/archive/designs/init-agents-codex-agent-profile-analysis.zh-CN.md)。
 
 ## License
 

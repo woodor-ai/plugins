@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Phase 0.1 regression: closing off the project-identity drift mechanism
-(docs/contracts/0.10.0-composite-key-identity.md).
+(docs/archive/contracts/0.10.0-composite-key-identity.md).
 
 Covers:
   TC1  - no --proj, empty cache -> cmd_online exits 4 with
@@ -24,7 +24,7 @@ Covers:
          _NORETRY_EXIT_CODES set monitor.py checks against is {3, 4} and
          nothing else (an unrelated code like 1 must still be retried).
 
-Phase 2 CLI-addressing regression (docs/contracts/phase2-single-key-targets.md,
+Phase 2 CLI-addressing regression (docs/archive/contracts/phase2-single-key-targets.md,
 targets #3/#5/#6/#7 -- central am-msgd-HTTP-level addressing for targets #1/#4 lives in
 test_identity_regression.py):
   T3  - `am offline <name>` against a mismatched project must fail loudly
