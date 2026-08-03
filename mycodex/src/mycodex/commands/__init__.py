@@ -1,1 +1,1 @@
-"""Public mycodex and am-codexd command entrypoints."""
+"""Public amcodex and am-codexd command entrypoints."""

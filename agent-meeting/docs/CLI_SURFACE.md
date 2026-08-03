@@ -1,12 +1,12 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-07-30 · version 0.17.1
+Last updated: 2026-08-03 · version 0.17.2
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
 pip-generated `~/.agent-meeting/bin/am.exe` console launcher. The same
 rule applies to `am-ctl`, `am-msgd`, `am-update`, `amclaude`, `amcodex`, and
-`am-codexd`. `mycodex` is retained for one release as a compatibility alias.
+`am-codexd`.
 
 Claude Code exposes the workflows as `/imagent` and `/talkto`. Codex loads the
 same skills from the native plugin and exposes them through `/skills` or

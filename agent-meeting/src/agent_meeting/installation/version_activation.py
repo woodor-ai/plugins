@@ -16,8 +16,6 @@ PUBLIC_COMMANDS = (
     "am-update",
     "amclaude",
     "amcodex",
-    # One-release compatibility alias for existing scripts.
-    "mycodex",
     "am-codexd",
 )
 RUNTIME_COMMANDS = PUBLIC_COMMANDS + (
@@ -124,11 +122,14 @@ def activate_runtime(
         },
     }
     _atomic_write_json(meeting_home / "active-runtime.json", payload)
-    legacy_command = bin_dir / (
-        "meeting.exe" if is_windows else "meeting"
+    obsolete_commands = (
+        ("meeting.exe", "mycodex.exe")
+        if is_windows
+        else ("meeting", "mycodex")
     )
-    try:
-        legacy_command.unlink()
-    except FileNotFoundError:
-        pass
+    for command in obsolete_commands:
+        try:
+            (bin_dir / command).unlink()
+        except FileNotFoundError:
+            pass
     return payload

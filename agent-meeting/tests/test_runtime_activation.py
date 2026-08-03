@@ -42,6 +42,8 @@ def test_posix_activation_uses_stable_symlinks_and_atomic_manifest(tmp_path):
     legacy_command = tmp_path / "bin" / "meeting"
     legacy_command.parent.mkdir(parents=True)
     legacy_command.write_text("legacy", encoding="utf-8")
+    obsolete_alias = tmp_path / "bin" / "mycodex"
+    obsolete_alias.write_text("obsolete", encoding="utf-8")
 
     activate_runtime(
         meeting_home=tmp_path,
@@ -63,6 +65,7 @@ def test_posix_activation_uses_stable_symlinks_and_atomic_manifest(tmp_path):
     ) == payload
     assert not list(tmp_path.glob(".active-runtime.json.tmp.*"))
     assert not legacy_command.exists()
+    assert not obsolete_alias.exists()
 
 
 def test_windows_activation_copies_console_exes_without_cmd_forwarders(
@@ -74,6 +77,8 @@ def test_windows_activation_copies_console_exes_without_cmd_forwarders(
     legacy_command = tmp_path / "bin" / "meeting.exe"
     legacy_command.parent.mkdir(parents=True)
     legacy_command.write_bytes(b"legacy")
+    obsolete_alias = tmp_path / "bin" / "mycodex.exe"
+    obsolete_alias.write_bytes(b"obsolete")
     activate_runtime(
         meeting_home=tmp_path,
         version="0.15.0",
@@ -86,7 +91,6 @@ def test_windows_activation_copies_console_exes_without_cmd_forwarders(
         "am-msgd",
         "amclaude",
         "amcodex",
-        "mycodex",
         "am-codexd",
     ):
         destination = tmp_path / "bin" / f"{command}.exe"
@@ -95,6 +99,7 @@ def test_windows_activation_copies_console_exes_without_cmd_forwarders(
         ).read_bytes()
         assert not (tmp_path / "bin" / f"{command}.cmd").exists()
     assert not legacy_command.exists()
+    assert not obsolete_alias.exists()
 
 
 def test_activation_refuses_incomplete_runtime(tmp_path):

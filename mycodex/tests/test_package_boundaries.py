@@ -22,7 +22,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.17.1"
+    assert mycodex.__version__ == "0.17.2"
     assert mycodex.__version__ == agent_meeting.__version__
 
 
@@ -213,13 +213,6 @@ def test_meeting_inbox_renderer_uses_provenance_without_message_body():
     )
     assert "please review" not in text
     assert "private full body" not in text
-
-
-def test_mycodex_update_is_deprecated(capsys):
-    from mycodex.commands import mycodex_cli
-
-    assert mycodex_cli.main(["update"]) == 2
-    assert "has moved to am-update" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

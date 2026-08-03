@@ -1,8 +1,8 @@
 """
 Tests for:
   - agent-meeting/codex/install.py   _parse_controls()
-  - agent-meeting/bin/session-bootstrap.py  mycodex wrapper generation
-    and _all_present() sentinel when mycodex is absent.
+  - agent-meeting/bin/session-bootstrap.py  amcodex wrapper generation
+    and _all_present() sentinel when amcodex is absent.
 
 All tests run without a live central am-msgd and without touching real ~/.agent-meeting
 or ~/.codex.  The bootstrap is loaded with env vars pointing at tmp_path dirs,
@@ -551,9 +551,9 @@ def _make_plugin_root(base: Path) -> Path:
     (pr / "bin" / "am-codexd").write_text("#!/usr/bin/env python3\n")
     (pr / "bin" / "monitor.py").write_text("print('monitor-v1')\n")
     (pr / "codex" / "codex-session.py").write_text("# stub\n")
-    (pr / "codex" / "mycodex-posix.sh").write_text("#!/bin/sh\necho mycodex-stub\n")
-    (pr / "codex" / "mycodex-impl.ps1").write_text("# mycodex-stub\n")
-    (pr / "codex" / "mycodex.cmd").write_text("@echo off\r\n")
+    (pr / "codex" / "amcodex-posix.sh").write_text("#!/bin/sh\necho amcodex-stub\n")
+    (pr / "codex" / "amcodex-impl.ps1").write_text("# amcodex-stub\n")
+    (pr / "codex" / "amcodex.cmd").write_text("@echo off\r\n")
     (pr / ".claude-plugin" / "plugin.json").write_text(
         json.dumps({"name": "agent-meeting", "version": "0.7.99"})
     )
@@ -571,7 +571,7 @@ def _make_venv(meeting_home: Path):
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX wrapper test")
-def test_mycodex_wrapper_generated_posix(tmp_path):
+def test_amcodex_wrapper_generated_posix(tmp_path):
     meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
@@ -586,23 +586,24 @@ def test_mycodex_wrapper_generated_posix(tmp_path):
     mod.ensure_bin_wrappers()
 
     bin_dir = meeting_home / "bin"
-    assert (bin_dir / "mycodex").exists(), "mycodex wrapper missing"
+    assert (bin_dir / "amcodex").exists(), "amcodex wrapper missing"
+    assert not (bin_dir / "mycodex").exists()
     assert (bin_dir / "am-codexd").exists(), "am-codexd wrapper missing"
     assert not (bin_dir / "codex-meeting").exists(), "old codex-meeting should be absent"
 
 
-def test_posix_mycodex_uses_active_plugin_stamp():
+def test_posix_amcodex_uses_active_plugin_stamp():
     wrapper = (
-        Path(__file__).resolve().parents[1] / "codex" / "mycodex-posix.sh"
+        Path(__file__).resolve().parents[1] / "codex" / "amcodex-posix.sh"
     ).read_text(encoding="utf-8")
 
     assert ".bin-plugin-root" in wrapper
     assert 'plugins/agent-meeting/codex/codex-meeting.py' not in wrapper
 
 
-def test_windows_mycodex_uses_active_plugin_stamp():
+def test_windows_amcodex_uses_active_plugin_stamp():
     wrapper = (
-        Path(__file__).resolve().parents[1] / "codex" / "mycodex-impl.ps1"
+        Path(__file__).resolve().parents[1] / "codex" / "amcodex-impl.ps1"
     ).read_text(encoding="utf-8")
 
     assert ".bin-plugin-root" in wrapper
@@ -630,7 +631,8 @@ def test_old_codex_meeting_removed_on_regen(tmp_path):
     mod.ensure_bin_wrappers()
 
     assert not (meeting_home / "bin" / "codex-meeting").exists()
-    assert (meeting_home / "bin" / "mycodex").exists()
+    assert (meeting_home / "bin" / "amcodex").exists()
+    assert not (meeting_home / "bin" / "mycodex").exists()
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX wrapper test")
@@ -1129,9 +1131,9 @@ def test_launchd_waits_include_probe_latency_in_deadline(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX sentinel test")
-def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
+def test_sentinel_does_not_skip_when_amcodex_absent(tmp_path):
     """
-    If mycodex is absent from bin/, _all_present() must return False even when
+    If amcodex is absent from bin/, _all_present() must return False even when
     the sentinel (PLUGIN_ROOT) matches — forcing regeneration.
     """
     meeting_home = tmp_path / "am"
@@ -1152,21 +1154,17 @@ def test_sentinel_does_not_skip_when_mycodex_absent(tmp_path):
 
     mod.ensure_bin_wrappers()
 
-    assert (bin_dir / "mycodex").exists(), (
-        "_all_present() incorrectly skipped regen when mycodex was absent"
+    assert (bin_dir / "amcodex").exists(), (
+        "_all_present() incorrectly skipped regen when amcodex was absent"
     )
 
 
 # ---------------------------------------------------------------------------
-# Windows-only stale-file cleanup — a pre-dual-extension install could leave a
-# POSIX-shell extensionless `mycodex` sitting in bin/ forever, and a
-# pre-single-entry install could leave a same-named `mycodex.ps1` sitting in
-# bin/ forever, since Windows only ever regenerates mycodex-impl.ps1/.cmd.
-# IS_WINDOWS is force-patched here since the test host is macOS; all file
-# operations exercised are OS-agnostic.
+# Obsolete mycodex command cleanup. IS_WINDOWS is force-patched here since the
+# test host is macOS; all file operations exercised are OS-agnostic.
 # ---------------------------------------------------------------------------
 
-def test_windows_mycodex_leftover_removed_on_regen(tmp_path):
+def test_windows_obsolete_mycodex_files_removed_on_regen(tmp_path):
     meeting_home = tmp_path / "am"
     meeting_home.mkdir()
     plugin_root = _make_plugin_root(tmp_path)
@@ -1176,6 +1174,8 @@ def test_windows_mycodex_leftover_removed_on_regen(tmp_path):
     bin_dir.mkdir(parents=True)
     (bin_dir / "mycodex").write_text("#!/bin/sh\necho old posix shim stuck on windows\n")
     (bin_dir / "mycodex.ps1").write_text("# old same-named shim\n")
+    (bin_dir / "mycodex.cmd").write_text("@echo off\r\n")
+    (bin_dir / "mycodex-impl.ps1").write_text("# old implementation\n")
 
     mod = _load_bootstrap(meeting_home, plugin_root)
     mod.IS_WINDOWS = True
@@ -1187,17 +1187,17 @@ def test_windows_mycodex_leftover_removed_on_regen(tmp_path):
     mod.ensure_bin_wrappers()
 
     assert not (bin_dir / "mycodex").exists()
-    assert not (bin_dir / "mycodex.ps1").exists(), (
-        "bin/ must never keep a same-named mycodex.ps1 next to mycodex.cmd"
-    )
-    assert (bin_dir / "mycodex.cmd").exists()
-    assert (bin_dir / "mycodex-impl.ps1").exists()
+    assert not (bin_dir / "mycodex.ps1").exists()
+    assert not (bin_dir / "mycodex.cmd").exists()
+    assert not (bin_dir / "mycodex-impl.ps1").exists()
+    assert (bin_dir / "amcodex.cmd").exists()
+    assert (bin_dir / "amcodex-impl.ps1").exists()
 
 
-def test_windows_mycodex_leftover_swept_on_sentinel_match(tmp_path):
+def test_windows_obsolete_mycodex_files_swept_on_sentinel_match(tmp_path):
     """Once the sentinel matches and _all_present() is satisfied, the full
     regen path never runs again — the stale-file sweep must still fire on
-    that early-return path, or leftover stale mycodex files would persist
+    that early-return path, or obsolete mycodex files would persist
     forever on Windows."""
     meeting_home = tmp_path / "am"
     meeting_home.mkdir()
@@ -1214,20 +1214,20 @@ def test_windows_mycodex_leftover_swept_on_sentinel_match(tmp_path):
     mod.PLUGIN_ROOT = plugin_root
 
     mod.ensure_bin_wrappers()  # first call: full regen, settles the sentinel
-    assert (bin_dir / "mycodex.cmd").exists()
+    assert (bin_dir / "amcodex.cmd").exists()
     assert not (bin_dir / "mycodex.ps1").exists()
 
     # Simulate leftovers from older installs reappearing.
     (bin_dir / "mycodex").write_text("old posix shim stuck on windows\n")
     (bin_dir / "mycodex.ps1").write_text("old same-named shim stuck on windows\n")
+    (bin_dir / "mycodex.cmd").write_text("@echo off\r\n")
+    (bin_dir / "mycodex-impl.ps1").write_text("# old implementation\n")
 
     mod.ensure_bin_wrappers()  # second call: sentinel matches -> early-return path
 
-    assert not (bin_dir / "mycodex").exists(), (
-        "stale extensionless mycodex must be swept even on the early-return path"
-    )
-    assert not (bin_dir / "mycodex.ps1").exists(), (
-        "stale same-named mycodex.ps1 must be swept even on the early-return path"
-    )
-    assert (bin_dir / "mycodex.cmd").exists()
-    assert (bin_dir / "mycodex-impl.ps1").exists()
+    assert not (bin_dir / "mycodex").exists()
+    assert not (bin_dir / "mycodex.ps1").exists()
+    assert not (bin_dir / "mycodex.cmd").exists()
+    assert not (bin_dir / "mycodex-impl.ps1").exists()
+    assert (bin_dir / "amcodex.cmd").exists()
+    assert (bin_dir / "amcodex-impl.ps1").exists()

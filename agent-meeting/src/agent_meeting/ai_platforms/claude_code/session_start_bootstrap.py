@@ -288,8 +288,6 @@ def ensure_bin_wrappers():
         # was installed.
         if not (BIN_LINK / ("amcodex.cmd" if IS_WINDOWS else "amcodex")).exists():
             return False
-        if IS_WINDOWS and not (BIN_LINK / "mycodex-impl.ps1").exists():
-            return False
         if IS_WINDOWS and not (BIN_LINK / "amcodex-impl.ps1").exists():
             return False
         return True
@@ -299,10 +297,7 @@ def ensure_bin_wrappers():
             and not BIN_LINK.is_symlink()
             and not _is_reparse_point(BIN_LINK)
             and _all_present()):
-        # Even when nothing else needs regenerating, sweep known stale files —
-        # otherwise a leftover Windows extensionless `mycodex` (see
-        # _cleanup_stale_codex_plugins) would never get cleaned once the
-        # sentinel settles, since the full-swap path below never runs again.
+        # Even when nothing else needs regenerating, sweep known stale files.
         _cleanup_stale_codex_plugins(BIN_LINK)
         return  # Already up to date for this plugin version
 
@@ -340,28 +335,24 @@ def ensure_bin_wrappers():
                 dest.write_text(f'#!/bin/sh\nexec "{py}" "{src}" "$@"\n')
                 dest.chmod(0o755)
 
-        # `mycodex`: copied verbatim from agent-meeting/codex/mycodex-posix.sh (+
-        # mycodex.cmd/mycodex-impl.ps1 on Windows) — the single source of truth
-        # also used by the legacy standalone installer, so both sites regenerate
-        # the exact same file. Unconditional: mycodex must always
-        # self-heal here even if codex-session.py itself is (temporarily)
-        # missing — its own "not installed" check handles that case at runtime.
-        _mycodex_src_dir = PLUGIN_ROOT / "codex"
-        if IS_WINDOWS and (_mycodex_src_dir / "mycodex-impl.ps1").exists():
-            _shutil.copyfile(str(_mycodex_src_dir / "mycodex-impl.ps1"), str(tmp_bin / "mycodex-impl.ps1"))
-            _shutil.copyfile(str(_mycodex_src_dir / "mycodex-impl.ps1"), str(tmp_bin / "amcodex-impl.ps1"))
-            _shutil.copyfile(str(_mycodex_src_dir / "mycodex.cmd"), str(tmp_bin / "mycodex.cmd"))
-            (tmp_bin / "amcodex.cmd").write_text(
-                (_mycodex_src_dir / "mycodex.cmd")
-                .read_text(encoding="utf-8")
-                .replace("mycodex-impl.ps1", "amcodex-impl.ps1"),
-                encoding="utf-8",
+        # Copy the canonical amcodex wrapper from the plugin's Codex assets.
+        _amcodex_src_dir = PLUGIN_ROOT / "codex"
+        if IS_WINDOWS and (_amcodex_src_dir / "amcodex-impl.ps1").exists():
+            _shutil.copyfile(
+                str(_amcodex_src_dir / "amcodex-impl.ps1"),
+                str(tmp_bin / "amcodex-impl.ps1"),
             )
-        elif not IS_WINDOWS and (_mycodex_src_dir / "mycodex-posix.sh").exists():
-            for _launcher_name in ("amcodex", "mycodex"):
-                _dest_sh = tmp_bin / _launcher_name
-                _shutil.copyfile(str(_mycodex_src_dir / "mycodex-posix.sh"), str(_dest_sh))
-                _dest_sh.chmod(0o755)
+            _shutil.copyfile(
+                str(_amcodex_src_dir / "amcodex.cmd"),
+                str(tmp_bin / "amcodex.cmd"),
+            )
+        elif not IS_WINDOWS and (_amcodex_src_dir / "amcodex-posix.sh").exists():
+            _dest_sh = tmp_bin / "amcodex"
+            _shutil.copyfile(
+                str(_amcodex_src_dir / "amcodex-posix.sh"),
+                str(_dest_sh),
+            )
+            _dest_sh.chmod(0o755)
 
     except Exception:
         _shutil.rmtree(str(tmp_bin), ignore_errors=True)
@@ -390,18 +381,10 @@ def ensure_bin_wrappers():
 
 
 def _cleanup_stale_codex_plugins(bin_dir: Path) -> None:
-    """Delete only exact leftover filenames from a prior install (superseded by
-    mycodex --update). Refuses to act unless bin_dir resolves to exactly
-    DATA/bin, and only ever unlinks known files by name — never recurses.
+    """Delete only exact leftover filenames from prior installs.
 
-    Windows only: an extensionless `mycodex` here is always a leftover from a
-    pre-dual-extension install, and a same-named `mycodex.ps1` is always a
-    leftover from a pre-single-entry install (the regen path above only ever
-    writes mycodex-impl.ps1 / mycodex.cmd on Windows). A `mycodex.ps1` sibling
-    to `mycodex.cmd` would get resolved first by PowerShell and blocked by the
-    default execution policy, which is exactly the bug this rename fixes. On
-    POSIX `mycodex` (no extension) IS the current artifact, so it must never
-    be swept here.
+    Refuses to act unless bin_dir resolves to exactly DATA/bin, and only ever
+    unlinks known files by name.
     """
     if bin_dir.resolve() != (DATA / "bin").resolve():
         return
@@ -413,12 +396,15 @@ def _cleanup_stale_codex_plugins(bin_dir: Path) -> None:
         "codex-plugins.ps1",
         "meeting-say",
         "meeting-say.cmd",
+        "mycodex",
+        "mycodex.exe",
+        "mycodex.cmd",
+        "mycodex.ps1",
+        "mycodex-impl.ps1",
     )
-    if IS_WINDOWS:
-        names = names + ("mycodex", "mycodex.ps1")
     for name in names:
         p = bin_dir / name
-        if p.is_file():
+        if p.is_file() or p.is_symlink():
             p.unlink()
 
 
