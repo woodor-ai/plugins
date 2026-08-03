@@ -24,7 +24,6 @@ RUNTIME_COMMANDS = PUBLIC_COMMANDS + (
     "am-statusline",
     "am-message-hub-supervisor",
     "am-claude-session-start",
-    "am-configure-codex-user-environment",
 )
 
 
@@ -123,9 +122,17 @@ def activate_runtime(
     }
     _atomic_write_json(meeting_home / "active-runtime.json", payload)
     obsolete_commands = (
-        ("meeting.exe", "mycodex.exe")
+        (
+            "meeting.exe",
+            "mycodex.exe",
+            "am-configure-codex-user-environment.exe",
+        )
         if is_windows
-        else ("meeting", "mycodex")
+        else (
+            "meeting",
+            "mycodex",
+            "am-configure-codex-user-environment",
+        )
     )
     for command in obsolete_commands:
         try:

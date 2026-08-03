@@ -8,8 +8,6 @@ import pytest
 
 PRODUCT_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = PRODUCT_ROOT.parent
-
-
 @pytest.fixture(autouse=True)
 def add_product_sources(monkeypatch):
     monkeypatch.syspath_prepend(str(PRODUCT_ROOT / "src"))
@@ -22,7 +20,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.17.3"
+    assert mycodex.__version__ == "0.17.4"
     assert mycodex.__version__ == agent_meeting.__version__
 
 
@@ -337,7 +335,7 @@ def test_amcodex_default_control_uses_public_am_discovery(monkeypatch):
 
 
 def test_codex_configuration_pins_explicit_host_through_am(monkeypatch):
-    from mycodex.commands import configure_codex_user_environment_cli
+    from mycodex.installation import codex_user_environment
 
     calls = []
 
@@ -351,13 +349,13 @@ def test_codex_configuration_pins_explicit_host_through_am(monkeypatch):
         return Result()
 
     monkeypatch.setattr(
-        configure_codex_user_environment_cli,
+        codex_user_environment,
         "run_am_cli",
         fake_run,
     )
     am_command = Path("/runtime/am")
 
-    configure_codex_user_environment_cli._pin_control(
+    codex_user_environment._pin_control(
         am_command,
         "http://10.0.0.9:8765",
     )
@@ -369,6 +367,47 @@ def test_codex_configuration_pins_explicit_host_through_am(monkeypatch):
             {"timeout": 10},
         )
     ]
+
+
+def test_codex_configuration_runs_as_installation_logic(
+    tmp_path,
+    monkeypatch,
+):
+    from mycodex.installation import codex_user_environment
+
+    meeting_home = tmp_path / "meeting"
+    codex_home = tmp_path / "codex"
+    (meeting_home / "bin").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.setattr(
+        codex_user_environment,
+        "_discover_control",
+        lambda _am_command: "http://10.0.0.8:8765",
+    )
+
+    result = codex_user_environment.configure_codex_user_environment(
+        meeting_home=meeting_home,
+        codex_home=codex_home,
+        is_windows=False,
+    )
+
+    assert result == {
+        "control_url": "http://10.0.0.8:8765",
+        "first_install": True,
+    }
+    assert "agent-meeting:begin" in (
+        codex_home / "AGENTS.md"
+    ).read_text(encoding="utf-8")
+    assert str(meeting_home / "bin") in (
+        tmp_path / "user" / ".zshrc"
+    ).read_text(encoding="utf-8")
+
+
+def test_codex_configuration_is_not_a_packaged_runtime_command():
+    manifest = (PRODUCT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "am-configure-codex-user-environment" not in manifest
 
 
 def test_codex_user_configuration_preserves_unrelated_sections(tmp_path):

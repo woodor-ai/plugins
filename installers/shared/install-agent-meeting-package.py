@@ -15,6 +15,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY_ROOT / "agent-meeting" / "src"))
+sys.path.insert(0, str(REPOSITORY_ROOT / "mycodex" / "src"))
 
 from agent_meeting.installation.version_activation import (
     RUNTIME_COMMANDS,
@@ -27,6 +28,19 @@ from agent_meeting.installation.message_hub_service_installation import (
 from agent_meeting.lifecycle_control.user_service import (
     ensure_lifecycle_control_service,
 )
+from mycodex.installation.codex_user_environment import (
+    configure_codex_user_environment,
+)
+
+
+def _prompt(message: str, default: str = "") -> str:
+    try:
+        answer = input(
+            f"{message} [{default}]: " if default else f"{message}: "
+        ).strip()
+    except EOFError:
+        return default
+    return answer or default
 
 
 def _project_version(project_root: Path) -> str:
@@ -159,6 +173,12 @@ def main(argv=None) -> int:
             or (Path.home() / ".agent-meeting")
         ),
     )
+    parser.add_argument("--configure-codex", action="store_true")
+    parser.add_argument("--control-url", default="")
+    parser.add_argument(
+        "--enable-full-automation",
+        action="store_true",
+    )
     args = parser.parse_args(argv)
     payload = install_runtime(
         source_root=args.source_root.resolve(),
@@ -179,10 +199,35 @@ def main(argv=None) -> int:
     else:
         ensure_local_message_hub_service(meeting_home)
     ensure_lifecycle_control_service(meeting_home)
+    codex_configuration = None
+    if args.configure_codex:
+        codex_configuration = configure_codex_user_environment(
+            meeting_home=meeting_home,
+            codex_home=Path(
+                os.environ.get("CODEX_HOME")
+                or (Path.home() / ".codex")
+            ),
+            explicit_control=args.control_url,
+            enable_full_automation=args.enable_full_automation,
+            prompt=_prompt,
+        )
     print(
         f"installed and activated host runtime {payload['version']} "
         f"at {payload['runtime']}"
     )
+    if codex_configuration is not None:
+        print("Codex user environment configured")
+        print(f"  runtime commands: {meeting_home / 'bin'}")
+        print(
+            "  first install: "
+            + (
+                "yes"
+                if codex_configuration["first_install"]
+                else "no"
+            )
+        )
+        control_url = codex_configuration["control_url"]
+        print(f"  control URL: {control_url or 'not set'}")
     return 0
 
 

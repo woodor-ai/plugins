@@ -18,7 +18,8 @@ def test_macos_installers_share_versioned_runtime_and_platform_registration():
         assert "install-agent-meeting-package.py" in script
         assert "migrate-agent-meeting-legacy-layout.py" in script
     assert "register-claude-marketplace.py" in claude
-    assert "am-configure-codex-user-environment" in codex
+    assert "--configure-codex" in codex
+    assert "am-configure-codex-user-environment" not in codex
     assert "register-codex-marketplace.py" in codex
 
 
@@ -35,7 +36,8 @@ def test_windows_installers_prefer_py_launcher_and_check_each_stage():
         assert "migrate-agent-meeting-legacy-layout.py" in script
         assert "if ($LASTEXITCODE -ne 0)" in script
     assert "register-claude-marketplace.py" in claude
-    assert "am-configure-codex-user-environment.exe" in codex
+    assert "--configure-codex" in codex
+    assert "am-configure-codex-user-environment" not in codex
     assert "register-codex-marketplace.py" in codex
 
 

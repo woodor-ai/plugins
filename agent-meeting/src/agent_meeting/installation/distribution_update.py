@@ -191,11 +191,14 @@ def install_release(
 
     release_version(source_root)
 
+    install_arguments = ["--meeting-home", str(meeting_home)]
+    if TARGET_CODEX in targets:
+        install_arguments.append("--configure-codex")
     _run_python_script(
         source_root,
         "installers/shared/install-agent-meeting-package.py",
         run=run,
-        arguments=("--meeting-home", str(meeting_home)),
+        arguments=tuple(install_arguments),
     )
     _run_python_script(
         source_root,
@@ -211,10 +214,6 @@ def install_release(
         )
 
     if TARGET_CODEX in targets:
-        configure = meeting_home / "bin" / "am-configure-codex-user-environment"
-        if sys.platform.startswith("win"):
-            configure = configure.with_suffix(".exe")
-        run([str(configure)], check=True)
         _run_python_script(
             source_root,
             "installers/shared/register-codex-marketplace.py",

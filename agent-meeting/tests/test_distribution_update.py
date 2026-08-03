@@ -78,6 +78,7 @@ def test_install_release_runs_shared_runtime_once_and_selected_adapters(tmp_path
             str(source_root / "installers/shared/install-agent-meeting-package.py"),
             "--meeting-home",
             str(tmp_path / "meeting"),
+            "--configure-codex",
         ],
         [
             sys.executable,
@@ -87,7 +88,6 @@ def test_install_release_runs_shared_runtime_once_and_selected_adapters(tmp_path
             sys.executable,
             str(source_root / "installers/shared/register-claude-marketplace.py"),
         ],
-        [str(tmp_path / "meeting/bin/am-configure-codex-user-environment")],
         [
             sys.executable,
             str(source_root / "installers/shared/register-codex-marketplace.py"),
@@ -136,6 +136,68 @@ def test_package_installer_applies_service_to_explicit_isolated_home(
     ) == 0
     assert hub_calls == [meeting_home.resolve()]
     assert lifecycle_calls == [meeting_home.resolve()]
+
+
+def test_package_installer_applies_codex_configuration_directly(
+    tmp_path,
+    monkeypatch,
+):
+    installer = _load_package_installer()
+    source_root = tmp_path / "source"
+    meeting_home = tmp_path / "meeting"
+    codex_home = tmp_path / "codex"
+    configuration_calls = []
+
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(installer.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        installer,
+        "install_runtime",
+        lambda **_kwargs: {
+            "version": "0.17.4",
+            "runtime": str(meeting_home / "runtimes" / "0.17.4"),
+        },
+    )
+    monkeypatch.setattr(
+        installer,
+        "ensure_local_message_hub_service",
+        lambda _meeting_home: None,
+    )
+    monkeypatch.setattr(
+        installer,
+        "ensure_lifecycle_control_service",
+        lambda _meeting_home: None,
+    )
+    monkeypatch.setattr(
+        installer,
+        "configure_codex_user_environment",
+        lambda **kwargs: (
+            configuration_calls.append(kwargs)
+            or {"first_install": False, "control_url": kwargs["explicit_control"]}
+        ),
+    )
+
+    assert installer.main(
+        [
+            "--source-root",
+            str(source_root),
+            "--meeting-home",
+            str(meeting_home),
+            "--configure-codex",
+            "--control-url",
+            "http://10.0.0.9:8765",
+            "--enable-full-automation",
+        ]
+    ) == 0
+    assert configuration_calls == [
+        {
+            "meeting_home": meeting_home.resolve(),
+            "codex_home": codex_home,
+            "explicit_control": "http://10.0.0.9:8765",
+            "enable_full_automation": True,
+            "prompt": installer._prompt,
+        }
+    ]
 
 
 def test_refresh_checkout_fast_forwards_existing_public_checkout(tmp_path):
