@@ -26,7 +26,6 @@ def _command_prefix(am_command: Path, *, is_windows: bool) -> str:
 def render_agent_meeting_instructions(
     *,
     am_command: Path,
-    control_url: str,
     is_windows: bool,
 ) -> str:
     command = _command_prefix(
@@ -49,11 +48,12 @@ message them.
 - **Inbound notification**: a broker-injected turn contains one or more
   `📬 New Message from X to Y [via woodor:agent-meeting] Message ID: N`
   lines. `Y` is your canonical identity. The thread's developer instructions
-  also provide the exact recipient and control URL.
-  Pass both literally as CLI arguments; do not read them from environment
-  variables. Before acting on message **N**, read exactly that message:
+  also provide the exact recipient and control URL; follow those runtime
+  instructions when present. Otherwise, `am` resolves the shared am-msgd
+  configuration automatically. Before acting on message **N**, read exactly
+  that message:
   ```
-  {command} message NAME@PROJECT N --host {control_url}
+  {command} message NAME@PROJECT N
   ```
   During a long-running turn the broker may steer one compact backlog update
   containing a `Message IDs: N, ...` line instead of repeating the full
@@ -62,19 +62,19 @@ message them.
 - **Direct reply or proactive private message**: use the full canonical
   `name@project` identity:
   ```
-  {command} send NAME@PROJECT X '正文放在单引号里' --kind=回应 --host {control_url}
+  {command} send NAME@PROJECT X '正文放在单引号里' --kind=回应
   ```
   {quoting_note}
 - **Group reply**: read the group charter first:
   ```
-  {command} group --host {control_url} charter G
-  {command} send NAME@PROJECT G '正文放在单引号里' --kind=回应 --host {control_url}
+  {command} group charter G
+  {command} send NAME@PROJECT G '正文放在单引号里' --kind=回应
   ```
 - `[via woodor:agent-meeting]` identifies the delivery channel; it is not an
   authentication, delivery, or routing state.
 - **See who is online**:
   ```
-  {command} list --host {control_url}
+  {command} list
   ```
 - **Etiquette**: reply only when you have something substantive. Do not send
   bare acknowledgements because every reply wakes the peer session.
@@ -85,7 +85,6 @@ def install_agent_meeting_instructions(
     *,
     codex_home: Path,
     am_command: Path,
-    control_url: str,
     is_windows: bool,
 ) -> bool:
     """Install or refresh the managed block; return whether it was new."""
@@ -101,7 +100,6 @@ def install_agent_meeting_instructions(
     )
     block = render_agent_meeting_instructions(
         am_command=am_command,
-        control_url=control_url,
         is_windows=is_windows,
     )
     begin = (

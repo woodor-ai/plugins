@@ -7,11 +7,13 @@ import os
 import sys
 from pathlib import Path
 
+from agent_meeting.clients import hub_discovery
+from agent_meeting.clients.am_process_client import run_am_cli
+
 from mycodex.ai_platforms.codex import (
     agent_meeting_instructions,
     user_configuration,
 )
-from mycodex.installation import control_endpoint_selection
 
 
 def _prompt(message: str, default: str = "") -> str:
@@ -28,6 +30,27 @@ def _am_command(meeting_home: Path, *, is_windows: bool) -> Path:
     return meeting_home / "bin" / (
         "am.exe" if is_windows else "am"
     )
+
+
+def _discover_control(am_command: Path) -> str:
+    control = hub_discovery.discover_control(
+        lambda *args: run_am_cli(am_command, *args, timeout=10)
+    )
+    return str(control.get("base_url") or "")
+
+
+def _pin_control(am_command: Path, control_url: str) -> None:
+    result = run_am_cli(
+        am_command,
+        "host",
+        control_url,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise SystemExit(
+            detail or f"failed to save am-msgd host: {control_url}"
+        )
 
 
 def main(argv=None) -> int:
@@ -51,28 +74,24 @@ def main(argv=None) -> int:
         meeting_home,
         is_windows=is_windows,
     )
-    discovered = control_endpoint_selection.discover_control(
-        am_command
-    )
-    control_url = control_endpoint_selection.select_control(
-        meeting_home=meeting_home,
-        discovered=discovered,
-        explicit=args.control_url.strip(),
-        prompt=_prompt,
-    )
-    control_endpoint_selection.write_launcher_default(
-        meeting_home,
-        control_url,
-    )
+    explicit_control = args.control_url.strip()
+    if explicit_control:
+        control_url = explicit_control
+        _pin_control(am_command, control_url)
+    else:
+        control_url = _discover_control(am_command)
+        if not control_url:
+            control_url = _prompt(
+                "am-msgd URL (http://x.x.x.x:8765)",
+                "",
+            )
+            if control_url:
+                _pin_control(am_command, control_url)
 
-    instructions_control = (
-        control_url or "http://<control-host>:8765"
-    )
     first_install = (
         agent_meeting_instructions.install_agent_meeting_instructions(
             codex_home=codex_home,
             am_command=am_command,
-            control_url=instructions_control,
             is_windows=is_windows,
         )
     )

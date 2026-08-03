@@ -324,7 +324,7 @@ def start_monitor(name: str, db_dir: str) -> "tuple[subprocess.Popen, list[str],
     # Hard pin: no `am` subcommand this monitor's subprocess runs may
     # fall back to mDNS/LAN discovery -- see the install_am_cli module
     # comment for why this is load-bearing, not defensive.
-    env["MEETING_HOST"] = f"http://{HOST}:{TEST_PORT}"
+    env["AM_MSGD_HOST"] = f"http://{HOST}:{TEST_PORT}"
 
     # --force: most test cases pre-register `name` via a direct HTTP /register
     # call (to seed messages/read_cursors before the monitor connects) and then
@@ -428,13 +428,13 @@ def check(name: str, cond: bool, detail: str = ""):
 # ---------- am CLI install ----------
 # monitor.py invokes `<MEETING_HOME>/bin/am online|offline|controls` as a
 # subprocess. That real CLI resolves which central am-msgd to talk to via its own
-# `_resolve_host()` -- env MEETING_HOST first, then user-pinned config, then
+# `_resolve_host()` -- env AM_MSGD_HOST first, then user-pinned config, then
 # LIVE mDNS/LAN DISCOVERY as a fallback. MEETING_HOME only redirects local
 # file paths (db, config.json, pidfiles); it does nothing to stop that mDNS
 # fallback from finding a real central am-msgd elsewhere on the LAN and registering
 # this test's throwaway session names against it (see docs/archive/contracts/
 # 0.10.0-composite-key-identity.md 阶段 3, incident 2026-07-22). So every subprocess
-# that runs this installed CLI MUST also get MEETING_HOST set in its env
+# that runs this installed CLI MUST also get AM_MSGD_HOST set in its env
 # (start_monitor does) -- that env check short-circuits `_resolve_host()`
 # before it ever reaches the mDNS branch, for every subcommand, no shim
 # logic required.
@@ -443,8 +443,8 @@ def check(name: str, cond: bool, detail: str = ""):
 # a hand-rolled stand-in that forwards unhandled subcommands to whatever is
 # installed at ~/.agent-meeting/bin/am on this machine -- that forward
 # is exactly the mechanism that produced the incident (it ran a real
-# `am online` with no MEETING_HOST override, which fell through to
-# mDNS). Running the actual CLI under test, with MEETING_HOST pinned, is
+# `am online` with no AM_MSGD_HOST override, which fell through to
+# mDNS). Running the actual CLI under test, with AM_MSGD_HOST pinned, is
 # both safer and more faithful.
 
 def install_am_cli(db_dir: str, counter_file: str | None = None) -> str:

@@ -12,7 +12,7 @@ def runtime_instructions(session) -> str:
         "recipient as the positional <self> argument and pass "
         f"`--host {session.control_url}`. For `am group`, place the "
         "`--host` option immediately after `group`. Do not read "
-        "MEETING_SELF or MEETING_HOST from the environment."
+        "MEETING_SELF or AM_MSGD_HOST from the environment."
     )
 
 

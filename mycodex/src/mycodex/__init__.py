@@ -1,3 +1,3 @@
 """Agent-meeting-aware Codex launcher and local broker."""
 
-__version__ = "0.17.2"
+__version__ = "0.17.3"

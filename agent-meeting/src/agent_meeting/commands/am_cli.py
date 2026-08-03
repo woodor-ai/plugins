@@ -115,7 +115,7 @@ _NO_CONTROL_MSG = (
     "(Wi-Fi AP isolation or firewall blocking UDP 5353). "
     "Fix: run /imagent setup am-msgd to make this machine the central am-msgd session/message hub; "
     "or pin a control for unreachable machines — am host http://<ip>:<port> (persistent) "
-    "or temporarily export MEETING_HOST=http://<ip>:<port>."
+    "or temporarily export AM_MSGD_HOST=http://<ip>:<port>."
 )
 
 
@@ -193,11 +193,12 @@ def _resolve_peer(
 # ---------- persistent host config (config.json) ----------
 #
 # Control resolution precedence (highest first):
-#   1. env MEETING_HOST                       — transient override
+#   1. env AM_MSGD_HOST                       — transient override
 #   2. config.json "control_host"             — user-set, sticky; beats mDNS
 #   3. mDNS live discovery                    — auto-follows IP changes
 #   4. config.json "control_cache" (TCP-probed) — auto last-known-good fallback
-#   5. hard-fail with an actionable message
+#   5. healthy local loopback am-msgd
+#   6. hard-fail with an actionable message
 #
 # 2 and 4 are distinct on purpose: control_host is pinned by the user and is
 # never auto-evicted; control_cache is written automatically on every successful
@@ -497,10 +498,26 @@ def _discover_controls_raw(timeout: float = RAW_DISCOVER_TIMEOUT) -> list[dict]:
     return [c for c in out if c["url"]]
 
 
+def _healthy_local_control_url() -> str | None:
+    configuration = service_configuration.load(
+        service_configuration.default_path(Path(MEETING_HOME)),
+        create=False,
+    )
+    local_url = f"http://127.0.0.1:{configuration.port}"
+    try:
+        with _NO_PROXY_OPENER.open(
+            f"{local_url}/health",
+            timeout=1,
+        ) as response:
+            return local_url if response.status == 200 else None
+    except Exception:
+        return None
+
+
 def discover_controls() -> list[dict]:
     # 1. env override.
-    if os.environ.get("MEETING_HOST"):
-        return [_host_entry(os.environ["MEETING_HOST"])]
+    if os.environ.get("AM_MSGD_HOST"):
+        return [_host_entry(os.environ["AM_MSGD_HOST"])]
 
     # 2. user-pinned sticky host — beats discovery entirely.
     sticky = _control_host()
@@ -526,6 +543,12 @@ def discover_controls() -> list[dict]:
     if cached and _tcp_reachable(cached):
         return [_host_entry(cached)]
 
+    # 5. Every installation owns a loopback am-msgd. Use it only after all
+    # shared remote-selection layers have been exhausted.
+    local_url = _healthy_local_control_url()
+    if local_url:
+        return [_host_entry(local_url)]
+
     return []
 
 
@@ -534,8 +557,8 @@ HOST_FASTPATH_TTL = 60
 
 def discover_host() -> str | None:
     # 1. env override.
-    if os.environ.get("MEETING_HOST"):
-        return os.environ["MEETING_HOST"].rstrip("/")
+    if os.environ.get("AM_MSGD_HOST"):
+        return os.environ["AM_MSGD_HOST"].rstrip("/")
 
     # 2. user-pinned sticky host — beats mDNS, no probe needed.
     sticky = _control_host()
@@ -548,34 +571,17 @@ def discover_host() -> str | None:
     if fresh:
         return fresh
 
-    # 3-5. zeroconf → raw-socket mDNS → TCP-probed auto-cache (see discover_controls).
+    # 3-6. Live discovery, cache, then healthy local loopback.
     controls = discover_controls()
     if controls:
         return controls[0]["url"]
-
-    # Every installation owns a loopback am-msgd. It is an explicit last
-    # resort after environment, sticky host, cache, and LAN discovery.
-    configuration = service_configuration.load(
-        service_configuration.default_path(Path(MEETING_HOME)),
-        create=False,
-    )
-    local_url = f"http://127.0.0.1:{configuration.port}"
-    try:
-        with _NO_PROXY_OPENER.open(
-            f"{local_url}/health",
-            timeout=1,
-        ) as response:
-            if response.status == 200:
-                return local_url
-    except Exception:
-        pass
     return None
 
 
 def _invalidate_host_cache():
     """Force re-discovery after a host went unreachable.
 
-    Only clears the auto cache — env MEETING_HOST and the user-pinned
+    Only clears the auto cache — env AM_MSGD_HOST and the user-pinned
     control_host are intentionally left intact so a deliberate override is
     never silently dropped on a transient network blip.
     """
@@ -753,9 +759,9 @@ def cmd_online(args):
         sys.exit(3 if r.get("code") == "name_taken" else 1)
     # Any host we just registered against is a good last-known-good — seed the
     # auto cache so a later mDNS blackout (Wi-Fi multicast isolation, etc.) still
-    # has a reachable fallback. Skipped when env MEETING_HOST drove the resolve,
+    # has a reachable fallback. Skipped when env AM_MSGD_HOST drove the resolve,
     # since that override is transient and shouldn't be persisted.
-    if not os.environ.get("MEETING_HOST"):
+    if not os.environ.get("AM_MSGD_HOST"):
         _write_control_cache(host)
 
     display = name if project == "*" else f"{name}@{project}"
@@ -900,10 +906,10 @@ def cmd_host(args):
 
     if value is None:
         current = _control_host()
-        env = os.environ.get("MEETING_HOST")
+        env = os.environ.get("AM_MSGD_HOST")
         if env:
             print(f"control_host (config): {current or '(unset)'}")
-            print(f"MEETING_HOST (env, overrides): {env.rstrip('/')}")
+            print(f"AM_MSGD_HOST (env, overrides): {env.rstrip('/')}")
         else:
             print(current or "(unset)")
         return
@@ -945,7 +951,7 @@ def cmd_controls(args):
 
     # "Current" = whatever this box would actually resolve to right now.
     current_url = (
-        (os.environ.get("MEETING_HOST") or "").rstrip("/") or None
+        (os.environ.get("AM_MSGD_HOST") or "").rstrip("/") or None
         or _control_host()
         or _read_control_cache()
     )

@@ -80,7 +80,7 @@ def build_session_start_payload(
         os_label = "posix"
 
     if is_codex_thread:
-        registration_context = """This is a Codex session. An `amcodex` launch supplies its exact agent-meeting recipient and control URL through thread and turn request parameters. Pass those values as explicit `am` CLI arguments; do not use `MEETING_SELF` or `MEETING_HOST`.
+        registration_context = """This is a Codex session. An `amcodex` launch supplies its exact agent-meeting recipient and control URL through thread and turn request parameters. Pass those values as explicit `am` CLI arguments; do not use `MEETING_SELF` or `AM_MSGD_HOST`.
 
 If no agent-meeting recipient is present in the current runtime context, this Codex session is not registered — and that's fine. Peer-to-peer agent messaging is optional. Never gate, block, or delay the user's work to register a name.
 

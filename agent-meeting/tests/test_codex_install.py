@@ -165,29 +165,18 @@ def test_select_control_uses_discovery_without_prompt(tmp_path):
         pytest.fail("prompt must not run when mDNS discovery succeeded")
 
     assert mod._select_control_url(
-        tmp_path,
         "http://10.0.0.114:8765",
         "",
         unexpected_prompt,
     ) == "http://10.0.0.114:8765"
 
 
-def test_select_control_reuses_saved_reachable_url(tmp_path, monkeypatch):
+def test_select_control_prompts_without_shared_result(tmp_path):
     mod = _load_install()
-    launcher = tmp_path / "codex" / "launcher.json"
-    launcher.parent.mkdir(parents=True)
-    launcher.write_text(
-        json.dumps({"control_url": "http://10.0.0.114:8765"}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(mod, "_control_healthy", lambda _url: True)
-
-    def unexpected_prompt(*_args):
-        pytest.fail("prompt must not run when saved control is reachable")
 
     assert mod._select_control_url(
-        tmp_path, "", "", unexpected_prompt
-    ) == "http://10.0.0.114:8765"
+        "", "", lambda *_args: "http://prompt:8765"
+    ) == "http://prompt:8765"
 
 
 def test_select_control_prefers_explicit_override(tmp_path):
@@ -197,11 +186,38 @@ def test_select_control_prefers_explicit_override(tmp_path):
         pytest.fail("prompt must not run for an explicit override")
 
     assert mod._select_control_url(
-        tmp_path,
         "http://10.0.0.114:8765",
         "http://10.0.0.99:9000",
         unexpected_prompt,
     ) == "http://10.0.0.99:9000"
+
+
+def test_pin_control_host_uses_public_am_host(tmp_path, monkeypatch, capsys):
+    mod = _load_install()
+    meeting_home = tmp_path / "meeting-home"
+    cli = meeting_home / "bin" / "am"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("#!/bin/sh\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(mod.am_common, "run_am_cli", fake_run)
+    mod._pin_control_host(
+        meeting_home,
+        Path(sys.executable),
+        "http://10.0.0.8:8765",
+    )
+
+    assert calls == [
+        (
+            (cli, "host", "http://10.0.0.8:8765"),
+            {"python": Path(sys.executable), "timeout": 10},
+        )
+    ]
+    assert "saved shared control_host" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +249,7 @@ def test_ensure_agents_md_refresh_with_windows_backslash_path(tmp_path):
     win_vpy = r"C:\Users\admin\.agent-meeting\venv\Scripts\python.exe"
     mod._venv_python = lambda _meeting_home: win_vpy
     mod.IS_WINDOWS = True
-    mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
+    mod._ensure_agents_md(codex_home, meeting_home)
 
     text = agents.read_text(encoding="utf-8")
     assert "some pre-existing content" in text, "unrelated pre-existing content must survive the refresh"
@@ -256,7 +272,6 @@ def test_windows_agents_md_executes_activated_meeting_exe_directly(
     mod._ensure_agents_md(
         codex_home,
         meeting_home,
-        "http://10.0.0.5:8765",
     )
 
     text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
@@ -299,7 +314,7 @@ def test_ensure_agents_md_append_branch_unaffected(tmp_path):
     win_vpy = r"C:\Users\admin\.agent-meeting\venv\Scripts\python.exe"
     mod._venv_python = lambda _meeting_home: win_vpy
     mod.IS_WINDOWS = True
-    mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
+    mod._ensure_agents_md(codex_home, meeting_home)
 
     text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
     assert win_vpy in text
@@ -314,14 +329,14 @@ def test_ensure_agents_md_posix_runs_runtime_wrappers_directly(tmp_path):
     codex_home.mkdir()
     meeting_home.mkdir()
 
-    mod._ensure_agents_md(codex_home, meeting_home, "http://10.0.0.5:8765")
+    mod._ensure_agents_md(codex_home, meeting_home)
 
     text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
     cli = meeting_home / "bin" / "am"
     assert f'"{cli}" send NAME@PROJECT X' in text
-    assert "--host http://10.0.0.5:8765" in text
+    assert "--host" not in text
     assert "MEETING_SELF" not in text
-    assert "MEETING_HOST" not in text
+    assert "AM_MSGD_HOST" not in text
     assert f'"{cli}" list' in text
     assert "meeting-say" not in text
     assert "& \"" not in text

@@ -129,7 +129,7 @@ On POSIX the file is created with mode `0600`; on Windows that step is a no-op a
 | Variable | Default | Description |
 |---|---|---|
 | `MEETING_HOME` | `~/.agent-meeting` | Root data directory |
-| `MEETING_HOST` | — | Explicit central am-msgd URL; overrides mDNS |
+| `AM_MSGD_HOST` | — | Explicit central am-msgd URL; overrides mDNS |
 | `MEETING_NO_TELEMETRY` | — | Set to any non-empty value to disable telemetry |
 | `MEETING_TOKEN` | — | Overrides `auth_token` from config |
 | `MEETING_PORT` | `8765` | Legacy client probe override; service port lives in `am-msgd.json` |
@@ -155,7 +155,8 @@ removes the old command and OS service names.
 
 An am-msgd with an active non-loopback listener advertises itself through mDNS
 as `_agent-meeting._tcp.local.`. A loopback-only instance does not advertise.
-Clients can select another hub through `MEETING_HOST` or the `host` config key;
+Clients can select another hub through `AM_MSGD_HOST` or the `control_host`
+config key;
 when no external hub is available, the healthy local loopback hub is the
 fallback.
 

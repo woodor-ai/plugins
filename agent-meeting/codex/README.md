@@ -186,7 +186,8 @@ app-server connection into Codex's `experimentalApi` capability because
   authority.
 - `~/.agent-meeting/codex/logs/am-codexd.log`: daemon lifecycle and injection log.
 - `~/.agent-meeting/codex/logs/app-server.log`: shared official app-server log.
-- `~/.agent-meeting/codex/launcher.json`: selected central am-msgd URL.
+- `~/.agent-meeting/config.json`: shared `control_host` and last-known-good
+  `control_cache` used by both Claude Code and Codex clients.
 
 The daemon deliberately does not reuse a stray app-server found on another
 port; it owns its child process and can restart it safely.

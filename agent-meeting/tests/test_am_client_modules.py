@@ -89,6 +89,52 @@ def test_hub_discovery_prefers_current_control():
     }
 
 
+def test_am_msgd_host_environment_override_replaces_old_name(monkeypatch):
+    from agent_meeting.commands import am_cli
+
+    monkeypatch.setenv("AM_MSGD_HOST", "http://new-hub:9000/")
+    monkeypatch.setenv("MEETING_HOST", "http://old-hub:8765")
+
+    assert am_cli.discover_host() == "http://new-hub:9000"
+
+
+def test_old_meeting_host_environment_name_is_ignored(monkeypatch):
+    from agent_meeting.commands import am_cli
+
+    monkeypatch.delenv("AM_MSGD_HOST", raising=False)
+    monkeypatch.setenv("MEETING_HOST", "http://old-hub:8765")
+    monkeypatch.setattr(am_cli, "_control_host", lambda: None)
+    monkeypatch.setattr(am_cli, "_read_control_cache_fresh", lambda _ttl: None)
+    monkeypatch.setattr(am_cli, "discover_controls", lambda: [])
+
+    assert am_cli.discover_host() is None
+
+
+def test_public_control_discovery_falls_back_to_local_hub(monkeypatch):
+    from agent_meeting.commands import am_cli
+
+    monkeypatch.delenv("AM_MSGD_HOST", raising=False)
+    monkeypatch.setattr(am_cli, "_control_host", lambda: None)
+    monkeypatch.setattr(am_cli, "_discover_zeroconf", lambda: [])
+    monkeypatch.setattr(am_cli, "_discover_controls_raw", lambda: [])
+    monkeypatch.setattr(am_cli, "_read_control_cache", lambda: None)
+    monkeypatch.setattr(
+        am_cli,
+        "_healthy_local_control_url",
+        lambda: "http://127.0.0.1:8765",
+    )
+
+    assert am_cli.discover_controls() == [
+        {
+            "url": "http://127.0.0.1:8765",
+            "host": "127.0.0.1",
+            "ip": "127.0.0.1",
+            "port": 8765,
+            "version": "",
+        }
+    ]
+
+
 def test_subscription_frame_reader_accepts_masked_extended_frame():
     from agent_meeting.clients.hub_subscription_client import read_frame
 

@@ -30,14 +30,14 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
+from agent_meeting.clients import hub_discovery
+from agent_meeting.clients.am_process_client import run_am_cli
 from agent_meeting.lifecycle_control.terminals import current_terminal_handle
 
 from mycodex import __version__
 
 HOME = Path.home()
 DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
-CODEX_DIR = DATA / "codex"
-LAUNCHER_JSON = CODEX_DIR / "launcher.json"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 IS_WINDOWS = sys.platform.startswith("win")
 if IS_WINDOWS:
@@ -55,6 +55,7 @@ if __package__:
     )
 else:
     DAEMON_COMMAND = PLUGIN_ROOT / "bin" / "am-codexd"
+AM_COMMAND = DATA / "bin" / ("am.exe" if IS_WINDOWS else "am")
 BROKER_API_PORT = int(os.environ.get("MEETING_BROKER_API_PORT", "8788"))
 BROKER_BASE = f"http://127.0.0.1:{BROKER_API_PORT}"
 WRAPPER_DIR = DATA / "control" / "wrappers"
@@ -96,17 +97,14 @@ def log(message):
 
 
 def default_control_url():
-    try:
-        return (
-            json.loads(LAUNCHER_JSON.read_text(encoding="utf-8")).get("control_url")
-            or ""
-        ).strip()
-    except Exception:
-        return ""
+    control = hub_discovery.discover_control(
+        lambda *args: run_am_cli(AM_COMMAND, *args, timeout=10)
+    )
+    return str(control.get("base_url") or "")
 
 
 def normalize_am_msgd(value: str, default_port: int = 8765) -> str:
-    """Normalize a mycodex am-msgd endpoint to its internal HTTP URL."""
+    """Normalize an amcodex am-msgd endpoint to its internal HTTP URL."""
     raw = (value or "").strip()
     if not raw:
         return ""
@@ -682,7 +680,7 @@ def main(argv=None):
         if project is None:
             raise SystemExit(
                 "no project identity is configured for this repository; "
-                "run mycodex <name> --proj <project> once, or use --global"
+                "run amcodex <name> --proj <project> once, or use --global"
             )
 
     endpoint = args.am_msgd or default_control_url()

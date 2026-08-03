@@ -109,11 +109,11 @@ def start_am_msgd(home_dir: str) -> subprocess.Popen:
     am_msgd_path = os.path.join(os.path.dirname(__file__), "..", "bin", "am-msgd")
     env = os.environ.copy()
     # Both MUST be set: MEETING_HOME so the central am-msgd owns our temp DB, and
-    # MEETING_HOST so nothing in this process's own code path (none here,
+    # AM_MSGD_HOST so nothing in this process's own code path (none here,
     # but kept as a hard rule per the isolation incident) can fall back to
     # discovering/registering against a real production central am-msgd.
     env["MEETING_HOME"] = home_dir
-    env["MEETING_HOST"] = f"http://{HOST}:{TEST_PORT}"
+    env["AM_MSGD_HOST"] = f"http://{HOST}:{TEST_PORT}"
     proc = subprocess.Popen(
         [sys.executable, am_msgd_path, "serve", f"--port={TEST_PORT}", "--no-mdns"],
         env=env,

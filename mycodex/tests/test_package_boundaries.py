@@ -22,7 +22,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.17.2"
+    assert mycodex.__version__ == "0.17.3"
     assert mycodex.__version__ == agent_meeting.__version__
 
 
@@ -293,7 +293,6 @@ def test_codex_instructions_upgrade_legacy_managed_block(tmp_path):
         agent_meeting_instructions.install_agent_meeting_instructions(
             codex_home=codex_home,
             am_command=am,
-            control_url="http://10.0.0.1:8765",
             is_windows=True,
         )
     )
@@ -304,64 +303,72 @@ def test_codex_instructions_upgrade_legacy_managed_block(tmp_path):
     assert "stale content" not in text
     assert agent_meeting_instructions.AGENTS_BEGIN in text
     assert f'& "{am}" message NAME@PROJECT N' in text
+    assert "--host" not in text
     assert "MEETING_SELF" not in text
-    assert "MEETING_HOST" not in text
+    assert "AM_MSGD_HOST" not in text
 
 
-def test_control_selection_prefers_explicit_then_discovered_then_saved(
-    tmp_path,
-):
-    from mycodex.installation import control_endpoint_selection
+def test_amcodex_default_control_uses_public_am_discovery(monkeypatch):
+    from mycodex.launcher import codex_tui_session
 
-    meeting_home = tmp_path / "meeting"
-    control_endpoint_selection.write_launcher_default(
-        meeting_home,
-        "http://saved:8765",
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = (
+            '[{"ip":"10.0.0.8","port":9876,'
+            '"is_current":true}]'
+        )
+
+    def fake_run(cli, *args, **kwargs):
+        calls.append((cli, args, kwargs))
+        return Result()
+
+    monkeypatch.setattr(codex_tui_session, "run_am_cli", fake_run)
+
+    assert codex_tui_session.default_control_url() == "http://10.0.0.8:9876"
+    assert calls == [
+        (
+            codex_tui_session.AM_COMMAND,
+            ("controls", "--json"),
+            {"timeout": 10},
+        )
+    ]
+
+
+def test_codex_configuration_pins_explicit_host_through_am(monkeypatch):
+    from mycodex.commands import configure_codex_user_environment_cli
+
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "control_host pinned"
+        stderr = ""
+
+    def fake_run(cli, *args, **kwargs):
+        calls.append((cli, args, kwargs))
+        return Result()
+
+    monkeypatch.setattr(
+        configure_codex_user_environment_cli,
+        "run_am_cli",
+        fake_run,
     )
-    prompt = lambda *_args: "http://prompt:8765"
+    am_command = Path("/runtime/am")
 
-    assert control_endpoint_selection.select_control(
-        meeting_home=meeting_home,
-        discovered="http://discovered:8765",
-        explicit="http://explicit:8765",
-        prompt=prompt,
-        health_check=lambda _url: True,
-    ) == "http://explicit:8765"
-    assert control_endpoint_selection.select_control(
-        meeting_home=meeting_home,
-        discovered="http://discovered:8765",
-        explicit="",
-        prompt=prompt,
-        health_check=lambda _url: True,
-    ) == "http://discovered:8765"
-    assert control_endpoint_selection.select_control(
-        meeting_home=meeting_home,
-        discovered="",
-        explicit="",
-        prompt=prompt,
-        health_check=lambda _url: True,
-    ) == "http://saved:8765"
-
-
-def test_control_selection_uses_healthy_local_hub_before_prompt(tmp_path):
-    from mycodex.installation import control_endpoint_selection
-
-    meeting_home = tmp_path / "meeting"
-    meeting_home.mkdir()
-    (meeting_home / "am-msgd.json").write_text(
-        '{"port": 9911}\n',
-        encoding="utf-8",
+    configure_codex_user_environment_cli._pin_control(
+        am_command,
+        "http://10.0.0.9:8765",
     )
 
-    selected = control_endpoint_selection.select_control(
-        meeting_home=meeting_home,
-        discovered="",
-        explicit="",
-        prompt=lambda *_args: "http://prompt:8765",
-        health_check=lambda url: url == "http://127.0.0.1:9911",
-    )
-
-    assert selected == "http://127.0.0.1:9911"
+    assert calls == [
+        (
+            am_command,
+            ("host", "http://10.0.0.9:8765"),
+            {"timeout": 10},
+        )
+    ]
 
 
 def test_codex_user_configuration_preserves_unrelated_sections(tmp_path):
