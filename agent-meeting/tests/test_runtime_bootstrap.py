@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+from pathlib import Path
+import zipfile
+
+
+PRODUCT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = PRODUCT_ROOT / "scripts" / "bootstrap_runtime.py"
+
+
+def load_bootstrap():
+    spec = importlib.util.spec_from_file_location("runtime_bootstrap_test", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def archive_bytes() -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("plugins-release/installers/install.py", "pass\n")
+    return output.getvalue()
+
+
+class DownloadResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
+def test_release_archive_uses_installed_plugin_version(tmp_path):
+    module = load_bootstrap()
+    manifest = tmp_path / ".codex-plugin" / "plugin.json"
+    manifest.parent.mkdir()
+    manifest.write_text(
+        json.dumps({"version": "0.18.7+codex.local-test"}),
+        encoding="utf-8",
+    )
+
+    assert module.release_archive_url(tmp_path).endswith("/tags/v0.18.7")
+
+
+def test_bundled_script_resolves_plugin_root_and_version():
+    module = load_bootstrap()
+
+    assert module.plugin_root(SCRIPT) == PRODUCT_ROOT
+    assert module.plugin_version(PRODUCT_ROOT) == "0.18.7"
+
+
+def test_standalone_bootstrap_uses_main_archive():
+    module = load_bootstrap()
+
+    assert module.release_archive_url(None).endswith("/heads/main")
+
+
+def test_bootstrap_downloads_and_runs_shared_installer():
+    module = load_bootstrap()
+    calls = []
+
+    def open_archive(request, timeout):
+        calls.append((request.full_url, timeout))
+        return DownloadResponse(archive_bytes())
+
+    def run_installer(command, check):
+        calls.append((command, check))
+
+    module.install_runtime(
+        target="codex",
+        root=None,
+        archive_url="https://example.test/plugins.zip",
+        opener=open_archive,
+        run=run_installer,
+    )
+
+    assert calls[0] == ("https://example.test/plugins.zip", 120)
+    command, check = calls[1]
+    assert check is True
+    assert command[0] == module.sys.executable
+    assert command[2:] == [
+        "--target",
+        "codex",
+        "--source-root",
+        command[-1],
+    ]
+    assert command[1].endswith("installers/install.py")
+    assert Path(command[1]).parent.name == "installers"
+    assert Path(command[-1]).name == "plugins-release"

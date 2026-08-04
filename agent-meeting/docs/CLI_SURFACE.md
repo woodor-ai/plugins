@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-03 · version 0.18.6
+Last updated: 2026-08-04 · version 0.18.7
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -14,6 +14,14 @@ same skills from the native plugin and exposes them through `/skills` or
 skill names.
 
 ## Distribution update
+
+On first `$imagent` use, an installed plugin with no host runtime runs its
+bundled `scripts/bootstrap_runtime.py`. The bootstrap downloads the Git tag
+matching the plugin's semantic version and delegates all installation work to
+the same unified installer below. It never asks users to locate Codex's
+marketplace cache directory. A bootstrapped plain Codex session must then be
+restarted through `amcodex`; Claude Code can continue the current `/imagent`
+workflow.
 
 `am-update` is the only public distribution updater. It refreshes the public
 release checkout, creates and atomically selects one immutable host runtime,

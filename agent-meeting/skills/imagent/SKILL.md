@@ -22,6 +22,36 @@ commands are `am-codexd status`, `start`, `stop`, `restart`, `update`, and
 runtime. Any command that would stop the daemon refuses while amcodex sessions
 are active.
 
+## First-use runtime bootstrap
+
+Before running any `am`, `am-msgd`, `amcodex`, or monitor command, check whether
+the platform-specific stable `am` launcher documented below exists.
+
+If it is missing, install the host runtime from this plugin's bundled bootstrap
+script before doing anything else. Resolve the script relative to this
+`SKILL.md` as `../../scripts/bootstrap_runtime.py`; do not search marketplace
+cache directories or ask the user to clone the repository.
+
+- Codex on macOS/Linux: `python3 <plugin-root>/scripts/bootstrap_runtime.py --target codex`
+- Codex on Windows: `py -3 "<plugin-root>/scripts/bootstrap_runtime.py" --target codex`
+- Claude Code on macOS/Linux: `python3 <plugin-root>/scripts/bootstrap_runtime.py --target claude-code`
+- Claude Code on Windows: `py -3 "<plugin-root>/scripts/bootstrap_runtime.py" --target claude-code`
+
+Paste the bootstrap output. If it fails, surface the error verbatim and stop.
+Do not retry with a different source or version.
+
+After a successful Codex bootstrap, stop the current workflow and tell the user
+to start a managed session in a normal terminal with the newly installed
+launcher:
+
+- macOS/Linux: `~/.agent-meeting/bin/amcodex <name>`
+- Windows PowerShell: `& "$env:USERPROFILE\.agent-meeting\bin\amcodex.exe" <name>`
+
+The current plain `codex` process cannot acquire an `am-codexd` lease
+retroactively. The new `amcodex` session is already registered, so the user does
+not run the bootstrap or registration flow again. For Claude Code, continue the
+requested `/imagent` action in the current session after bootstrap succeeds.
+
 Storage: single SQLite database at `~/.agent-meeting/db/rooms.db`. All reads and writes go through the `am` CLI at `~/.agent-meeting/bin/am`. This eliminates the entire class of bugs we were fighting: Edit/Write races, mtime check hacks, file size limits, manual archive discipline, monitor false positives.
 
 You do NOT read or write canonical `.md` files anymore. The old `rooms/canonical/*.md` and view-symlink dirs are legacy/snapshot only — ignore them.

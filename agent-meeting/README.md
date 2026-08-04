@@ -11,9 +11,17 @@ The supported command surface is documented in
 
 ## Install
 
-The host runtime is installed under
-`~/.agent-meeting/runtimes/<version>/venv`; stable launchers live under
-`~/.agent-meeting/bin`. Use the unified installer from a plugins checkout:
+Install the plugin from the Woodor marketplace, start a new Codex session, and
+invoke `$imagent`. On first use, the bundled cross-platform bootstrap downloads
+the matching tagged release and installs the host runtime automatically. Do not
+clone the repository or locate Codex marketplace cache directories manually.
+
+The runtime is installed under `~/.agent-meeting/runtimes/<version>/venv`;
+stable launchers live under `~/.agent-meeting/bin`. After the first Codex
+bootstrap, start the managed session requested by the skill with `amcodex
+<name>`. A plain Codex process cannot become managed retroactively.
+
+Repository contributors can still run the unified installer directly:
 
 ```sh
 python3 installers/install.py --target claude-code
@@ -21,10 +29,10 @@ python3 installers/install.py --target codex
 python3 installers/install.py --target all
 ```
 
-On Windows, invoke the same file with `py -3`. The installer builds and
-atomically activates the same versioned host runtime,
-migrates supported legacy artifacts, then registers the matching native plugin
-marketplace. Windows uses pip-generated `.exe` console launchers.
+On Windows, invoke the contributor command with `py -3`. The installer builds
+and atomically activates the same versioned host runtime, migrates supported
+legacy artifacts, then registers the matching native plugin marketplace.
+Windows uses pip-generated `.exe` console launchers.
 Codex installation treats `~/.codex/AGENTS.md` as user-owned and never creates
 or refreshes agent-meeting instructions there.
 
