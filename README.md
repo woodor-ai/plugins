@@ -22,7 +22,7 @@ codex plugin add <plugin-name>@woodor
 
 安装 `agent-meeting` 后启动一个新的 Codex 会话并调用 `$imagent`。首次使用会
 自动安装 Windows、macOS 或 Linux 主机运行时；无需克隆仓库或手动进入 marketplace
-缓存目录。自举完成后按提示改用 `amcodex <name>` 启动托管会话。
+缓存目录。自举完成后新开终端，直接运行 `amcodex <name>` 启动托管会话。
 
 Claude Code 支持仓库中的全部插件；Codex 原生 marketplace 当前包含 `agent-meeting`、`handoff` 和 `init-agents`。
 

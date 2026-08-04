@@ -17,9 +17,9 @@ the matching tagged release and installs the host runtime automatically. Do not
 clone the repository or locate Codex marketplace cache directories manually.
 
 The runtime is installed under `~/.agent-meeting/runtimes/<version>/venv`;
-stable launchers live under `~/.agent-meeting/bin`. After the first Codex
-bootstrap, start the managed session requested by the skill with `amcodex
-<name>`. A plain Codex process cannot become managed retroactively.
+stable launchers are added to the user `PATH`. After the first Codex bootstrap,
+close the current terminal, open a new one, and start the managed session with
+`amcodex <name>`. A plain Codex process cannot become managed retroactively.
 
 Repository contributors can still run the unified installer directly:
 

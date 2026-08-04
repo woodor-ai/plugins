@@ -41,11 +41,11 @@ Paste the bootstrap output. If it fails, surface the error verbatim and stop.
 Do not retry with a different source or version.
 
 After a successful Codex bootstrap, stop the current workflow and tell the user
-to start a managed session in a normal terminal with the newly installed
-launcher:
-
-- macOS/Linux: `~/.agent-meeting/bin/amcodex <name>`
-- Windows PowerShell: `& "$env:USERPROFILE\.agent-meeting\bin\amcodex.exe" <name>`
+to close the current Codex process and terminal, open a new terminal so it
+inherits the updated `PATH`, then run `amcodex <name>`. This short command is
+the only normal user entry point on Windows, macOS, and Linux. Never present
+the launcher's installation path unless troubleshooting a failed `PATH`
+installation.
 
 The current plain `codex` process cannot acquire an `am-codexd` lease
 retroactively. The new `amcodex` session is already registered, so the user does

@@ -99,6 +99,11 @@ def install_runtime(
             check=True,
         )
     print("agent-meeting runtime installation complete", flush=True)
+    if target in {"codex", "all"}:
+        print(
+            "Open a new terminal and run: amcodex <name>",
+            flush=True,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
