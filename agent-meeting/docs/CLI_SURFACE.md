@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-03 · version 0.18.5
+Last updated: 2026-08-03 · version 0.18.6
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -49,9 +49,10 @@ am-ctl agent --name NAME --proj PROJECT --cmd exit
 am-ctl agent --name NAME --proj PROJECT --cmd restart
 ```
 
-`amclaude [name] [--proj PROJECT] [--model fable-5|opus-5|sonnet-5]
+`amclaude [name] [--proj PROJECT]
+[--model claude-fable-5|claude-opus-5|claude-sonnet-5]
 [--effort ultracode|max|extra|high|medium] -- [claude arguments...]` launches
-Claude Code in its lifecycle wrapper. It defaults to `opus-5` with `high`
+Claude Code in its lifecycle wrapper. It defaults to `claude-opus-5` with `high`
 effort. `amcodex` is the corresponding Codex wrapper and accepts
 `--model sol|terra` (default `sol`) plus `--effort xhigh|high|medium` (default
 `high`). The old `myclaude` subscription/API selector is not part of

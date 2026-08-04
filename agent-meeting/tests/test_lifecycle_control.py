@@ -247,14 +247,21 @@ def test_amclaude_descriptor_does_not_persist_arguments(tmp_path, monkeypatch):
 def test_amclaude_builds_model_and_effort_into_child_command():
     from agent_meeting.launcher.amclaude_session import build_claude_launch_cmd
 
+    assert build_claude_launch_cmd([]) == [
+        "claude",
+        "--model",
+        "claude-opus-5",
+        "--effort",
+        "high",
+    ]
     assert build_claude_launch_cmd(
         ["--verbose"],
-        model="sonnet-5",
+        model="claude-sonnet-5",
         effort="max",
     ) == [
         "claude",
         "--model",
-        "sonnet-5",
+        "claude-sonnet-5",
         "--effort",
         "max",
         "--verbose",
@@ -267,7 +274,9 @@ def test_amclaude_help_exposes_model_and_effort_choices(capsys):
     assert main(["--amclaude-help"]) == 0
 
     output = capsys.readouterr().out
-    assert "--model {fable-5,opus-5,sonnet-5}" in output
+    assert (
+        "--model {claude-fable-5,claude-opus-5,claude-sonnet-5}" in output
+    )
     assert "--effort {ultracode,max,extra,high,medium}" in output
 
 

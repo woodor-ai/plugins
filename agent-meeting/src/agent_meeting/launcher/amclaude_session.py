@@ -27,14 +27,14 @@ from agent_meeting.lifecycle_control.terminals import current_terminal_handle
 from agent_meeting.messaging import project_identity
 
 
-CLAUDE_MODELS = ("fable-5", "opus-5", "sonnet-5")
+CLAUDE_MODELS = ("claude-fable-5", "claude-opus-5", "claude-sonnet-5")
 CLAUDE_EFFORTS = ("ultracode", "max", "extra", "high", "medium")
 
 
 def build_claude_launch_cmd(
     claude_args: list[str],
     *,
-    model: str = "opus-5",
+    model: str = "claude-opus-5",
     effort: str = "high",
 ) -> list[str]:
     """Build the managed Claude invocation with its session settings."""
@@ -81,7 +81,7 @@ class ClaudeSupervisor:
         *,
         name: str,
         project: str | None,
-        model: str = "opus-5",
+        model: str = "claude-opus-5",
         effort: str = "high",
     ):
         self.claude_args = list(claude_args)
@@ -336,8 +336,8 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--model",
         choices=CLAUDE_MODELS,
-        default="opus-5",
-        help="Claude model variant (default: opus-5)",
+        default="claude-opus-5",
+        help="Claude model variant (default: claude-opus-5)",
     )
     parser.add_argument(
         "--effort",
