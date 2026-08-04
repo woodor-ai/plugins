@@ -15,8 +15,9 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AM_MSGD = ROOT / "bin" / "am-msgd"
-AM = ROOT / "bin" / "am"
+SOURCE_ROOT = ROOT / "src"
+AM_MSGD = SOURCE_ROOT / "agent_meeting" / "commands" / "am_msgd_cli.py"
+AM = SOURCE_ROOT / "agent_meeting" / "commands" / "am_cli.py"
 
 
 def free_port():
@@ -74,6 +75,7 @@ def am_msgd(tmp_path):
     port = free_port()
     env = os.environ.copy()
     env["MEETING_HOME"] = str(meeting_home)
+    env["PYTHONPATH"] = str(SOURCE_ROOT)
     process = subprocess.Popen(
         [
             os.environ.get("PYTHON", os.sys.executable),
@@ -660,6 +662,7 @@ def test_private_send_requires_full_identity_but_group_short_name_is_allowed(am_
     assert created.get("ok"), created
     env = os.environ.copy()
     env["MEETING_NO_TELEMETRY"] = "1"
+    env["PYTHONPATH"] = str(SOURCE_ROOT)
 
     bare_private = subprocess.run(
         [

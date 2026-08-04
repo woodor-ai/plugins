@@ -8,11 +8,9 @@ from typing import Callable
 
 from agent_meeting.clients import hub_discovery
 from agent_meeting.clients.am_process_client import run_am_cli
+from agent_meeting.ai_platforms.codex import user_configuration
 
-from mycodex.ai_platforms.codex import (
-    agent_meeting_instructions,
-    user_configuration,
-)
+from mycodex.ai_platforms.codex import agent_meeting_instructions
 
 
 def _am_command(meeting_home: Path, *, is_windows: bool) -> Path:

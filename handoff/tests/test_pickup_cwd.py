@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).parent.parent / "bin" / "handoff-pickup.py"
-CODEX_SCRIPT = Path(__file__).parent.parent / "codex" / "codex-handoff-pickup.py"
+CODEX_SCRIPT = Path(__file__).parent.parent / "bin" / "handoff-pickup-host.py"
 
 
 def _write_card(base: Path, content: str) -> None:
@@ -101,12 +101,14 @@ def test_codex_wrapper_uses_dot_codex_not_dot_claude():
         _write_card(project, "claude-card")
         _write_codex_card(project, "codex-card")
 
+        environment = os.environ.copy()
+        environment["PLUGIN_ROOT"] = str(CODEX_SCRIPT.parent.parent)
         result = subprocess.run(
             [sys.executable, str(CODEX_SCRIPT)],
             input=json.dumps({"cwd": str(project)}),
             capture_output=True,
             text=True,
-            env=os.environ.copy(),
+            env=environment,
         )
 
         assert result.returncode == 0, result.stderr

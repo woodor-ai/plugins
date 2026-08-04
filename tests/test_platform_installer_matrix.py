@@ -1,87 +1,50 @@
-"""Static contracts for the four OS x AI-platform installer entrypoints."""
-
+import importlib.util
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+INSTALLER = ROOT / "installers" / "install.py"
 
 
-def _text(relative_path: str) -> str:
-    return (ROOT / relative_path).read_text(encoding="utf-8")
-
-
-def test_macos_installers_share_versioned_runtime_and_platform_registration():
-    claude = _text("installers/claude-code/install-on-macos.sh")
-    codex = _text("installers/codex/install-on-macos.sh")
-
-    for script in (claude, codex):
-        assert "install-agent-meeting-package.py" in script
-        assert "migrate-agent-meeting-legacy-layout.py" in script
-    assert "register-claude-marketplace.py" in claude
-    assert "--configure-codex" in codex
-    assert "am-configure-codex-user-environment" not in codex
-    assert "register-codex-marketplace.py" in codex
-
-
-def test_windows_installers_prefer_py_launcher_and_check_each_stage():
-    claude = _text("installers/claude-code/install-on-windows.ps1")
-    codex = _text("installers/codex/install-on-windows.ps1")
-
-    for script in (claude, codex):
-        assert "Get-Command py" in script
-        assert '$PythonArguments = @("-3")' in script
-        assert "Get-Command python -ErrorAction Stop" in script
-        assert "Invoke-RepositoryPython" in script
-        assert "install-agent-meeting-package.py" in script
-        assert "migrate-agent-meeting-legacy-layout.py" in script
-        assert "if ($LASTEXITCODE -ne 0)" in script
-    assert "register-claude-marketplace.py" in claude
-    assert "--configure-codex" in codex
-    assert "am-configure-codex-user-environment" not in codex
-    assert "register-codex-marketplace.py" in codex
-
-
-def test_platform_registration_supports_non_mutating_smoke_executable():
-    claude = _text("installers/shared/register-claude-marketplace.py")
-    codex = _text("installers/shared/register-codex-marketplace.py")
-
-    assert 'os.environ.get("CLAUDE_BIN")' in claude
-    assert 'os.environ.get("CODEX_BIN")' in codex
-
-
-def test_common_processes_delegate_os_service_and_spawn_primitives():
-    meeting_cli = _text(
-        "agent-meeting/src/agent_meeting/commands/am_cli.py"
+def _load_installer():
+    spec = importlib.util.spec_from_file_location(
+        "unified_agent_meeting_installer",
+        INSTALLER,
     )
-    codex_broker = _text(
-        "mycodex/src/mycodex/codex_session_broker/broker_process.py"
-    )
-    claude_session_start = _text(
-        "agent-meeting/src/agent_meeting/ai_platforms/"
-        "claude_code/session_start_bootstrap.py"
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_one_cross_platform_installer_owns_every_target(tmp_path, monkeypatch):
+    installer = _load_installer()
+    calls = []
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    for primitive in ("launchctl", "schtasks", "taskkill"):
-        assert primitive not in meeting_cli
-    for primitive in ("creationflags", "start_new_session"):
-        assert primitive not in codex_broker
-    assert "operating_systems.macos" in claude_session_start
-    assert "operating_systems.windows" in claude_session_start
-    assert (
-        ROOT
-        / "mycodex"
-        / "src"
-        / "mycodex"
-        / "operating_systems"
-        / "macos"
-        / "codex_background_process.py"
-    ).is_file()
-    assert (
-        ROOT
-        / "mycodex"
-        / "src"
-        / "mycodex"
-        / "operating_systems"
-        / "windows"
-        / "codex_background_process.py"
-    ).is_file()
+    installer.install(
+        source_root=tmp_path / "plugins",
+        meeting_home=tmp_path / "meeting",
+        target="all",
+        control_url="http://10.0.0.8:8765",
+        enable_full_automation=True,
+    )
+
+    commands = [command for command, _kwargs in calls]
+    assert "--configure-codex" in commands[0]
+    assert "--control-url" in commands[0]
+    assert "--enable-full-automation" in commands[0]
+    assert any("register-claude-marketplace.py" in command[1] for command in commands)
+    assert any("register-codex-marketplace.py" in command[1] for command in commands)
+    assert commands[-1][-2:] == ["update", "--defer-if-active"]
+
+
+def test_legacy_platform_installers_are_removed():
+    assert INSTALLER.is_file()
+    assert not (ROOT / "installers/claude-code").exists()
+    assert not (ROOT / "installers/codex").exists()

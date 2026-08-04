@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import socket
 import struct
@@ -44,23 +43,6 @@ def test_project_cache_is_explicitly_scoped_to_runtime_home(tmp_path):
         )
         is None
     )
-
-
-def test_compatibility_facade_honors_monkeypatched_meeting_home(tmp_path):
-    facade_path = PLUGIN_ROOT / "bin" / "am_common.py"
-    spec = importlib.util.spec_from_file_location(
-        "am_common_isolated",
-        facade_path,
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-
-    module.MEETING_HOME = str(tmp_path)
-    module.proj_cache_set("/repo", "scoped-project")
-
-    assert module.proj_cache_get("/repo") == "scoped-project"
-    assert module.derive_project("/repo") == "scoped-project"
 
 
 def test_hub_discovery_prefers_current_control():

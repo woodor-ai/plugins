@@ -102,8 +102,8 @@ def _derive_project(cwd: str) -> str:
 # Read once at startup -- reported to central am-msgd on every (re)register so
 # `am list` / sessions rows can tell which plugin build a live session
 # is running. config.json (not plugin.json) is the only version source
-# monitor.py can reliably read: it runs from the copied ~/.agent-meeting/bin
-# runtime, not the plugin source tree, with no CLAUDE_PLUGIN_ROOT guarantee.
+# the installed monitor can reliably read without depending on a plugin cache
+# path or a CLAUDE_PLUGIN_ROOT value.
 _CLIENT_VERSION = client_configuration.read_plugin_version(DATA)
 
 # Exit codes from `am online` that mean central am-msgd/CLI made a considered,
@@ -298,7 +298,7 @@ _delivery_control = ClaudeMonitorControl(
 _delivery_control.start()
 atexit.register(_delivery_control.stop)
 
-# ---------- WS client wiring (kernel lives in am_common.WSSubscribeClient) ----------
+# ---------- WebSocket client wiring ----------
 
 def _log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")

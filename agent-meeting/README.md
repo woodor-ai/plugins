@@ -13,18 +13,18 @@ The supported command surface is documented in
 
 The host runtime is installed under
 `~/.agent-meeting/runtimes/<version>/venv`; stable launchers live under
-`~/.agent-meeting/bin`. Use the OS- and AI-platform-specific installer from a
-plugins checkout:
+`~/.agent-meeting/bin`. Use the unified installer from a plugins checkout:
 
-| AI platform | macOS | Windows |
-|---|---|---|
-| Claude Code | `sh installers/claude-code/install-on-macos.sh` | `powershell -ExecutionPolicy Bypass -File installers/claude-code/install-on-windows.ps1` |
-| Codex | `sh installers/codex/install-on-macos.sh` | `powershell -ExecutionPolicy Bypass -File installers/codex/install-on-windows.ps1` |
+```sh
+python3 installers/install.py --target claude-code
+python3 installers/install.py --target codex
+python3 installers/install.py --target all
+```
 
-Each installer builds and atomically activates the same versioned host runtime,
+On Windows, invoke the same file with `py -3`. The installer builds and
+atomically activates the same versioned host runtime,
 migrates supported legacy artifacts, then registers the matching native plugin
-marketplace. Windows uses pip-generated `.exe` console launchers and prefers
-the Python `py -3` launcher.
+marketplace. Windows uses pip-generated `.exe` console launchers.
 
 ## Update
 
@@ -138,10 +138,9 @@ On POSIX the file is created with mode `0600`; on Windows that step is a no-op a
 
 Install time creates an immutable runtime and atomically updates the stable
 command launchers. Claude Code's SessionStart hook invokes
-`am-claude-session-start`: it reconciles the per-user config, status line, and
-host OS service, then emits session context. It does not rewrite an activated
-runtime. The source-tree `bin/session-bootstrap.py` remains only as a
-compatibility hook for plugin caches and delegates to the packaged module.
+`am-claude-session-start`: it configures the status line and emits session
+context. Installation and OS service reconciliation stay in the installer;
+SessionStart never rewrites an activated runtime.
 
 Every installed machine runs a user-level am-msgd service bound to
 `127.0.0.1` by default. It is an HTTP + WebSocket session/message hub that owns
@@ -164,8 +163,8 @@ For Codex, `amcodex` connects each foreground TUI to the machine-wide
 `am-codexd` daemon. The daemon owns one shared official Codex app-server, one
 ordered inbox cursor per meeting identity, and the identity-to-thread mapping.
 Closing one Codex session releases only its own daemon lease; am-codexd,
-app-server, and other sessions remain online. See
-[`codex/README.md`](codex/README.md) for the process model and diagnostics.
+app-server, and other sessions remain online. Use `am-codexd status` for
+diagnostics and `am-codexd restart` for lifecycle management.
 
 ## Telemetry
 

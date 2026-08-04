@@ -69,7 +69,9 @@ When a new session picks up this card, it must add every item in **Leftover todo
 
 ## Hooks
 
-`hooks.json` registers a single `SessionStart` hook that fires on four matchers: `startup`, `resume`, `clear`, and `compact`. All four call `python3 ${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup.py` (with `py -3` and `python` as fallbacks for Windows and older PATH setups).
+`hooks.json` registers a `SessionStart` hook for `startup`, `resume`, `clear`,
+and `compact`. The shared host adapter selects `.claude` or `.codex` from the
+active plugin environment, then delegates to the common pickup implementation.
 
 The pickup script resolves the project directory in priority order: `stdin.cwd` → `CLAUDE_PROJECT_DIR` → `os.getcwd()`. It creates `docs/handoff/archive/` if needed, then does an atomic `os.rename` to claim the pending file. A rename failure means another process already claimed it — the script exits silently rather than injecting twice.
 

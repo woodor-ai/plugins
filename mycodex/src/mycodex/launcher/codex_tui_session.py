@@ -33,64 +33,29 @@ from urllib.parse import urlparse
 from agent_meeting.clients import hub_discovery
 from agent_meeting.clients.am_process_client import run_am_cli
 from agent_meeting.lifecycle_control.terminals import current_terminal_handle
+from agent_meeting.messaging import project_identity
 
 from mycodex import __version__
 
 HOME = Path.home()
 DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 IS_WINDOWS = sys.platform.startswith("win")
 if IS_WINDOWS:
     from mycodex.operating_systems.windows import codex_terminal_title
 else:
     from mycodex.operating_systems.macos import codex_terminal_title
-if __package__:
-    DAEMON_COMMAND = Path(
-        shutil.which("am-codexd")
-        or (
-            DATA
-            / "bin"
-            / ("am-codexd.exe" if IS_WINDOWS else "am-codexd")
-        )
+DAEMON_COMMAND = Path(
+    shutil.which("am-codexd")
+    or (
+        DATA
+        / "bin"
+        / ("am-codexd.exe" if IS_WINDOWS else "am-codexd")
     )
-else:
-    DAEMON_COMMAND = PLUGIN_ROOT / "bin" / "am-codexd"
+)
 AM_COMMAND = DATA / "bin" / ("am.exe" if IS_WINDOWS else "am")
 BROKER_API_PORT = int(os.environ.get("MEETING_BROKER_API_PORT", "8788"))
 BROKER_BASE = f"http://127.0.0.1:{BROKER_API_PORT}"
 WRAPPER_DIR = DATA / "control" / "wrappers"
-
-sys.path.insert(0, str(DATA / "bin"))
-try:
-    import am_common
-except ImportError:
-    try:
-        from agent_meeting.messaging import project_identity
-
-        class _PackagedAmIdentity:
-            validate_proj = staticmethod(project_identity.validate_project)
-            _project_root = staticmethod(project_identity._project_root)
-
-            @staticmethod
-            def proj_cache_set(root, project):
-                project_identity.proj_cache_set(
-                    root,
-                    project,
-                    meeting_home=str(DATA),
-                )
-
-            @staticmethod
-            def resolve_authoritative_project(cwd, explicit_project):
-                return project_identity.resolve_authoritative_project(
-                    cwd,
-                    explicit_project,
-                    meeting_home=str(DATA),
-                )
-
-        am_common = _PackagedAmIdentity()
-    except ImportError:
-        am_common = None
-
 
 def log(message):
     print(f"[amcodex] {time.strftime('%H:%M:%S')} {message}", flush=True)
@@ -158,24 +123,8 @@ def default_name():
     return f"codex-{host}"[:20]
 
 
-def venv_python():
-    if IS_WINDOWS:
-        candidate = DATA / "venv" / "Scripts" / "python.exe"
-    else:
-        candidate = DATA / "venv" / "bin" / "python"
-    return str(candidate if candidate.exists() else Path(sys.executable))
-
-
 def installed_plugin_version():
-    try:
-        manifest = json.loads(
-            (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        return str(manifest.get("version") or "unknown")
-    except Exception:
-        return __version__
+    return __version__
 
 
 def daemon_versions_compatible(running: str, installed: str) -> bool:
@@ -221,15 +170,7 @@ def broker_request(method, path, body=None, params=None, timeout=45):
 def ensure_daemon():
     if not DAEMON_COMMAND.exists():
         raise RuntimeError(f"am-codexd command not found at {DAEMON_COMMAND}")
-    if __package__:
-        command = [str(DAEMON_COMMAND), "update", "--defer-if-active"]
-    else:
-        command = [
-            venv_python(),
-            str(DAEMON_COMMAND),
-            "update",
-            "--defer-if-active",
-        ]
+    command = [str(DAEMON_COMMAND), "update", "--defer-if-active"]
     result = subprocess.run(command, capture_output=True, text=True)
     detail = (result.stderr or result.stdout or "").strip()
     if result.returncode != 0:
@@ -658,25 +599,29 @@ def main(argv=None):
     parser.add_argument("--no-codex", action="store_true")
     args = parser.parse_args(argv)
 
-    if am_common is None:
-        raise SystemExit(
-            f"am_common is unavailable in {DATA / 'bin'}; reinstall agent-meeting"
-        )
     if args.proj is not None and args.is_global:
         raise SystemExit("--proj and --global are mutually exclusive")
 
     if args.proj is not None:
         try:
-            project = am_common.validate_proj(args.proj)
+            project = project_identity.validate_project(args.proj)
         except ValueError as exc:
             raise SystemExit(str(exc))
-        root = am_common._project_root(os.getcwd())
-        am_common.proj_cache_set(root, project)
+        root = project_identity._project_root(os.getcwd())
+        project_identity.proj_cache_set(
+            root,
+            project,
+            meeting_home=str(DATA),
+        )
         log(f"cached project identity {project} for {root}")
     elif args.is_global:
         project = "*"
     else:
-        project = am_common.resolve_authoritative_project(os.getcwd(), None)
+        project = project_identity.resolve_authoritative_project(
+            os.getcwd(),
+            None,
+            meeting_home=str(DATA),
+        )
         if project is None:
             raise SystemExit(
                 "no project identity is configured for this repository; "

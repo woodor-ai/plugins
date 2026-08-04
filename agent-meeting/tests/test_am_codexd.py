@@ -1,12 +1,16 @@
 import importlib.machinery
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-COMMAND_PATH = ROOT / "bin" / "am-codexd"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+AGENT_MEETING_SOURCE = REPOSITORY_ROOT / "agent-meeting" / "src"
+MYCODEX_SOURCE = REPOSITORY_ROOT / "mycodex" / "src"
+COMMAND_PATH = MYCODEX_SOURCE / "mycodex" / "commands" / "am_codexd_cli.py"
+sys.path[:0] = [str(AGENT_MEETING_SOURCE), str(MYCODEX_SOURCE)]
 
 
 def load_command(name):
@@ -18,8 +22,13 @@ def load_command(name):
 
 
 def test_help_lists_the_public_lifecycle_commands():
+    environment = dict(**os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(AGENT_MEETING_SOURCE), str(MYCODEX_SOURCE))
+    )
     result = subprocess.run(
         [sys.executable, str(COMMAND_PATH), "--help"],
+        env=environment,
         capture_output=True,
         text=True,
     )

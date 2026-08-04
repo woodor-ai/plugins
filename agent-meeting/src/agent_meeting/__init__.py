@@ -1,3 +1,3 @@
 """Shared agent-meeting runtime package."""
 
-__version__ = "0.17.4"
+__version__ = "0.18.2"

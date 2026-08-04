@@ -1,6 +1,6 @@
 {
   "name": "handoff",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Write a Codex session handoff card and automatically load it in the next session.",
   "author": {
     "name": "Woodor",

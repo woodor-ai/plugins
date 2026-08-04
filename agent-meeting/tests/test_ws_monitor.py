@@ -7,7 +7,7 @@ introduced in PR3. Never touches the live central am-msgd on 8765.
 
 Schema/API note: the central am-msgd's identity model is a (project, name)
 composite key. monitor.py normally derives
-its own project from cwd via am_common.derive_project(), but that
+its own project from cwd via the packaged project-identity module, but that
 derivation depends on cache state under the real ~/.agent-meeting home (an
 explicit --proj declared for this repo root on the host machine wins over
 folder-based guessing). Like test_ws.py, this test instead pins a fixed
@@ -48,8 +48,14 @@ TEST_PORT = 8798          # different from PR1 tests (8799) to allow parallel ru
 HOST = "127.0.0.1"
 LOG_PATH = "/tmp/ws-pr2-test.log"
 
-BIN_DIR = os.path.join(os.path.dirname(__file__), "..", "bin")
-MONITOR_PATH = os.path.join(BIN_DIR, "monitor.py")
+SOURCE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+MONITOR_PATH = os.path.join(
+    SOURCE_ROOT,
+    "agent_meeting",
+    "ai_platforms",
+    "claude_code",
+    "session_message_monitor.py",
+)
 MONITOR_IMPLEMENTATION_PATH = os.path.join(
     os.path.dirname(__file__),
     "..",
@@ -59,7 +65,12 @@ MONITOR_IMPLEMENTATION_PATH = os.path.join(
     "claude_code",
     "session_message_monitor.py",
 )
-AM_MSGD_PATH = os.path.join(BIN_DIR, "am-msgd")
+AM_MSGD_PATH = os.path.join(
+    SOURCE_ROOT,
+    "agent_meeting",
+    "commands",
+    "am_msgd_cli.py",
+)
 
 # Fixed literal, not derived from cwd (mirrors test_ws.py's TEST_PROJECT).
 # monitor.py is launched with --proj TEST_PROJECT (see start_monitor) so its
@@ -292,6 +303,7 @@ def _set_db_cursor(db_dir: str, member_name: str, cursor: int, project: str = TE
 def start_am_msgd(db_dir: str, port: int = TEST_PORT) -> subprocess.Popen:
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
+    env["PYTHONPATH"] = SOURCE_ROOT
     proc = subprocess.Popen(
         [sys.executable, AM_MSGD_PATH, "serve", f"--port={port}", "--no-mdns"],
         env=env,
@@ -321,6 +333,7 @@ def start_monitor(name: str, db_dir: str) -> "tuple[subprocess.Popen, list[str],
     """
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
+    env["PYTHONPATH"] = SOURCE_ROOT
     # Hard pin: no `am` subcommand this monitor's subprocess runs may
     # fall back to mDNS/LAN discovery -- see the install_am_cli module
     # comment for why this is load-bearing, not defensive.
@@ -439,16 +452,11 @@ def check(name: str, cond: bool, detail: str = ""):
 # before it ever reaches the mDNS branch, for every subcommand, no shim
 # logic required.
 #
-# We install the SOURCE TREE's real `bin/am` (+ am_common.py), not
-# a hand-rolled stand-in that forwards unhandled subcommands to whatever is
-# installed at ~/.agent-meeting/bin/am on this machine -- that forward
-# is exactly the mechanism that produced the incident (it ran a real
-# `am online` with no AM_MSGD_HOST override, which fell through to
-# mDNS). Running the actual CLI under test, with AM_MSGD_HOST pinned, is
-# both safer and more faithful.
+# The isolated wrapper below imports the packaged source CLI directly and
+# never forwards to the user's installed runtime.
 
 def install_am_cli(db_dir: str, counter_file: str | None = None) -> str:
-    """Install the real `am` CLI (+ am_common.py) under db_dir/bin.
+    """Install an isolated wrapper around the packaged source CLI.
 
     counter_file: if given, `am` becomes a thin wrapper that increments
     counter_file on every `controls --json` call before delegating to the
@@ -458,19 +466,13 @@ def install_am_cli(db_dir: str, counter_file: str | None = None) -> str:
     bin_dir = os.path.join(db_dir, "bin")
     os.makedirs(bin_dir, exist_ok=True)
     real_path = os.path.join(bin_dir, "am-real")
-    shutil.copy2(os.path.join(BIN_DIR, "am"), real_path)
-    shutil.copy2(os.path.join(BIN_DIR, "am_common.py"), os.path.join(bin_dir, "am_common.py"))
-    # The 0.15 source-tree entrypoint resolves its packaged implementation
-    # through the activation stamp when it is copied outside agent-meeting/.
-    # Point this isolated test layout back at the checkout source without
-    # forwarding any command to the user's installed runtime.
-    with open(
-        os.path.join(db_dir, ".bin-plugin-root"),
-        "w",
-        encoding="utf-8",
-    ) as activation:
-        activation.write(
-            os.path.abspath(BIN_DIR) + "\n0.15.0\n"
+    with open(real_path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"sys.path.insert(0, {SOURCE_ROOT!r})\n"
+            "from agent_meeting.commands.am_cli import main\n"
+            "main()\n"
         )
     os.chmod(real_path, 0o755)
 

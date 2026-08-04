@@ -75,24 +75,14 @@ def test_install_release_runs_shared_runtime_once_and_selected_adapters(tmp_path
     assert commands == [
         [
             sys.executable,
-            str(source_root / "installers/shared/install-agent-meeting-package.py"),
+            str(source_root / "installers/install.py"),
+            "--target",
+            "all",
+            "--source-root",
+            str(source_root),
             "--meeting-home",
             str(tmp_path / "meeting"),
-            "--configure-codex",
-        ],
-        [
-            sys.executable,
-            str(source_root / "installers/shared/migrate-agent-meeting-legacy-layout.py"),
-        ],
-        [
-            sys.executable,
-            str(source_root / "installers/shared/register-claude-marketplace.py"),
-        ],
-        [
-            sys.executable,
-            str(source_root / "installers/shared/register-codex-marketplace.py"),
-        ],
-        [str(tmp_path / "meeting/bin/am-codexd"), "update", "--defer-if-active"],
+        ]
     ]
 
 

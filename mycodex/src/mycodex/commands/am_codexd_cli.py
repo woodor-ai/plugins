@@ -2,7 +2,6 @@
 """Manage the machine-wide agent-meeting Codex daemon."""
 
 import argparse
-import importlib.util
 import json
 import os
 import subprocess
@@ -18,8 +17,6 @@ HOME = Path.home()
 DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
 CODEX_DIR = DATA / "codex"
 LOG_PATH = CODEX_DIR / "logs" / "am-codexd.log"
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-DAEMON_MODULE_PATH = PLUGIN_ROOT / "codex" / "am_codexd.py"
 API_PORT = int(os.environ.get("MEETING_BROKER_API_PORT", "8788"))
 API_BASE = f"http://127.0.0.1:{API_PORT}"
 IS_WINDOWS = sys.platform.startswith("win")
@@ -30,16 +27,9 @@ else:
 
 
 def daemon_module():
-    if __package__:
-        from mycodex.codex_session_broker import broker_process
+    from mycodex.codex_session_broker import broker_process
 
-        return broker_process
-    spec = importlib.util.spec_from_file_location("am_codexd_runtime", DAEMON_MODULE_PATH)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load daemon module: {DAEMON_MODULE_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return broker_process
 
 
 def installed_version():
@@ -51,9 +41,7 @@ def venv_python():
     # pre-0.15 shared venv can still exist during migration, but it does not
     # contain the split ``mycodex.commands`` package and would make a newly
     # activated daemon fail immediately on startup.
-    if __package__:
-        return sys.executable
-    return codex_background_process.legacy_runtime_python(DATA)
+    return sys.executable
 
 
 def request(method, path, timeout=2):
@@ -95,15 +83,12 @@ def spawn_daemon():
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(LOG_PATH, "a", encoding="utf-8")
     kwargs = codex_background_process.detached_popen_options(log_file)
-    if __package__:
-        command = [
-            venv_python(),
-            "-m",
-            "mycodex.commands.am_codexd_cli",
-            "_serve",
-        ]
-    else:
-        command = [venv_python(), str(Path(__file__).resolve()), "_serve"]
+    command = [
+        venv_python(),
+        "-m",
+        "mycodex.commands.am_codexd_cli",
+        "_serve",
+    ]
     return subprocess.Popen(command, **kwargs)
 
 

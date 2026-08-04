@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import json
 import subprocess
+import sys
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -11,8 +12,18 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BROKER_PATH = ROOT / "codex" / "am_codexd.py"
-LAUNCHER_PATH = ROOT / "codex" / "codex-session.py"
+MYCODEX_SOURCE = ROOT.parent / "mycodex" / "src"
+BROKER_PATH = (
+    MYCODEX_SOURCE
+    / "mycodex"
+    / "codex_session_broker"
+    / "broker_process.py"
+)
+LAUNCHER_PATH = (
+    MYCODEX_SOURCE / "mycodex" / "launcher" / "codex_tui_session.py"
+)
+sys.path.insert(0, str(MYCODEX_SOURCE))
+sys.path.insert(0, str(ROOT / "src"))
 
 
 def load(path, name):
@@ -20,26 +31,6 @@ def load(path, name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.mark.parametrize("path", [BROKER_PATH, LAUNCHER_PATH])
-def test_codex_components_read_only_the_codex_manifest(path, tmp_path):
-    module = load(path, f"codex_manifest_{path.stem}")
-    plugin_root = tmp_path / "agent-meeting"
-    for manifest_dir, version in (
-        (".claude-plugin", "9.9.9"),
-        (".codex-plugin", "0.15.0"),
-    ):
-        directory = plugin_root / manifest_dir
-        directory.mkdir(parents=True)
-        (directory / "plugin.json").write_text(
-            json.dumps({"name": "agent-meeting", "version": version}),
-            encoding="utf-8",
-        )
-
-    module.PLUGIN_ROOT = plugin_root
-
-    assert module.installed_plugin_version() == "0.15.0"
 
 
 def make_session(module):
@@ -1261,7 +1252,6 @@ def test_launcher_activates_daemon_before_requesting_a_session(monkeypatch):
 
     assert commands == [
         [
-            module.venv_python(),
             str(module.DAEMON_COMMAND),
             "update",
             "--defer-if-active",
@@ -1363,7 +1353,6 @@ def test_launcher_reuses_compatible_active_daemon(
 
     assert commands == [
         [
-            module.venv_python(),
             str(module.DAEMON_COMMAND),
             "update",
             "--defer-if-active",

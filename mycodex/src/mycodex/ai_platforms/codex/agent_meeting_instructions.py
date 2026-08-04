@@ -11,10 +11,6 @@ AGENTS_BEGIN = (
     "(auto-managed by mycodex Codex configuration) -->"
 )
 AGENTS_END = "<!-- agent-meeting:end -->"
-LEGACY_AGENTS_BEGIN = (
-    "<!-- agent-meeting:begin "
-    "(auto-managed by agent-meeting/codex/install.py) -->"
-)
 
 
 def _command_prefix(am_command: Path, *, is_windows: bool) -> str:
@@ -94,22 +90,14 @@ def install_agent_meeting_instructions(
         if agents_path.exists()
         else ""
     )
-    was_present = (
-        AGENTS_BEGIN in existing
-        or LEGACY_AGENTS_BEGIN in existing
-    )
+    was_present = AGENTS_BEGIN in existing
     block = render_agent_meeting_instructions(
         am_command=am_command,
         is_windows=is_windows,
     )
-    begin = (
-        AGENTS_BEGIN
-        if AGENTS_BEGIN in existing
-        else LEGACY_AGENTS_BEGIN
-    )
-    if begin in existing and AGENTS_END in existing:
+    if AGENTS_BEGIN in existing and AGENTS_END in existing:
         updated = re.sub(
-            re.escape(begin) + r".*?" + re.escape(AGENTS_END),
+            re.escape(AGENTS_BEGIN) + r".*?" + re.escape(AGENTS_END),
             lambda _match: block,
             existing,
             flags=re.S,

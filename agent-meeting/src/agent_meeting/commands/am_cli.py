@@ -47,6 +47,7 @@ from agent_meeting.commands import (
 from agent_meeting.message_hub import sqlite_message_database
 from agent_meeting.message_hub import service_configuration
 from agent_meeting.messaging import project_identity
+from agent_meeting.operating_systems import process_liveness
 
 if sys.platform.startswith("win"):
     for _stream in (sys.stdout, sys.stderr):

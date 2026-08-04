@@ -57,15 +57,28 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin")
-AM_PATH = os.path.join(BIN_DIR, "am")
-AM_MSGD_PATH = os.path.join(BIN_DIR, "am-msgd")
-MONITOR_PATH = os.path.join(BIN_DIR, "monitor.py")
+SOURCE_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "src")
+)
+AM_PATH = os.path.join(SOURCE_ROOT, "agent_meeting", "commands", "am_cli.py")
+AM_MSGD_PATH = os.path.join(
+    SOURCE_ROOT,
+    "agent_meeting",
+    "commands",
+    "am_msgd_cli.py",
+)
+MONITOR_PATH = os.path.join(
+    SOURCE_ROOT,
+    "agent_meeting",
+    "ai_platforms",
+    "claude_code",
+    "session_message_monitor.py",
+)
 PLUGIN_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                             ".claude-plugin", "plugin.json")
 
-sys.path.insert(0, BIN_DIR)
-import am_common  # noqa: E402
+sys.path.insert(0, SOURCE_ROOT)
+from agent_meeting.messaging import project_identity  # noqa: E402
 
 TEST_PORT = 8796  # distinct from other tests' ports (8765 live, 8796-8799 test suite)
 HOST = "127.0.0.1"
@@ -98,6 +111,7 @@ def start_am_msgd(meeting_home: str) -> subprocess.Popen:
 
     env = os.environ.copy()
     env["MEETING_HOME"] = meeting_home
+    env["PYTHONPATH"] = SOURCE_ROOT
     proc = subprocess.Popen(
         [sys.executable, AM_MSGD_PATH, "serve", f"--port={TEST_PORT}", "--no-mdns"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -143,6 +157,7 @@ def _all_session_names(meeting_home: str) -> set:
 def run_online(meeting_home: str, cwd: str, name: str, extra_args: list) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["MEETING_HOME"] = meeting_home
+    env["PYTHONPATH"] = SOURCE_ROOT
     cmd = [sys.executable, AM_PATH, "online", name, "--cwd", cwd, "--host", HOST_URL] + extra_args
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=15)
 
@@ -156,6 +171,7 @@ def run_meeting(meeting_home: str, cwd: str, args: list) -> subprocess.Completed
     """Invoke the real source-tree `am` CLI with an arbitrary subcommand."""
     env = os.environ.copy()
     env["MEETING_HOME"] = meeting_home
+    env["PYTHONPATH"] = SOURCE_ROOT
     cmd = [sys.executable, AM_PATH] + args
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=15)
 
@@ -192,14 +208,10 @@ def test_authoritative_resolution(meeting_home: str):
         check("TC2: exit code 0", r.returncode == 0, f"stdout={r.stdout!r} stderr={r.stderr!r}")
         row = _sessions_row(meeting_home, "foo", "sess2")
         check("TC2: sessions row exists under project=foo", row is not None, str(row))
-        # proj_cache_get reads from am_common.MEETING_HOME (this process's env),
-        # not the subprocess's -- point it at the same MEETING_HOME the CLI used.
-        _old_home = am_common.MEETING_HOME
-        am_common.MEETING_HOME = meeting_home
-        try:
-            cached = am_common.proj_cache_get(am_common._project_root(repo_root))
-        finally:
-            am_common.MEETING_HOME = _old_home
+        cached = project_identity.proj_cache_get(
+            project_identity._project_root(repo_root),
+            meeting_home=meeting_home,
+        )
         check("TC2: --proj cached for repo root", cached == "foo", f"cached={cached!r}")
 
         # TC3: same root, no --proj this time -> registers via cache, project=foo.
@@ -250,15 +262,19 @@ def _extract_noretry_codes() -> set:
 
 
 def install_local_am_cli(meeting_home: str) -> None:
-    """Copy the SOURCE TREE's bin/am + am_common.py into
-    <meeting_home>/bin/ so monitor.py's `_run_am()` subprocess exercises
-    the code just edited, not whatever build happens to be installed at
-    ~/.agent-meeting on this machine."""
+    """Install an isolated wrapper around the packaged source CLI."""
     dst = os.path.join(meeting_home, "bin")
     os.makedirs(dst, exist_ok=True)
-    shutil.copy2(AM_PATH, os.path.join(dst, "am"))
-    shutil.copy2(os.path.join(BIN_DIR, "am_common.py"), os.path.join(dst, "am_common.py"))
-    os.chmod(os.path.join(dst, "am"), 0o755)
+    command = os.path.join(dst, "am")
+    with open(command, "w", encoding="utf-8") as handle:
+        handle.write(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"sys.path.insert(0, {SOURCE_ROOT!r})\n"
+            "from agent_meeting.commands.am_cli import main\n"
+            "main()\n"
+        )
+    os.chmod(command, 0o755)
 
 
 def test_monitor_noretry(meeting_home: str):
@@ -274,6 +290,7 @@ def test_monitor_noretry(meeting_home: str):
     try:
         env = os.environ.copy()
         env["MEETING_HOME"] = meeting_home
+        env["PYTHONPATH"] = SOURCE_ROOT
         proc = subprocess.Popen(
             [sys.executable, MONITOR_PATH, "monitor-noproj"],
             cwd=repo_root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -457,6 +474,7 @@ def test_stop_pidfile_scoped_by_project(meeting_home: str):
     try:
         env = os.environ.copy()
         env["MEETING_HOME"] = meeting_home
+        env["PYTHONPATH"] = SOURCE_ROOT
         proc_a = subprocess.Popen(
             [sys.executable, MONITOR_PATH, "dupmon", "--proj", "stopProjA", "--host", HOST_URL],
             cwd=cwd_a, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -467,9 +485,9 @@ def test_stop_pidfile_scoped_by_project(meeting_home: str):
         )
 
         pid_a_path = os.path.join(meeting_home, "run",
-                                   f"{am_common.pidfile_stem('dupmon', 'stopProjA')}.pid")
+                                   f"{project_identity.monitor_pidfile_stem('dupmon', 'stopProjA')}.pid")
         pid_b_path = os.path.join(meeting_home, "run",
-                                   f"{am_common.pidfile_stem('dupmon', 'stopProjB')}.pid")
+                                   f"{project_identity.monitor_pidfile_stem('dupmon', 'stopProjB')}.pid")
 
         deadline = time.time() + 15
         while time.time() < deadline and not (os.path.exists(pid_a_path) and os.path.exists(pid_b_path)):

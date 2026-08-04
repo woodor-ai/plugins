@@ -29,6 +29,20 @@ matcher = "resume"
 [[hooks.SessionStart.hooks]]
 type = "command"
 command = "python /plugin/keep-this-hook.py"
+
+[[hooks.SessionStart]]
+matcher = "startup"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "python /plugin/handoff/codex-handoff-pickup.py"
+
+[[hooks.PostToolUse]]
+matcher = "tool"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "python /plugin/save-money/auto-handoff.py"
 """,
         encoding="utf-8",
     )
@@ -98,6 +112,8 @@ def test_windows_migration_is_exact_and_idempotent(tmp_path):
     assert not (startup / "agent-meeting-amctl.cmd").exists()
     config = (codex_home / "config.toml").read_text(encoding="utf-8")
     assert "codex-register.py" not in config
+    assert "codex-handoff-pickup.py" not in config
+    assert "auto-handoff.py" not in config
     assert "keep-this-hook.py" in config
     assert {
         tuple(command)

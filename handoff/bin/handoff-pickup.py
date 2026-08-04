@@ -31,9 +31,8 @@ if not sys.stdin.isatty():
         pass
 
 PROJECT_DIR = Path(_stdin_cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-# Claude Code uses .claude; Codex invokes this script through the small
-# codex-handoff-pickup.py wrapper, which selects .codex without changing the
-# Claude plugin's storage convention.
+# Claude Code uses .claude; the Codex host adapter selects .codex without
+# changing the shared pickup implementation.
 HANDOFF_DIR = os.environ.get("HANDOFF_DIR", ".claude")
 HANDOFF = PROJECT_DIR / HANDOFF_DIR / "handoff-pending.md"
 

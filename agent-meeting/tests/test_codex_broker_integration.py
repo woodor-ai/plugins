@@ -17,8 +17,15 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AM_MSGD = ROOT / "bin" / "am-msgd"
-BROKER = ROOT / "codex" / "am_codexd.py"
+AM_MSGD = ROOT / "src" / "agent_meeting" / "commands" / "am_msgd_cli.py"
+BROKER = (
+    ROOT.parent
+    / "mycodex"
+    / "src"
+    / "mycodex"
+    / "codex_session_broker"
+    / "broker_process.py"
+)
 
 
 def free_ports(count):
@@ -197,6 +204,9 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
     codex_home.mkdir()
 
     env = os.environ.copy()
+    source_path = os.pathsep.join(
+        [str(ROOT / "src"), str(ROOT.parent / "mycodex" / "src")]
+    )
     env.update(
         {
             "MEETING_HOME": str(meeting_home),
@@ -204,6 +214,7 @@ def test_two_sessions_share_one_appserver_and_stop_independently(tmp_path):
             "MEETING_BROKER_API_PORT": str(api_port),
             "MEETING_BROKER_APP_PORT_FIRST": str(app_port),
             "MEETING_BROKER_APP_PORT_LAST": str(app_port),
+            "PYTHONPATH": source_path,
         }
     )
     am_msgd_process = subprocess.Popen(

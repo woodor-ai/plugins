@@ -22,8 +22,15 @@ RUNTIME_COMMANDS = PUBLIC_COMMANDS + (
     "am-ctld",
     "am-session-monitor",
     "am-statusline",
-    "am-message-hub-supervisor",
     "am-claude-session-start",
+)
+OBSOLETE_COPIED_RUNTIME_FILES = (
+    "am_common.py",
+    "meeting_common.py",
+    "monitor.py",
+    "session-bootstrap.py",
+    "statusline.py",
+    "supervisor.py",
 )
 
 
@@ -125,13 +132,17 @@ def activate_runtime(
         (
             "meeting.exe",
             "mycodex.exe",
+            "lnk.exe",
             "am-configure-codex-user-environment.exe",
+            "am-message-hub-supervisor.exe",
         )
         if is_windows
         else (
             "meeting",
             "mycodex",
+            "lnk",
             "am-configure-codex-user-environment",
+            "am-message-hub-supervisor",
         )
     )
     for command in obsolete_commands:
@@ -139,4 +150,10 @@ def activate_runtime(
             (bin_dir / command).unlink()
         except FileNotFoundError:
             pass
+    for filename in OBSOLETE_COPIED_RUNTIME_FILES:
+        try:
+            (bin_dir / filename).unlink()
+        except FileNotFoundError:
+            pass
+    shutil.rmtree(bin_dir / "__pycache__", ignore_errors=True)
     return payload

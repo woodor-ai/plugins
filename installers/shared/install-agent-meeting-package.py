@@ -185,19 +185,7 @@ def main(argv=None) -> int:
         meeting_home=args.meeting_home.resolve(),
     )
     meeting_home = args.meeting_home.resolve()
-    if sys.platform.startswith("win"):
-        session_start = meeting_home / "bin" / "am-claude-session-start.exe"
-        environment = os.environ.copy()
-        environment["MEETING_HOME"] = str(meeting_home)
-        subprocess.run(
-            [str(session_start)],
-            env=environment,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    else:
-        ensure_local_message_hub_service(meeting_home)
+    ensure_local_message_hub_service(meeting_home)
     ensure_lifecycle_control_service(meeting_home)
     codex_configuration = None
     if args.configure_codex:

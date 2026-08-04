@@ -20,7 +20,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.17.4"
+    assert mycodex.__version__ == "0.18.2"
     assert mycodex.__version__ == agent_meeting.__version__
 
 
@@ -271,7 +271,7 @@ def test_macos_background_process_policy_starts_new_session():
     assert "creationflags" not in options
 
 
-def test_codex_instructions_upgrade_legacy_managed_block(tmp_path):
+def test_codex_instructions_refresh_managed_block(tmp_path):
     from mycodex.ai_platforms.codex import agent_meeting_instructions
 
     codex_home = tmp_path / "codex"
@@ -279,7 +279,7 @@ def test_codex_instructions_upgrade_legacy_managed_block(tmp_path):
     agents_path.parent.mkdir(parents=True)
     agents_path.write_text(
         "keep before\n"
-        f"{agent_meeting_instructions.LEGACY_AGENTS_BEGIN}\n"
+        f"{agent_meeting_instructions.AGENTS_BEGIN}\n"
         "stale content\n"
         f"{agent_meeting_instructions.AGENTS_END}\n"
         "keep after\n",
@@ -411,7 +411,7 @@ def test_codex_configuration_is_not_a_packaged_runtime_command():
 
 
 def test_codex_user_configuration_preserves_unrelated_sections(tmp_path):
-    from mycodex.ai_platforms.codex import user_configuration
+    from agent_meeting.ai_platforms.codex import user_configuration
 
     codex_home = tmp_path / "codex"
     config = codex_home / "config.toml"

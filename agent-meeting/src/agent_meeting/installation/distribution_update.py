@@ -139,23 +139,6 @@ def _refresh_checkout_process(command: list[str]) -> None:
         raise RuntimeError(f"could not refresh agent-meeting checkout: {detail}")
 
 
-def _run_python_script(
-    source_root: Path,
-    relative_script: str,
-    *,
-    run: Callable[..., object],
-    arguments: tuple[str, ...] = (),
-) -> None:
-    run(
-        [
-            sys.executable,
-            str(source_root / relative_script),
-            *arguments,
-        ],
-        check=True,
-    )
-
-
 def release_version(source_root: Path) -> str:
     """Validate the shared public release version before installing it."""
     projects = (
@@ -191,38 +174,24 @@ def install_release(
 
     release_version(source_root)
 
-    install_arguments = ["--meeting-home", str(meeting_home)]
-    if TARGET_CODEX in targets:
-        install_arguments.append("--configure-codex")
-    _run_python_script(
-        source_root,
-        "installers/shared/install-agent-meeting-package.py",
-        run=run,
-        arguments=tuple(install_arguments),
+    target = (
+        "all"
+        if set(targets) == set(ALL_TARGETS)
+        else targets[0]
     )
-    _run_python_script(
-        source_root,
-        "installers/shared/migrate-agent-meeting-legacy-layout.py",
-        run=run,
+    run(
+        [
+            sys.executable,
+            str(source_root / "installers/install.py"),
+            "--target",
+            target,
+            "--source-root",
+            str(source_root),
+            "--meeting-home",
+            str(meeting_home),
+        ],
+        check=True,
     )
-
-    if TARGET_CLAUDE_CODE in targets:
-        _run_python_script(
-            source_root,
-            "installers/shared/register-claude-marketplace.py",
-            run=run,
-        )
-
-    if TARGET_CODEX in targets:
-        _run_python_script(
-            source_root,
-            "installers/shared/register-codex-marketplace.py",
-            run=run,
-        )
-        daemon = meeting_home / "bin" / "am-codexd"
-        if sys.platform.startswith("win"):
-            daemon = daemon.with_suffix(".exe")
-        run([str(daemon), "update", "--defer-if-active"], check=True)
 
 
 def active_runtime_version(meeting_home: Path) -> str | None:

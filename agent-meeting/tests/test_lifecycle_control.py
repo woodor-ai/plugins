@@ -11,7 +11,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BROKER_PATH = ROOT / "codex" / "am_codexd.py"
+MYCODEX_SOURCE = ROOT.parent / "mycodex" / "src"
+BROKER_PATH = (
+    MYCODEX_SOURCE
+    / "mycodex"
+    / "codex_session_broker"
+    / "broker_process.py"
+)
+sys.path.insert(0, str(MYCODEX_SOURCE))
 sys.path.insert(0, str(ROOT / "src"))
 
 
@@ -462,13 +469,14 @@ def test_macos_login_service_preserves_custom_meeting_home(
     monkeypatch,
 ):
     from agent_meeting.lifecycle_control import user_service
+    from agent_meeting.operating_systems import user_service as service_core
 
     home = tmp_path / "user"
     meeting_home = tmp_path / "custom-meeting"
     commands = []
     monkeypatch.setattr(user_service.Path, "home", lambda: home)
     monkeypatch.setattr(
-        user_service,
+        service_core,
         "_run",
         lambda command: (
             commands.append(command)
@@ -476,7 +484,11 @@ def test_macos_login_service_preserves_custom_meeting_home(
         ),
     )
 
-    user_service._ensure_macos(meeting_home)
+    service_core.restart(
+        user_service._spec(meeting_home),
+        system_name="Darwin",
+        home=home,
+    )
 
     plist_path = home / "Library" / "LaunchAgents" / "ai.woodor.am-ctld.plist"
     definition = plistlib.loads(plist_path.read_bytes())
@@ -485,18 +497,16 @@ def test_macos_login_service_preserves_custom_meeting_home(
         "--meeting-home",
         str(meeting_home),
     ]
-    assert commands[-1][:3] == ["launchctl", "kickstart", "-k"]
+    assert commands[-1][:2] == ["launchctl", "bootstrap"]
 
 
-def test_windows_login_task_preserves_custom_meeting_home(
-    tmp_path,
-    monkeypatch,
-):
+def test_linux_restart_enables_user_service(tmp_path, monkeypatch):
     from agent_meeting.lifecycle_control import user_service
+    from agent_meeting.operating_systems import user_service as service_core
 
     commands = []
     monkeypatch.setattr(
-        user_service,
+        service_core,
         "_run",
         lambda command: (
             commands.append(command)
@@ -504,11 +514,72 @@ def test_windows_login_task_preserves_custom_meeting_home(
         ),
     )
 
-    user_service._ensure_windows(tmp_path)
+    service_core.restart(
+        user_service._spec(tmp_path),
+        system_name="Linux",
+        home=tmp_path / "user",
+    )
+
+    assert ["systemctl", "--user", "enable", "woodor-am-ctld.service"] in commands
+    assert commands[-1] == [
+        "systemctl",
+        "--user",
+        "restart",
+        "woodor-am-ctld.service",
+    ]
+
+
+def test_windows_login_task_preserves_custom_meeting_home(
+    tmp_path,
+    monkeypatch,
+):
+    from agent_meeting.lifecycle_control import user_service
+    from agent_meeting.operating_systems import user_service as service_core
+
+    commands = []
+    meeting_home = tmp_path / "custom meeting"
+    monkeypatch.setattr(user_service.sys, "platform", "win32")
+    monkeypatch.setattr(
+        service_core,
+        "_run",
+        lambda command: (
+            commands.append(command)
+            or SimpleNamespace(returncode=0, stderr="", stdout="")
+        ),
+    )
+
+    service_core.restart(
+        user_service._spec(meeting_home),
+        system_name="Windows",
+    )
 
     task_command = commands[0][commands[0].index("/TR") + 1]
-    assert str(tmp_path / "bin" / "am-ctld.exe") in task_command
-    assert f'--meeting-home "{tmp_path}"' in task_command
+    assert str(meeting_home / "bin" / "am-ctld.exe") in task_command
+    assert f'--meeting-home "{meeting_home}"' in task_command
+    assert commands[2][-1] == "/Enable"
+    assert commands[3][:2] == ["schtasks", "/Run"]
+
+
+def test_windows_user_service_stop_disables_logon_task(tmp_path, monkeypatch):
+    from agent_meeting.lifecycle_control import user_service
+    from agent_meeting.operating_systems import user_service as service_core
+
+    commands = []
+    monkeypatch.setattr(
+        service_core,
+        "_run",
+        lambda command: (
+            commands.append(command)
+            or SimpleNamespace(returncode=0, stderr="", stdout="")
+        ),
+    )
+
+    service_core.stop(
+        user_service._spec(tmp_path),
+        system_name="Windows",
+    )
+
+    assert commands[-1][-1] == "/Disable"
 
 
 def test_lifecycle_rules_are_disabled_by_default(tmp_path):

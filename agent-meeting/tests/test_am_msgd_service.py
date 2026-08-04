@@ -14,7 +14,7 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PLUGIN_ROOT / "src"
-AM_MSGD = PLUGIN_ROOT / "bin" / "am-msgd"
+AM_MSGD = SRC_ROOT / "agent_meeting" / "commands" / "am_msgd_cli.py"
 
 
 @pytest.fixture(autouse=True)
@@ -187,6 +187,7 @@ def test_dynamic_bind_keeps_pid_and_instance(tmp_path):
     )
     environment = os.environ.copy()
     environment["MEETING_HOME"] = str(meeting_home)
+    environment["PYTHONPATH"] = str(SRC_ROOT)
     process = subprocess.Popen(
         [
             sys.executable,
@@ -403,17 +404,20 @@ def test_linux_service_definition_uses_explicit_serve(
     tmp_path,
     monkeypatch,
 ):
-    from agent_meeting.operating_systems import message_hub_user_service
+    from agent_meeting.operating_systems import (
+        message_hub_user_service,
+        user_service,
+    )
 
     unit_path = tmp_path / "agent-meeting-am-msgd.service"
     commands = []
     monkeypatch.setattr(
-        message_hub_user_service,
-        "_linux_unit_path",
-        lambda: unit_path,
+        user_service,
+        "linux_unit_path",
+        lambda *_args, **_kwargs: unit_path,
     )
     monkeypatch.setattr(
-        message_hub_user_service,
+        user_service,
         "_run",
         lambda command: (
             commands.append(command)

@@ -1,0 +1,1 @@
+"""Shared Codex integration primitives."""
