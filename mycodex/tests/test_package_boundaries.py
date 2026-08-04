@@ -20,7 +20,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.18.3"
+    assert mycodex.__version__ == "0.18.4"
     assert mycodex.__version__ == agent_meeting.__version__
     manifests = (
         REPOSITORY_ROOT / "agent-meeting/.codex-plugin/plugin.json",
@@ -379,7 +379,7 @@ def test_amcodex_default_control_uses_public_am_discovery(monkeypatch):
     assert calls == [
         (
             codex_tui_session.AM_COMMAND,
-            ("controls", "--json"),
+            ("msgd", "--json"),
             {"timeout": 10},
         )
     ]

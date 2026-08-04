@@ -109,13 +109,14 @@ SERVICE_TYPE = "_agent-meeting._tcp.local."
 
 ONLINE_THRESHOLD = 12
 
-_NO_CONTROL_MSG = (
-    "No control node found (agent-meeting-control). "
+_NO_MSGD_MSG = (
+    "No am-msgd found. "
     "mDNS auto-discovery returned nothing and no last-known-good cache is available. "
-    "Possible causes: control not started / different subnet / multicast blocked "
+    "Possible causes: am-msgd not started / different subnet / multicast blocked "
     "(Wi-Fi AP isolation or firewall blocking UDP 5353). "
     "Fix: run /imagent setup am-msgd to make this machine the central am-msgd session/message hub; "
-    "or pin a control for unreachable machines — am host http://<ip>:<port> (persistent) "
+    "or pin an am-msgd URL for unreachable machines — "
+    "am host http://<ip>:<port> (persistent) "
     "or temporarily export AM_MSGD_HOST=http://<ip>:<port>."
 )
 
@@ -305,7 +306,7 @@ def _host_entry(url: str, version: str = "") -> dict:
 #
 # So we never trust a single empty zeroconf browse as "no control": we fall
 # through to a raw-socket mDNS query (bypasses the library entirely), then to a
-# TCP-probed last-known-good. See discover_controls() for the full precedence.
+# TCP-probed last-known-good. See discover_msgd() for the full precedence.
 
 RAW_DISCOVER_TIMEOUT = 2.0
 _MCAST_ADDR = "224.0.0.251"
@@ -438,7 +439,7 @@ def _raw_parse(data, ptrs, srv, a, txt):
         pass
 
 
-def _discover_controls_raw(timeout: float = RAW_DISCOVER_TIMEOUT) -> list[dict]:
+def _discover_msgd_raw(timeout: float = RAW_DISCOVER_TIMEOUT) -> list[dict]:
     ifaces = _raw_local_ipv4s() or ["0.0.0.0"]
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -515,7 +516,7 @@ def _healthy_local_control_url() -> str | None:
         return None
 
 
-def discover_controls() -> list[dict]:
+def discover_msgd() -> list[dict]:
     # 1. env override.
     if os.environ.get("AM_MSGD_HOST"):
         return [_host_entry(os.environ["AM_MSGD_HOST"])]
@@ -533,7 +534,7 @@ def discover_controls() -> list[dict]:
 
     # 4. raw-socket mDNS — zeroconf came up empty, but the library is the weak
     #    link, not the network. Re-query without it before giving up.
-    raw = _discover_controls_raw()
+    raw = _discover_msgd_raw()
     if raw:
         _write_control_cache(raw[0]["url"])
         return raw
@@ -573,9 +574,9 @@ def discover_host() -> str | None:
         return fresh
 
     # 3-6. Live discovery, cache, then healthy local loopback.
-    controls = discover_controls()
-    if controls:
-        return controls[0]["url"]
+    nodes = discover_msgd()
+    if nodes:
+        return nodes[0]["url"]
     return None
 
 
@@ -595,7 +596,7 @@ def _resolve_host(explicit: str | None = None) -> str:
     url = discover_host()
     if url:
         return url
-    raise SystemExit(_NO_CONTROL_MSG)
+    raise SystemExit(_NO_MSGD_MSG)
 
 
 def _get_auth_token() -> str | None:
@@ -947,8 +948,23 @@ def cmd_group(args):
     )
 
 
-def cmd_controls(args):
-    controls = discover_controls()
+def _msgd_details(node: dict) -> dict:
+    if node.get("version") and node.get("host"):
+        return node
+    try:
+        health = _http_once("GET", node["url"], "/health", None, None)
+    except Exception:
+        return node
+    enriched = dict(node)
+    enriched["host"] = health.get("host") or enriched.get("host") or ""
+    enriched["version"] = (
+        health.get("version") or enriched.get("version") or ""
+    )
+    return enriched
+
+
+def cmd_msgd(args):
+    nodes = [_msgd_details(node) for node in discover_msgd()]
 
     # "Current" = whatever this box would actually resolve to right now.
     current_url = (
@@ -959,30 +975,30 @@ def cmd_controls(args):
 
     if args.json:
         result = []
-        for c in controls:
+        for node in nodes:
             result.append({
-                "host": c.get("host") or "",
-                "ip": c.get("ip") or "",
-                "port": c.get("port") or 0,
-                "url": c.get("url") or "",
-                "version": c.get("version") or "",
-                "is_current": c["url"] == current_url,
+                "host": node.get("host") or "",
+                "ip": node.get("ip") or "",
+                "port": node.get("port") or 0,
+                "url": node.get("url") or "",
+                "version": node.get("version") or "",
+                "is_current": node["url"] == current_url,
             })
         print(json.dumps(result, ensure_ascii=False))
         return
 
-    if not controls:
-        print("no control node found")
+    if not nodes:
+        print("no am-msgd found")
         return
 
-    for i, c in enumerate(controls):
-        is_current = c["url"] == current_url
-        current_tag = "  current" if is_current else ""
-        print(f"control {i + 1}{current_tag}")
-        print(f"  host:    {c['host'] or '(unknown)'}")
-        print(f"  ip:port: {c['ip']}:{c['port']}")
-        print(f"  url:     {c['url']}")
-        print(f"  version: {c['version'] or '(unknown)'}")
+    for index, node in enumerate(nodes, start=1):
+        current_tag = " (current)" if node["url"] == current_url else ""
+        print(f"am-msgd {index}{current_tag}")
+        print(f"  host:    {node['host'] or '(unknown)'}")
+        print(f"  ip:port: {node['ip']}:{node['port']}")
+        print(f"  url:     {node['url']}")
+        print(f"  version: {node['version'] or '(unknown)'}")
+
 
 def cmd_stop(args):
     cwd = os.getcwd()
@@ -1176,10 +1192,10 @@ def main():
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_delete)
 
-    s = sub.add_parser("controls",
-                       help="list all discovered control nodes")
+    s = sub.add_parser("msgd",
+                       help="list discovered am-msgd instances")
     s.add_argument("--json", action="store_true", default=False)
-    s.set_defaults(func=cmd_controls)
+    s.set_defaults(func=cmd_msgd)
 
     s = sub.add_parser("telemetry")
     s.add_argument("action", choices=["on", "off", "status"])

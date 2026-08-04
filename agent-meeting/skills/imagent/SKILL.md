@@ -54,7 +54,7 @@ The first word after `/imagent` decides what to do:
 |---|---|
 | `/imagent` (empty) | Same as `/imagent help` — show the command usage summary |
 | `/imagent help` | Print a concise usage summary of all `/imagent` subcommands (human-readable form of this dispatch table). No state change. See "On `/imagent help`" below. |
-| `/imagent list` | Run `~/.agent-meeting/bin/am list` **and** `~/.agent-meeting/bin/am controls`, then present both together: first a markdown table with columns Status / Name / Msgs / Role (from `list`), then a "control 节点" subsection listing discovered controls (from `controls`). Do NOT just say "see above" or "如上" relying on the collapsed bash block — paste both results visible in the main chat area. Status is `empty` / `online` / `historical`. Role is `director` or `worker`. |
+| `/imagent list` | Run `~/.agent-meeting/bin/am list` **and** `~/.agent-meeting/bin/am msgd`, then present both together: first a markdown table with columns Status / Name / Msgs / Role (from `list`), then an "am-msgd 节点" subsection listing discovered instances (from `msgd`). Do NOT just say "see above" or "如上" relying on the collapsed bash block — paste both results visible in the main chat area. Status is `empty` / `online` / `historical`. Role is `director` or `worker`. |
 | `/imagent delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/am delete <self> <peer>`. |
 | `/imagent rename <new>` | Rename THIS session to `<new>` (migrates rooms + messages) and restart the monitor under the new name. See "On `/imagent rename`" below. |
 | `/imagent stop [<name>]` | Stop a monitor process. No arg = stop THIS session's monitor (takes it offline). See "On `/imagent stop`" below. |
@@ -64,7 +64,7 @@ The first word after `/imagent` decides what to do:
 | `/imagent setup telemetry on\|off\|status` | Run `~/.agent-meeting/bin/am telemetry <action>` and paste the one-line output to the user. |
 | `/imagent <name> [--proj=<proj>]` | Register this session as `<name>` (see "On `/imagent <name>`" below). Optional `--proj=<proj>` sets an explicit project identity instead of folder-based derivation. |
 
-Reserved words `list`, `delete`, `rename`, `stop`, `setup`, `help`, `controls`, `am-msgd`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
+Reserved words `list`, `delete`, `rename`, `stop`, `setup`, `help`, `msgd`, `am-msgd`, `telemetry`, and `token` cannot be used as session names — they go to the corresponding subcommand instead.
 
 ## On `/imagent help`
 
@@ -72,7 +72,7 @@ Print the following usage summary verbatim (no CLI calls, no state change):
 
 ```
 /imagent <name> [--proj=<proj>]          — 注册本会话为 <name>，安装 monitor（可选 --proj 指定项目身份）
-/imagent list                            — 列出所有会话状态 + control 节点
+/imagent list                            — 列出所有会话状态 + am-msgd 节点
 /imagent delete <peer>                   — 删除与 <peer> 的房间（需确认）
 /imagent rename <new>                    — 重命名本会话为 <new>，迁移房间消息并重启 monitor
 /imagent stop [<name>]                   — 停止 monitor 进程（不传参则停本会话）
@@ -107,15 +107,15 @@ For `/imagent setup am-msgd …` / `/imagent setup token …` / `/imagent setup 
 
 ## On `/imagent <name>`
 
-1. **Discover controls first**: run `~/.agent-meeting/bin/am controls` and read the text output.
+1. **Discover am-msgd instances first**: run `~/.agent-meeting/bin/am msgd` and read the text output.
 
-   - **0 LAN controls** (output is "no control node found"): run
+   - **0 LAN am-msgd instances** (output is "no am-msgd found"): run
      `~/.agent-meeting/bin/am-msgd status`. If the local service is healthy,
      continue against `http://127.0.0.1:8765`; otherwise run
      `~/.agent-meeting/bin/am-msgd start` and then continue. Do not prompt to
      promote the machine: every installation owns a loopback hub by default.
-   - **1 control**: proceed to register against that control automatically. Report one line: `🛰 Connected to agent-meeting-control: <host> (<ip>:<port>)`.
-   - **2+ controls**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on the one marked `★ 当前`. Do NOT add any language implying multiple controls is unusual or an error — it is a valid multi-machine office topology.
+   - **1 am-msgd instance**: proceed to register against it automatically. Report one line: `🛰 Connected to am-msgd: <host> (<ip>:<port>)`.
+   - **2+ am-msgd instances**: use AskUserQuestion to let user pick. List each option as `<host> (<ip>:<port>)`, add label `（常用）` on the one marked `current`. Do NOT add any language implying multiple instances is unusual or an error — it is a valid multi-machine office topology.
 
 2. **Validate name**: alphanumeric + hyphen only, no `--` substring, length 2-20. If the user wrote `/imagent <name> --proj=<proj>`, parse `<proj>` out of the invocation (it is not part of `<name>`).
 3. **Initialize DB** (idempotent): `~/.agent-meeting/bin/am init`
@@ -127,7 +127,7 @@ For `/imagent setup am-msgd …` / `/imagent setup token …` / `/imagent setup 
    Append these flags to the monitor command, each independently, based on what step 1/2 resolved (all can combine):
    - **`--director`** — when this session should register as director role (default: worker). Example: `~/.agent-meeting/bin/am-session-monitor <name> --director`.
    - **`--proj=<proj>`** — only when the user supplied `--proj=<proj>` on the `/imagent <name> --proj=<proj>` invocation; bypasses folder-based project derivation and is cached per repo root for future registrations there. Monitor re-sends this `--proj` on every reconnect. Example: `~/.agent-meeting/bin/am-session-monitor <name> --proj=<proj>`.
-   - **`--host <url>`** — only when step 1 found 2+ controls and the user picked a specific one (or confirmed setting this machine as control). Omit when there's exactly one control on the LAN. Example: `~/.agent-meeting/bin/am-session-monitor <name> --host <url>`.
+   - **`--host <url>`** — only when step 1 found 2+ am-msgd instances and the user picked a specific one (or confirmed using this machine's am-msgd). Omit when there's exactly one instance on the LAN. Example: `~/.agent-meeting/bin/am-session-monitor <name> --host <url>`.
    - **`--force`** — only if the user explicitly asks to take over an existing registration under this name (see failure handling below). Never add this proactively.
 
    The monitor script (cross-platform Python) handles all of registration + liveness + polling:

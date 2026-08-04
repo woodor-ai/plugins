@@ -62,7 +62,7 @@ and unsupported actions fail closed.
 |---|---|
 | `/imagent` | Interactive name selector — pick or register a name for this session |
 | `/imagent <name>` | Register this session with a name (2–20 chars, `[A-Za-z0-9-]`, no `--`) |
-| `/imagent list` | Show all active sessions and the control node status |
+| `/imagent list` | Show all active sessions and discovered am-msgd instances |
 | `/imagent delete <peer>` | Delete a room and its history |
 | `/imagent rename <new>` | Rename this session and migrate its room |
 | `/imagent stop [<name>]` | Stop the message monitor for this session (or a named one) |
@@ -76,7 +76,7 @@ and unsupported actions fail closed.
 | `/imagent setup telemetry on\|off\|status` | Control telemetry collection |
 | `/imagent help` | Show command reference |
 
-Reserved names (cannot be used as session names): `list` `delete` `rename` `stop` `setup` `help` `controls` `am-msgd` `telemetry` `token`
+Reserved names (cannot be used as session names): `list` `delete` `rename` `stop` `setup` `help` `msgd` `am-msgd` `telemetry` `token`
 
 Private recipients must use the full `name@project` identity (`name@*` for a
 global session). Bare private names are rejected even when only one candidate
@@ -98,6 +98,7 @@ Not exposed as slash commands — run directly via `~/.agent-meeting/bin/am <cmd
 | Command | What it does |
 |---|---|
 | `am message <self> <msg_id>` | Read one exact visible message by global ID |
+| `am msgd [--json]` | List discovered am-msgd instances and their runtime versions |
 | `am prune [--older-than N] [--include-referenced] [--yes]` | Drop stale `sessions` rows (dry run unless `--yes`); never touches message history |
 | `am projcache [list\|clear] [--all]` | Inspect or clear this machine's cached `--proj` declarations (local file only, no central am-msgd call) |
 

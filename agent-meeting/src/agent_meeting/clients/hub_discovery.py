@@ -7,19 +7,19 @@ import json
 
 def discover_control(run_meeting) -> dict:
     try:
-        result = run_meeting("controls", "--json")
+        result = run_meeting("msgd", "--json")
         if result is None or result.returncode != 0 or not result.stdout.strip():
             return {}
-        controls = json.loads(result.stdout)
-        if not controls:
+        nodes = json.loads(result.stdout)
+        if not nodes:
             return {}
-        control = next(
-            (item for item in controls if item.get("is_current")),
-            controls[0],
+        node = next(
+            (item for item in nodes if item.get("is_current")),
+            nodes[0],
         )
-        ip = control.get("ip") or ""
-        port = control.get("port") or ""
-        host = control.get("host") or ip
+        ip = node.get("ip") or ""
+        port = node.get("port") or ""
+        host = node.get("host") or ip
         return {
             "ip": ip,
             "port": port,

@@ -20,7 +20,7 @@ Test cases:
   TC-M2: 带游标连入能补未读（backlog replay）
   TC-M3: server ping → monitor 回 masked pong（central am-msgd 不报协议错、连接不掉）
   TC-M4: 杀掉测试 central am-msgd → monitor 退避重连 → 重启 central am-msgd → monitor 重连并按游标补发
-  TC-M5: host 解析每次重连都重跑 controls 解析（mock controls 验证调用次数）
+  TC-M5: host 解析每次重连都重跑 msgd 解析（mock msgd 验证调用次数）
   TC-M6: 首启 cursor=-1 播种 — central am-msgd 回 caught_up(max)，monitor 不收历史消息
 
 Usage:
@@ -439,7 +439,7 @@ def check(name: str, cond: bool, detail: str = ""):
 
 
 # ---------- am CLI install ----------
-# monitor.py invokes `<MEETING_HOME>/bin/am online|offline|controls` as a
+# monitor.py invokes `<MEETING_HOME>/bin/am online|offline|msgd` as a
 # subprocess. That real CLI resolves which central am-msgd to talk to via its own
 # `_resolve_host()` -- env AM_MSGD_HOST first, then user-pinned config, then
 # LIVE mDNS/LAN DISCOVERY as a fallback. MEETING_HOME only redirects local
@@ -459,7 +459,7 @@ def install_am_cli(db_dir: str, counter_file: str | None = None) -> str:
     """Install an isolated wrapper around the packaged source CLI.
 
     counter_file: if given, `am` becomes a thin wrapper that increments
-    counter_file on every `controls --json` call before delegating to the
+    counter_file on every `msgd --json` call before delegating to the
     real copy (installed alongside as `am-real`) -- lets TC-M5 prove
     monitor re-resolves the control on every reconnect, not just at startup.
     """
@@ -482,7 +482,7 @@ def install_am_cli(db_dir: str, counter_file: str | None = None) -> str:
 import os, sys
 
 args = sys.argv[1:]
-if args == ["controls", "--json"]:
+if args == ["msgd", "--json"]:
     cf = {counter_file!r}
     try:
         n = int(open(cf).read().strip()) + 1
@@ -671,12 +671,12 @@ def test_m4_reconnect_backlog(db_dir: str):
 
 
 def test_m5_host_reresolution(db_dir: str):
-    """TC-M5: 重连时重跑 controls 解析（验证调用次数 >1）"""
+    """TC-M5: 重连时重跑 msgd 解析（验证调用次数 >1）"""
     global _am_msgd_proc
-    print("\n[TC-M5] 重连时重解析 host (controls 调用计数)")
+    print("\n[TC-M5] 重连时重解析 host (msgd 调用计数)")
 
     import tempfile as _tempfile
-    counter_file = os.path.join(_tempfile.gettempdir(), "ws-pr2-controls-counter.txt")
+    counter_file = os.path.join(_tempfile.gettempdir(), "ws-pr2-msgd-counter.txt")
     try:
         os.unlink(counter_file)
     except FileNotFoundError:
@@ -692,7 +692,7 @@ def test_m5_host_reresolution(db_dir: str):
 
     proc, shared, offset = start_monitor("m5_user", db_dir)
     try:
-        # Let monitor connect (1st controls call)
+        # Let monitor connect (1st msgd call)
         time.sleep(2.5)
 
         # Kill central am-msgd to force a reconnect
@@ -705,18 +705,18 @@ def test_m5_host_reresolution(db_dir: str):
         # Restart central am-msgd
         _am_msgd_proc = start_am_msgd(db_dir, TEST_PORT)
 
-        # Wait for monitor to reconnect (triggers 2nd+ controls call)
+        # Wait for monitor to reconnect (triggers 2nd+ msgd call)
         time.sleep(5.0)
 
-        # Verify controls was called more than once
+        # Verify msgd was called more than once
         try:
             count = int(open(counter_file).read().strip())
         except Exception:
             count = 0
 
-        check("TC-M5: controls called on initial connect", count >= 1,
+        check("TC-M5: msgd called on initial connect", count >= 1,
               f"counter={count}")
-        check("TC-M5: controls re-called on reconnect (>1 calls)",
+        check("TC-M5: msgd re-called on reconnect (>1 calls)",
               count >= 2, f"counter={count}")
 
     finally:

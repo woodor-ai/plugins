@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-03 · version 0.18.3
+Last updated: 2026-08-03 · version 0.18.4
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -85,7 +85,7 @@ The Claude Code skill exposes:
 | Slash command | CLI operation |
 |---|---|
 | `/imagent <name>` | Start a named session monitor |
-| `/imagent list` | `am list` plus `am controls` |
+| `/imagent list` | `am list` plus `am msgd` |
 | `/imagent rename <new>` | `am rename` and monitor restart |
 | `/imagent stop [name]` | `am stop` |
 | `/imagent delete <peer>` | `am delete` after confirmation |
@@ -94,7 +94,7 @@ The Claude Code skill exposes:
 | `/imagent setup telemetry on\|off\|status` | `am telemetry` |
 
 Reserved session names include `list`, `delete`, `rename`, `stop`, `setup`,
-`help`, `controls`, `am-msgd`, `telemetry`, and `token`.
+`help`, `msgd`, `am-msgd`, `telemetry`, and `token`.
 
 ## Message commands
 
@@ -174,7 +174,7 @@ runtime entrypoint.
 | `am-msgd --unbind IP` | Remove one listener without restarting the daemon |
 | `am-msgd --local-only` | Remove every non-loopback listener |
 | `am-msgd serve` | Internal foreground entrypoint used by OS service managers |
-| `am controls [--json]` | Discover central nodes |
+| `am msgd [--json]` | List discovered am-msgd instances and runtime versions |
 | `am host [URL\|clear]` | Inspect or pin a central URL |
 | `am token [VALUE\|clear]` | Manage bearer authentication |
 | `am telemetry on\|off\|status` | Manage telemetry |
