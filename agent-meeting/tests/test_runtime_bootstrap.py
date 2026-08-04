@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import zipfile
 
+import pytest
+
 
 PRODUCT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = PRODUCT_ROOT / "scripts" / "bootstrap_runtime.py"
@@ -39,18 +41,18 @@ def test_release_archive_uses_installed_plugin_version(tmp_path):
     manifest = tmp_path / ".codex-plugin" / "plugin.json"
     manifest.parent.mkdir()
     manifest.write_text(
-        json.dumps({"version": "0.18.8+codex.local-test"}),
+        json.dumps({"version": "0.18.9+codex.local-test"}),
         encoding="utf-8",
     )
 
-    assert module.release_archive_url(tmp_path).endswith("/tags/v0.18.8")
+    assert module.release_archive_url(tmp_path).endswith("/tags/v0.18.9")
 
 
 def test_bundled_script_resolves_plugin_root_and_version():
     module = load_bootstrap()
 
     assert module.plugin_root(SCRIPT) == PRODUCT_ROOT
-    assert module.plugin_version(PRODUCT_ROOT) == "0.18.8"
+    assert module.plugin_version(PRODUCT_ROOT) == "0.18.9"
 
 
 def test_standalone_bootstrap_uses_main_archive():
@@ -92,3 +94,46 @@ def test_bootstrap_downloads_and_runs_shared_installer(capsys):
     assert Path(command[1]).parent.name == "installers"
     assert Path(command[-1]).name == "plugins-release"
     assert "Open a new terminal and run: amcodex <name>" in capsys.readouterr().out
+
+
+def test_bootstrap_identifies_download_failure_stage():
+    module = load_bootstrap()
+
+    def fail_download(_request, timeout):
+        assert timeout == 120
+        raise PermissionError("sandbox blocked download")
+
+    with pytest.raises(
+        module.BootstrapStageError,
+        match="download failed: sandbox blocked download",
+    ):
+        module.install_runtime(
+            target="codex",
+            root=None,
+            archive_url="https://example.test/plugins.zip",
+            opener=fail_download,
+        )
+
+
+def test_bootstrap_identifies_runtime_installer_failure_stage():
+    module = load_bootstrap()
+
+    def open_archive(_request, timeout):
+        assert timeout == 120
+        return DownloadResponse(archive_bytes())
+
+    def fail_installer(_command, check):
+        assert check is True
+        raise PermissionError("sandbox blocked user profile")
+
+    with pytest.raises(
+        module.BootstrapStageError,
+        match="runtime installer failed: sandbox blocked user profile",
+    ):
+        module.install_runtime(
+            target="codex",
+            root=None,
+            archive_url="https://example.test/plugins.zip",
+            opener=open_archive,
+            run=fail_installer,
+        )

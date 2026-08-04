@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-04 · version 0.18.8
+Last updated: 2026-08-04 · version 0.18.9
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -15,14 +15,20 @@ skill names.
 
 ## Distribution update
 
-On first `$imagent` use, an installed plugin with no host runtime runs its
-bundled `scripts/bootstrap_runtime.py`. The bootstrap downloads the Git tag
-matching the plugin's semantic version and delegates all installation work to
-the same unified installer below. It never asks users to locate Codex's
-marketplace cache directory. A bootstrapped plain Codex session must then be
-restarted from a new terminal through the PATH command `amcodex <name>`;
-Claude Code can continue the current `/imagent` workflow. Installation paths
-are not part of the normal user-facing launch instructions.
+When bare `$imagent` finds no PATH command named `am`, it runs the bundled
+`scripts/bootstrap_runtime.py`. Subcommands invoke their stable launcher
+directly and bootstrap only after a command-not-found result, so normal use has
+no repeated existence preflight. Codex requests one scoped sandbox approval
+because installation downloads the matching Git tag and writes the user-owned
+runtime outside the workspace; Windows administrator privileges are not
+required. A bootstrapped plain Codex session must then be restarted from a new
+terminal through `amcodex <name>`. Claude Code can continue the current
+`/imagent` workflow.
+
+The Claude Code SessionStart hook is stored outside Codex's default
+`hooks/hooks.json` discovery path and is referenced only by the Claude plugin
+manifest. Installing the Codex plugin before the host runtime therefore does
+not produce a failed Claude hook.
 
 `am-update` is the only public distribution updater. It refreshes the public
 release checkout, creates and atomically selects one immutable host runtime,

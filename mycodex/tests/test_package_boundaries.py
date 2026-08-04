@@ -20,7 +20,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.18.8"
+    assert mycodex.__version__ == "0.18.9"
     assert mycodex.__version__ == agent_meeting.__version__
     manifests = (
         REPOSITORY_ROOT / "agent-meeting/.codex-plugin/plugin.json",
@@ -31,6 +31,25 @@ def test_product_version_matches_agent_meeting_runtime():
         == mycodex.__version__
         for manifest in manifests
     )
+
+
+def test_codex_plugin_does_not_load_the_claude_session_start_hook():
+    plugin_root = REPOSITORY_ROOT / "agent-meeting"
+    codex_manifest = json.loads(
+        (plugin_root / ".codex-plugin/plugin.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    claude_manifest = json.loads(
+        (plugin_root / ".claude-plugin/plugin.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert not (plugin_root / "hooks/hooks.json").exists()
+    assert "hooks" not in codex_manifest
+    assert claude_manifest["hooks"] == "./claude-hooks/hooks.json"
+    assert (plugin_root / "claude-hooks/hooks.json").is_file()
 
 
 def test_amcodex_descriptor_does_not_persist_launch_arguments(

@@ -12,9 +12,10 @@ The supported command surface is documented in
 ## Install
 
 Install the plugin from the Woodor marketplace, start a new Codex session, and
-invoke `$imagent`. On first use, the bundled cross-platform bootstrap downloads
-the matching tagged release and installs the host runtime automatically. Do not
-clone the repository or locate Codex marketplace cache directories manually.
+invoke bare `$imagent`. On first use, Codex requests one scoped sandbox approval
+and the bundled cross-platform bootstrap downloads the matching tagged release
+and installs the host runtime automatically. This is not a Windows administrator
+prompt. Do not clone the repository or locate marketplace cache directories.
 
 The runtime is installed under `~/.agent-meeting/runtimes/<version>/venv`;
 stable launchers are added to the user `PATH`. After the first Codex bootstrap,

@@ -1,11 +1,12 @@
 {
   "name": "agent-meeting",
-  "version": "0.18.8",
+  "version": "0.18.9",
   "description": "Peer messaging for Claude Code and Codex agents. Includes a loopback-first am-msgd hub with optional LAN listeners and the machine-wide am-codexd daemon.",
   "author": {
     "name": "Woodor",
     "url": "https://github.com/woodor-ai"
   },
   "homepage": "https://github.com/woodor-ai/plugins",
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "hooks": "./claude-hooks/hooks.json"
 }

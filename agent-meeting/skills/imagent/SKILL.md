@@ -24,11 +24,16 @@ are active.
 
 ## First-use runtime bootstrap
 
-Before running any `am`, `am-msgd`, `amcodex`, or monitor command, check whether
-the platform-specific stable `am` launcher documented below exists.
+Do not run a launcher-existence preflight before every invocation.
 
-If it is missing, install the host runtime from this plugin's bundled bootstrap
-script before doing anything else. Resolve the script relative to this
+- With no subcommand, resolve the PATH command `am` once. If it exists, show
+  the usage summary. If it does not exist, bootstrap the runtime instead.
+- With a subcommand that requires the runtime, invoke the required stable
+  launcher directly. Bootstrap only when that invocation fails because the
+  launcher does not exist. Do not bootstrap for an application error returned
+  by an existing launcher. Help-only dispatches make no runtime call.
+
+Bootstrap from this plugin's bundled script. Resolve it relative to this
 `SKILL.md` as `../../scripts/bootstrap_runtime.py`; do not search marketplace
 cache directories or ask the user to clone the repository.
 
@@ -36,6 +41,13 @@ cache directories or ask the user to clone the repository.
 - Codex on Windows: `py -3 "<plugin-root>/scripts/bootstrap_runtime.py" --target codex`
 - Claude Code on macOS/Linux: `python3 <plugin-root>/scripts/bootstrap_runtime.py --target claude-code`
 - Claude Code on Windows: `py -3 "<plugin-root>/scripts/bootstrap_runtime.py" --target claude-code`
+
+For Codex, set the shell tool's `sandbox_permissions` to `require_escalated`
+and justify that the command installs the agent-meeting runtime under the
+user's home directory and downloads the matching GitHub release. Request this
+scoped Codex sandbox approval once; do not request Windows administrator
+privileges, and do not first run the command inside the workspace-only sandbox.
+Claude Code uses its normal command execution path.
 
 Paste the bootstrap output. If it fails, surface the error verbatim and stop.
 Do not retry with a different source or version.
@@ -82,7 +94,7 @@ The first word after `/imagent` decides what to do:
 
 | Input | Action |
 |---|---|
-| `/imagent` (empty) | Same as `/imagent help` — show the command usage summary |
+| `/imagent` (empty) | If `am` is unavailable, run the first-use bootstrap. Otherwise show the same usage summary as `/imagent help`. |
 | `/imagent help` | Print a concise usage summary of all `/imagent` subcommands (human-readable form of this dispatch table). No state change. See "On `/imagent help`" below. |
 | `/imagent list` | Run `~/.agent-meeting/bin/am list` **and** `~/.agent-meeting/bin/am msgd`, then present both together: first a markdown table with columns Status / Name / Msgs / Role (from `list`), then an "am-msgd 节点" subsection listing discovered instances (from `msgd`). Do NOT just say "see above" or "如上" relying on the collapsed bash block — paste both results visible in the main chat area. Status is `empty` / `online` / `historical`. Role is `director` or `worker`. |
 | `/imagent delete <peer>` | Delete the room between this session's registered name and `<peer>` (hard delete: all messages purged). **Required**: this session must already be registered; ask user for explicit confirmation showing msg count before invoking `~/.agent-meeting/bin/am delete <self> <peer>`. |

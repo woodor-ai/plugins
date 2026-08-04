@@ -21,6 +21,10 @@ REPOSITORY_ARCHIVE = (
 TARGETS = ("claude-code", "codex", "all")
 
 
+class BootstrapStageError(RuntimeError):
+    """Identify the bootstrap stage that failed."""
+
+
 def plugin_root(script_path: Path) -> Path | None:
     candidate = script_path.resolve().parents[1]
     if (candidate / ".codex-plugin" / "plugin.json").is_file():
@@ -73,31 +77,43 @@ def install_runtime(
     run: Callable[..., object] = subprocess.run,
 ) -> None:
     url = archive_url or release_archive_url(root)
-    with tempfile.TemporaryDirectory(prefix="agent-meeting-bootstrap-") as temp:
+    with tempfile.TemporaryDirectory(
+        prefix="agent-meeting-bootstrap-",
+        ignore_cleanup_errors=True,
+    ) as temp:
         temp_dir = Path(temp)
         archive = temp_dir / "plugins.zip"
         print(f"Downloading agent-meeting runtime from {url}", flush=True)
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": "agent-meeting-bootstrap"},
-        )
-        with opener(request, timeout=120) as response:
-            with archive.open("wb") as output:
-                shutil.copyfileobj(response, output)
-        with zipfile.ZipFile(archive) as package:
-            package.extractall(temp_dir / "source")
-        source_root = extracted_source_root(temp_dir / "source")
-        run(
-            [
-                sys.executable,
-                str(source_root / "installers" / "install.py"),
-                "--target",
-                target,
-                "--source-root",
-                str(source_root),
-            ],
-            check=True,
-        )
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "agent-meeting-bootstrap"},
+            )
+            with opener(request, timeout=120) as response:
+                with archive.open("wb") as output:
+                    shutil.copyfileobj(response, output)
+        except Exception as error:
+            raise BootstrapStageError(f"download failed: {error}") from error
+        try:
+            with zipfile.ZipFile(archive) as package:
+                package.extractall(temp_dir / "source")
+            source_root = extracted_source_root(temp_dir / "source")
+        except Exception as error:
+            raise BootstrapStageError(f"archive extraction failed: {error}") from error
+        try:
+            run(
+                [
+                    sys.executable,
+                    str(source_root / "installers" / "install.py"),
+                    "--target",
+                    target,
+                    "--source-root",
+                    str(source_root),
+                ],
+                check=True,
+            )
+        except Exception as error:
+            raise BootstrapStageError(f"runtime installer failed: {error}") from error
     print("agent-meeting runtime installation complete", flush=True)
     if target in {"codex", "all"}:
         print(

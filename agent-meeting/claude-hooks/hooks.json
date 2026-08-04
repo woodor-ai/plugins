@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "am-claude-session-start"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_session_start.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_session_start.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_session_start.py\""
           }
         ]
       }
