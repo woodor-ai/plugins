@@ -163,7 +163,7 @@ def test_package_installer_applies_codex_configuration_directly(
         "configure_codex_user_environment",
         lambda **kwargs: (
             configuration_calls.append(kwargs)
-            or {"first_install": False, "control_url": kwargs["explicit_control"]}
+            or {"control_url": kwargs["explicit_control"]}
         ),
     )
 

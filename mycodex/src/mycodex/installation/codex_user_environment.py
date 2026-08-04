@@ -10,9 +10,6 @@ from agent_meeting.clients import hub_discovery
 from agent_meeting.clients.am_process_client import run_am_cli
 from agent_meeting.ai_platforms.codex import user_configuration
 
-from mycodex.ai_platforms.codex import agent_meeting_instructions
-
-
 def _am_command(meeting_home: Path, *, is_windows: bool) -> Path:
     return meeting_home / "bin" / (
         "am.exe" if is_windows else "am"
@@ -71,13 +68,6 @@ def configure_codex_user_environment(
             if control_url:
                 _pin_control(am_command, control_url)
 
-    first_install = (
-        agent_meeting_instructions.install_agent_meeting_instructions(
-            codex_home=codex_home,
-            am_command=am_command,
-            is_windows=is_windows,
-        )
-    )
     if is_windows:
         user_configuration.ensure_windows_unelevated_sandbox(
             codex_home
@@ -95,5 +85,4 @@ def configure_codex_user_environment(
 
     return {
         "control_url": control_url,
-        "first_install": first_install,
     }

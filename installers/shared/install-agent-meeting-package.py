@@ -206,14 +206,6 @@ def main(argv=None) -> int:
     if codex_configuration is not None:
         print("Codex user environment configured")
         print(f"  runtime commands: {meeting_home / 'bin'}")
-        print(
-            "  first install: "
-            + (
-                "yes"
-                if codex_configuration["first_install"]
-                else "no"
-            )
-        )
         control_url = codex_configuration["control_url"]
         print(f"  control URL: {control_url or 'not set'}")
     return 0

@@ -25,6 +25,8 @@ On Windows, invoke the same file with `py -3`. The installer builds and
 atomically activates the same versioned host runtime,
 migrates supported legacy artifacts, then registers the matching native plugin
 marketplace. Windows uses pip-generated `.exe` console launchers.
+Codex installation treats `~/.codex/AGENTS.md` as user-owned and never creates
+or refreshes agent-meeting instructions there.
 
 ## Update
 

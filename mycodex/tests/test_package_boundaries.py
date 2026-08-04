@@ -20,7 +20,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.18.4"
+    assert mycodex.__version__ == "0.18.5"
     assert mycodex.__version__ == agent_meeting.__version__
     manifests = (
         REPOSITORY_ROOT / "agent-meeting/.codex-plugin/plugin.json",
@@ -322,41 +322,6 @@ def test_macos_background_process_policy_starts_new_session():
     assert "creationflags" not in options
 
 
-def test_codex_instructions_refresh_managed_block(tmp_path):
-    from mycodex.ai_platforms.codex import agent_meeting_instructions
-
-    codex_home = tmp_path / "codex"
-    agents_path = codex_home / "AGENTS.md"
-    agents_path.parent.mkdir(parents=True)
-    agents_path.write_text(
-        "keep before\n"
-        f"{agent_meeting_instructions.AGENTS_BEGIN}\n"
-        "stale content\n"
-        f"{agent_meeting_instructions.AGENTS_END}\n"
-        "keep after\n",
-        encoding="utf-8",
-    )
-    am = tmp_path / "am.exe"
-
-    first_install = (
-        agent_meeting_instructions.install_agent_meeting_instructions(
-            codex_home=codex_home,
-            am_command=am,
-            is_windows=True,
-        )
-    )
-
-    text = agents_path.read_text(encoding="utf-8")
-    assert first_install is False
-    assert "keep before" in text and "keep after" in text
-    assert "stale content" not in text
-    assert agent_meeting_instructions.AGENTS_BEGIN in text
-    assert f'& "{am}" message NAME@PROJECT N' in text
-    assert "--host" not in text
-    assert "MEETING_SELF" not in text
-    assert "AM_MSGD_HOST" not in text
-
-
 def test_amcodex_default_control_uses_public_am_discovery(monkeypatch):
     from mycodex.launcher import codex_tui_session
 
@@ -428,7 +393,10 @@ def test_codex_configuration_runs_as_installation_logic(
 
     meeting_home = tmp_path / "meeting"
     codex_home = tmp_path / "codex"
+    agents_path = codex_home / "AGENTS.md"
     (meeting_home / "bin").mkdir(parents=True)
+    agents_path.parent.mkdir(parents=True)
+    agents_path.write_text("user-owned instructions\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path / "user"))
     monkeypatch.setenv("SHELL", "/bin/zsh")
     monkeypatch.setattr(
@@ -443,13 +411,10 @@ def test_codex_configuration_runs_as_installation_logic(
         is_windows=False,
     )
 
-    assert result == {
-        "control_url": "http://10.0.0.8:8765",
-        "first_install": True,
-    }
-    assert "agent-meeting:begin" in (
-        codex_home / "AGENTS.md"
-    ).read_text(encoding="utf-8")
+    assert result == {"control_url": "http://10.0.0.8:8765"}
+    assert agents_path.read_text(encoding="utf-8") == (
+        "user-owned instructions\n"
+    )
     assert str(meeting_home / "bin") in (
         tmp_path / "user" / ".zshrc"
     ).read_text(encoding="utf-8")
