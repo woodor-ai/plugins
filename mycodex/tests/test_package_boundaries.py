@@ -20,8 +20,17 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.18.2"
+    assert mycodex.__version__ == "0.18.3"
     assert mycodex.__version__ == agent_meeting.__version__
+    manifests = (
+        REPOSITORY_ROOT / "agent-meeting/.codex-plugin/plugin.json",
+        REPOSITORY_ROOT / "agent-meeting/.claude-plugin/plugin.json",
+    )
+    assert all(
+        json.loads(manifest.read_text(encoding="utf-8"))["version"]
+        == mycodex.__version__
+        for manifest in manifests
+    )
 
 
 def test_amcodex_descriptor_does_not_persist_launch_arguments(
@@ -42,6 +51,48 @@ def test_amcodex_descriptor_does_not_persist_launch_arguments(
     assert descriptor["identity"] == "worker@tools"
     assert descriptor["launch_recipe"]["args_persisted"] is False
     assert "ws://127.0.0.1:9999" not in json.dumps(descriptor)
+
+
+def test_amcodex_launch_log_shows_am_msgd_instead_of_local_proxy(monkeypatch):
+    from mycodex.launcher import codex_tui_session
+
+    messages = []
+
+    class Process:
+        pid = 1234
+
+        def wait(self):
+            return 0
+
+    launcher = codex_tui_session.Launcher(
+        "worker",
+        "tools",
+        "http://10.0.0.8:8765",
+    )
+    launcher.session = {
+        "identity": "worker@tools",
+        "proxy_url": "ws://127.0.0.1:9999",
+    }
+    monkeypatch.setattr(codex_tui_session, "log", messages.append)
+    monkeypatch.setattr(
+        codex_tui_session,
+        "set_terminal_title",
+        lambda _title: None,
+    )
+    monkeypatch.setattr(launcher, "start_control_server", lambda: None)
+    monkeypatch.setattr(launcher, "publish_descriptor", lambda: None)
+    monkeypatch.setattr(
+        codex_tui_session.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: Process(),
+    )
+
+    launcher.run_codex()
+
+    assert messages == [
+        "launching Codex foreground; am-msgd=http://10.0.0.8:8765"
+    ]
+    assert "127.0.0.1" not in messages[0]
 
 
 def test_codex_app_server_environment_marks_mycodex_runtime(monkeypatch):

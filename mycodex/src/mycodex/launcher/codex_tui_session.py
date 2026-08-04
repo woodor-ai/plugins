@@ -488,7 +488,7 @@ class Launcher:
             effort=self.effort,
         )
         set_terminal_title(title_text(self.name, self.project, self.control_url))
-        log(f"launching foreground: {' '.join(command)}")
+        log(f"launching Codex foreground; am-msgd={self.control_url}")
         self.start_control_server()
         try:
             while True:
