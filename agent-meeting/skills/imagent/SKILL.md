@@ -57,7 +57,7 @@ Do not retry with a different source or version.
 
 After a successful Codex bootstrap, stop the current workflow and tell the user
 to close the current Codex process and terminal, open a new terminal so it
-inherits the updated `PATH`, then run `amcodex <name>`. This short command is
+inherits the updated `PATH`, then run `amcodex --name NAME`. This short command is
 the only normal user entry point on Windows, macOS, and Linux. Never present
 the launcher's installation path unless troubleshooting a failed `PATH`
 installation.

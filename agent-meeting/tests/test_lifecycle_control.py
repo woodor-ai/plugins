@@ -9,6 +9,8 @@ import time
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MYCODEX_SOURCE = ROOT.parent / "mycodex" / "src"
@@ -268,17 +270,21 @@ def test_amclaude_builds_model_and_effort_into_child_command():
     ]
 
 
-def test_amclaude_help_exposes_model_and_effort_choices(capsys):
+def test_amclaude_help_documents_the_wrapper_not_claude(capsys):
     from agent_meeting.launcher.amclaude_session import main
 
-    assert main(["--amclaude-help"]) == 0
+    with pytest.raises(SystemExit) as error:
+        main(["-h"])
 
+    assert error.value.code == 0
     output = capsys.readouterr().out
     assert (
         "--model {claude-fable-5,claude-opus-5,claude-sonnet-5}" in output
     )
     assert "--effort {ultracode,max,extra,high,medium}" in output
     assert "--am-msgd HOST[:PORT]" in output
+    assert "--name" in output
+    assert "passed to claude" in output
 
 
 def test_amclaude_consumes_and_normalizes_explicit_am_msgd(monkeypatch):
@@ -298,10 +304,33 @@ def test_amclaude_consumes_and_normalizes_explicit_am_msgd(monkeypatch):
     monkeypatch.setattr(amclaude_session, "ClaudeSupervisor", FakeSupervisor)
 
     assert amclaude_session.main(
-        ["worker", "--proj=tools", "--am-msgd=10.0.0.114", "--verbose"]
+        ["--name=worker", "--proj=tools", "--am-msgd=10.0.0.114", "--verbose"]
     ) == 0
     assert captured["claude_args"] == ["--verbose"]
+    assert captured["name"] == "worker"
     assert captured["control_url"] == "http://10.0.0.114:8765"
+
+
+def test_amclaude_hands_a_positional_prompt_to_claude(monkeypatch):
+    from agent_meeting.launcher import amclaude_session
+
+    captured = {}
+
+    class FakeSupervisor:
+        def __init__(self, claude_args, **kwargs):
+            captured["claude_args"] = claude_args
+            captured.update(kwargs)
+
+        def run(self):
+            return 0
+
+    monkeypatch.setattr(amclaude_session.shutil, "which", lambda _name: "claude")
+    monkeypatch.setattr(amclaude_session, "ClaudeSupervisor", FakeSupervisor)
+
+    # A prompt used to be swallowed as the meeting name, so claude never saw it.
+    assert amclaude_session.main(["review this diff", "--resume"]) == 0
+    assert captured["claude_args"] == ["review this diff", "--resume"]
+    assert captured["name"] != "review this diff"
 
 
 def test_amclaude_passes_explicit_am_msgd_to_child_environment(monkeypatch):
@@ -608,7 +637,7 @@ def test_windows_login_task_preserves_custom_meeting_home(
     runtime_command = (
         meeting_home
         / "runtimes"
-        / "0.18.29"
+        / "0.18.30"
         / "venv"
         / "Scripts"
         / "am-ctld-service.exe"

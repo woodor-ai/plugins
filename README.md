@@ -44,7 +44,7 @@ codex plugin add <plugin-name>@woodor
 ```
 
 After complete `agent-meeting` installation, open a new terminal and run
-`amcodex <name>` for a managed Codex session. No repository clone or manual
+`amcodex --name NAME` for a managed Codex session. No repository clone or manual
 marketplace-cache access is required.
 
 ## The plugins

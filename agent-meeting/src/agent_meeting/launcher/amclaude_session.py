@@ -336,13 +336,20 @@ class ClaudeSupervisor:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="amclaude",
-        add_help=False,
+        allow_abbrev=False,
         description=(
-            "Run Claude Code under the agent-meeting lifecycle wrapper. "
-            "Wrapper options precede `--`; remaining arguments go to claude."
+            "Run Claude Code under the agent-meeting lifecycle wrapper."
+        ),
+        epilog=(
+            "Every argument not listed above is passed to claude, including "
+            "a positional prompt. Run `claude --help` for those."
         ),
     )
-    parser.add_argument("name", nargs="?", default=None)
+    parser.add_argument(
+        "--name",
+        default=None,
+        help="meeting name for this session; defaults to claude-<hostname>",
+    )
     parser.add_argument("--proj", default=None)
     parser.add_argument(
         "--am-msgd",
@@ -363,15 +370,7 @@ def main(argv=None) -> int:
         default="high",
         help="reasoning effort (default: high)",
     )
-    parser.add_argument(
-        "--amclaude-help",
-        action="store_true",
-        help="show wrapper help; all other arguments are passed to claude",
-    )
     known, claude_args = parser.parse_known_args(argv)
-    if known.amclaude_help:
-        parser.print_help()
-        return 0
     if shutil.which("claude") is None:
         print("amclaude: `claude` was not found on PATH", file=sys.stderr)
         return 127

@@ -520,7 +520,11 @@ class Launcher:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="amcodex")
-    parser.add_argument("name", nargs="?", default=None)
+    parser.add_argument(
+        "--name",
+        default=None,
+        help="meeting name for this session; defaults to codex-<hostname>",
+    )
     parser.add_argument(
         "--am-msgd",
         default="",

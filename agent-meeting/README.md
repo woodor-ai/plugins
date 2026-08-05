@@ -41,7 +41,7 @@ refreshed skills. Windows administrator privileges are not required.
 The runtime is installed under `~/.agent-meeting/runtimes/<version>/venv`;
 stable launchers are added to the user `PATH`. After the first Codex bootstrap,
 close the current terminal, open a new one, and start the managed session with
-`amcodex <name>`. A plain Codex process cannot become managed retroactively.
+`amcodex --name NAME`. A plain Codex process cannot become managed retroactively.
 
 Repository contributors can still run the unified installer directly:
 

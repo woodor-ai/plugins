@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-05 · version 0.18.29
+Last updated: 2026-08-05 · version 0.18.30
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -40,7 +40,7 @@ no repeated existence preflight. Codex requests one scoped sandbox approval
 because installation downloads the matching R2 release bundle and writes the
 user-owned runtime outside the workspace; Windows administrator privileges are
 not required. A bootstrapped plain Codex session must then be restarted from a new
-terminal through `amcodex <name>`. Claude Code can continue the current
+terminal through `amcodex --name NAME`. Claude Code can continue the current
 `/imagent` workflow.
 
 The Claude Code integration copies its two owned skills into
@@ -121,14 +121,17 @@ am-ctl agent --name NAME --proj PROJECT --cmd exit
 am-ctl agent --name NAME --proj PROJECT --cmd restart
 ```
 
-`amclaude [name] [--proj PROJECT] [--am-msgd HOST[:PORT]]
+`amclaude [--name NAME] [--proj PROJECT] [--am-msgd HOST[:PORT]]
 [--model claude-fable-5|claude-opus-5|claude-sonnet-5]
-[--effort ultracode|max|extra|high|medium] -- [claude arguments...]` launches
+[--effort ultracode|max|extra|high|medium] [claude arguments...]` launches
 Claude Code in its lifecycle wrapper. It defaults to `claude-opus-5` with `high`
-effort. `amcodex` is the corresponding Codex wrapper and accepts
-`--model sol|terra` (default `sol`) plus `--effort xhigh|high|medium` (default
-`high`). The old `myclaude` subscription/API selector is not part of
-agent-meeting and is neither invoked nor migrated by `amclaude`.
+effort. Every argument the wrapper does not define is passed to `claude`,
+including a positional prompt, and `amclaude --help` documents the wrapper
+itself rather than `claude`. `amcodex` is the corresponding Codex wrapper and
+accepts the same `--name` option plus `--model sol|terra` (default `sol`) and
+`--effort xhigh|high|medium` (default `high`). The old `myclaude`
+subscription/API selector is not part of agent-meeting and is neither invoked
+nor migrated by `amclaude`.
 
 In 0.17.1, `status`, `exit`, and same-terminal `restart` are available for both
 wrappers. `compact` is available for idle, high-confidence `amcodex` and
@@ -143,9 +146,9 @@ The central hub can be selected without a URL scheme. A bare host defaults to
 port 8765:
 
 ```text
-amcodex [name] --am-msgd localhost
-amcodex [name] --am-msgd 192.168.1.20:9000
-amclaude [name] --am-msgd 192.168.1.20
+amcodex --name NAME --am-msgd localhost
+amcodex --name NAME --am-msgd 192.168.1.20:9000
+amclaude --name NAME --am-msgd 192.168.1.20
 ```
 
 `am-ctl status --json` is the machine-readable local inventory used by
