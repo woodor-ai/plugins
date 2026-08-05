@@ -1386,6 +1386,28 @@ def test_packaged_launcher_executes_windows_console_entrypoint_directly(
     ]
 
 
+def test_windows_launcher_ignores_legacy_daemon_on_path(
+    monkeypatch,
+    tmp_path,
+):
+    legacy_bin = tmp_path / "legacy"
+    legacy_bin.mkdir()
+    (legacy_bin / "am-codexd").write_text(
+        "#!/usr/bin/env python3\n",
+        encoding="utf-8",
+    )
+    meeting_home = tmp_path / "meeting-home"
+    monkeypatch.setenv("MEETING_HOME", str(meeting_home))
+    monkeypatch.setenv("PATH", str(legacy_bin))
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    module = load(LAUNCHER_PATH, "codex_meeting_windows_daemon_path")
+
+    assert module.DAEMON_COMMAND == (
+        meeting_home / "bin" / "am-codexd.exe"
+    )
+
+
 def test_launcher_surfaces_daemon_update_failure(monkeypatch):
     module = load(LAUNCHER_PATH, "codex_meeting_daemon_update_failure")
 

@@ -57,7 +57,7 @@ def test_main_updates_an_existing_outdated_plugin(registration, monkeypatch):
     monkeypatch.setattr(
         registration,
         "source_plugin_version",
-        lambda: "0.18.20",
+        lambda: "0.18.21",
     )
 
     assert registration.main() == 0
@@ -85,7 +85,7 @@ def test_main_installs_when_plugin_is_absent(registration, monkeypatch):
     monkeypatch.setattr(
         registration,
         "source_plugin_version",
-        lambda: "0.18.20",
+        lambda: "0.18.21",
     )
 
     assert registration.main() == 0
@@ -113,7 +113,7 @@ def test_refresh_rechecks_state_before_choosing_install_action(
     monkeypatch.setattr(
         registration,
         "source_plugin_version",
-        lambda: "0.18.20",
+        lambda: "0.18.21",
     )
 
     assert registration.main() == 0

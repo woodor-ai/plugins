@@ -15,7 +15,6 @@ import os
 import re
 import secrets
 import signal
-import shutil
 import socket
 import socketserver
 import subprocess
@@ -44,13 +43,8 @@ if IS_WINDOWS:
     from mycodex.operating_systems.windows import codex_terminal_title
 else:
     from mycodex.operating_systems.macos import codex_terminal_title
-DAEMON_COMMAND = Path(
-    shutil.which("am-codexd")
-    or (
-        DATA
-        / "bin"
-        / ("am-codexd.exe" if IS_WINDOWS else "am-codexd")
-    )
+DAEMON_COMMAND = DATA / "bin" / (
+    "am-codexd.exe" if IS_WINDOWS else "am-codexd"
 )
 AM_COMMAND = DATA / "bin" / ("am.exe" if IS_WINDOWS else "am")
 BROKER_API_PORT = int(os.environ.get("MEETING_BROKER_API_PORT", "8788"))

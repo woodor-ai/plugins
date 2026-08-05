@@ -86,16 +86,35 @@ def test_posix_activation_uses_stable_symlinks_and_atomic_manifest(tmp_path):
 def test_windows_activation_copies_console_exes_without_cmd_forwarders(
     tmp_path,
 ):
-    from agent_meeting.installation.version_activation import activate_runtime
+    from agent_meeting.installation.version_activation import (
+        RUNTIME_COMMANDS,
+        activate_runtime,
+    )
 
     runtime = _fake_runtime(tmp_path, "0.15.0", is_windows=True)
+    bin_directory = tmp_path / "bin"
+    bin_directory.mkdir(parents=True)
+    for command in RUNTIME_COMMANDS:
+        (bin_directory / command).write_text("legacy", encoding="utf-8")
+        (bin_directory / f"{command}.cmd").write_text(
+            "legacy",
+            encoding="utf-8",
+        )
     legacy_command = tmp_path / "bin" / "meeting.exe"
-    legacy_command.parent.mkdir(parents=True)
     legacy_command.write_bytes(b"legacy")
+    (bin_directory / "meeting").write_text("legacy", encoding="utf-8")
+    (bin_directory / "meeting.cmd").write_text("legacy", encoding="utf-8")
     obsolete_alias = tmp_path / "bin" / "mycodex.exe"
     obsolete_alias.write_bytes(b"obsolete")
+    (bin_directory / "mycodex").write_text("obsolete", encoding="utf-8")
+    (bin_directory / "mycodex.cmd").write_text(
+        "obsolete",
+        encoding="utf-8",
+    )
     obsolete_link = tmp_path / "bin" / "lnk.exe"
     obsolete_link.write_bytes(b"obsolete")
+    (bin_directory / "lnk").write_text("obsolete", encoding="utf-8")
+    (bin_directory / "lnk.cmd").write_text("obsolete", encoding="utf-8")
     obsolete_configure = (
         tmp_path / "bin" / "am-configure-codex-user-environment.exe"
     )
@@ -118,6 +137,8 @@ def test_windows_activation_copies_console_exes_without_cmd_forwarders(
         assert destination.read_bytes() == (
             runtime / "venv" / "Scripts" / f"{command}.exe"
         ).read_bytes()
+    for command in RUNTIME_COMMANDS:
+        assert not (tmp_path / "bin" / command).exists()
         assert not (tmp_path / "bin" / f"{command}.cmd").exists()
     assert not (tmp_path / "bin" / "am-msgd-service.exe").exists()
     assert not (tmp_path / "bin" / "am-ctld-service.exe").exists()
@@ -133,7 +154,7 @@ def test_windows_activation_defers_locked_stable_launcher(
 ):
     from agent_meeting.installation import version_activation
 
-    runtime = _fake_runtime(tmp_path, "0.18.20", is_windows=True)
+    runtime = _fake_runtime(tmp_path, "0.18.21", is_windows=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     locked = bin_dir / "am-update.exe"
@@ -150,14 +171,14 @@ def test_windows_activation_defers_locked_stable_launcher(
 
     payload = version_activation.activate_runtime(
         meeting_home=tmp_path,
-        version="0.18.20",
+        version="0.18.21",
         is_windows=True,
         schedule_windows_replacements=lambda **kwargs: (
             scheduled.append(kwargs) or tmp_path / "pending.json"
         ),
     )
 
-    assert payload["version"] == "0.18.20"
+    assert payload["version"] == "0.18.21"
     assert locked.read_bytes() == b"running"
     assert len(scheduled) == 1
     replacement = scheduled[0]["replacements"]

@@ -203,8 +203,19 @@ def activate_runtime(
     _atomic_write_json(meeting_home / "active-runtime.json", payload)
     obsolete_commands = (
         (
+            *(
+                launcher
+                for command in RUNTIME_COMMANDS
+                for launcher in (command, f"{command}.cmd")
+            ),
+            "meeting",
+            "meeting.cmd",
             "meeting.exe",
+            "mycodex",
+            "mycodex.cmd",
             "mycodex.exe",
+            "lnk",
+            "lnk.cmd",
             "lnk.exe",
             "am-configure-codex-user-environment.exe",
             "am-message-hub-supervisor.exe",
