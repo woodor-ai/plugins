@@ -381,6 +381,54 @@ def test_amclaude_assigns_a_chosen_name_to_the_session(monkeypatch):
     assert "MEETING_SELF" not in default
 
 
+def test_amclaude_gives_an_assigned_session_a_turn_to_register_in(monkeypatch):
+    from agent_meeting.launcher import amclaude_session
+
+    captured = {}
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        return object()
+
+    monkeypatch.setattr(amclaude_session.subprocess, "Popen", popen)
+    amclaude_session.ClaudeSupervisor(
+        ["--verbose"],
+        name="worker",
+        project="tools",
+        assign_identity=True,
+    )._spawn()
+
+    # The hook can only add context; something has to make the session speak.
+    assert captured["command"][-1] == amclaude_session.BOOTSTRAP_PROMPT
+    assert captured["command"][-2] == "--verbose"
+
+
+def test_amclaude_never_adds_a_second_prompt(monkeypatch):
+    from agent_meeting.launcher import amclaude_session
+
+    captured = {}
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        return object()
+
+    monkeypatch.setattr(amclaude_session.subprocess, "Popen", popen)
+    amclaude_session.ClaudeSupervisor(
+        ["review this diff"],
+        name="worker",
+        project="tools",
+        assign_identity=True,
+    )._spawn()
+    assert captured["command"][-1] == "review this diff"
+
+    amclaude_session.ClaudeSupervisor(
+        [],
+        name="claude-host",
+        project="tools",
+    )._spawn()
+    assert amclaude_session.BOOTSTRAP_PROMPT not in captured["command"]
+
+
 def test_amclaude_only_assigns_an_identity_the_user_asked_for(monkeypatch):
     from agent_meeting.launcher import amclaude_session
 
@@ -682,7 +730,7 @@ def test_windows_login_task_preserves_custom_meeting_home(
     runtime_command = (
         meeting_home
         / "runtimes"
-        / "0.18.31"
+        / "0.18.32"
         / "venv"
         / "Scripts"
         / "am-ctld-service.exe"

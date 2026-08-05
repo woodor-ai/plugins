@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-05 · version 0.18.31
+Last updated: 2026-08-05 · version 0.18.32
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -129,7 +129,10 @@ including a positional prompt, and `amclaude --help` documents the wrapper
 itself rather than `claude`. An explicit `--name` is a registration request:
 the wrapper passes the name, project, and hub address to the session, and the
 SessionStart context directs the session to start its monitor as its first
-action, so `/imagent NAME` is not needed. A generated fallback name registers
+action, so `/imagent NAME` is not needed. Because a hook cannot make a session
+speak, the wrapper also supplies claude's initial prompt so that first action
+happens at launch instead of waiting for the user; a launch that already
+carries its own prompt keeps it. A generated fallback name registers
 nothing and only labels the session for lifecycle control. `amcodex` is the corresponding Codex wrapper and
 accepts the same `--name` option plus `--model sol|terra` (default `sol`) and
 `--effort xhigh|high|medium` (default `high`). The old `myclaude`

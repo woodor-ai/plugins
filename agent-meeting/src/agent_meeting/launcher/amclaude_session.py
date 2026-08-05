@@ -32,14 +32,34 @@ CLAUDE_MODELS = ("claude-fable-5", "claude-opus-5", "claude-sonnet-5")
 CLAUDE_EFFORTS = ("ultracode", "max", "extra", "high", "medium")
 
 
+BOOTSTRAP_PROMPT = "hang on a sec..."
+
+
 def build_claude_launch_cmd(
     claude_args: list[str],
     *,
     model: str = "claude-opus-5",
     effort: str = "high",
+    bootstrap_prompt: str | None = None,
 ) -> list[str]:
     """Build the managed Claude invocation with its session settings."""
-    return ["claude", "--model", model, "--effort", effort, *claude_args]
+    prompt = [bootstrap_prompt] if bootstrap_prompt else []
+    return ["claude", "--model", model, "--effort", effort, *claude_args, *prompt]
+
+
+def bootstrap_prompt_for(claude_args: list[str]) -> str | None:
+    """Give an assigned session a first turn to register itself in.
+
+    A SessionStart hook can only add context; it cannot make the session speak,
+    so an assigned name would sit unregistered until the user happened to type
+    something. Claude takes an initial prompt as its positional argument, so
+    the wrapper supplies one. A launch that already carries a bare argument
+    keeps it: claude accepts exactly one prompt, and the hook's instruction
+    still runs inside the turn that prompt creates.
+    """
+    if any(not argument.startswith("-") for argument in claude_args):
+        return None
+    return BOOTSTRAP_PROMPT
 
 
 def _meeting_home() -> Path:
@@ -305,6 +325,11 @@ class ClaudeSupervisor:
             self.claude_args,
             model=self.model,
             effort=self.effort,
+            bootstrap_prompt=(
+                bootstrap_prompt_for(self.claude_args)
+                if self.assign_identity
+                else None
+            ),
         )
         kwargs = {"env": self.child_environment()}
         if os.name == "nt":
