@@ -463,7 +463,7 @@ def test_windows_service_uses_console_free_entrypoint_and_log(
     runtime_command = (
         meeting_home
         / "runtimes"
-        / "0.18.22"
+        / "0.18.23"
         / "venv"
         / "Scripts"
         / "am-msgd-service.exe"
@@ -482,13 +482,26 @@ def test_windows_service_uses_console_free_entrypoint_and_log(
         system_name="Windows",
     )
 
-    task_command = commands[0][commands[0].index("/TR") + 1]
-    assert str(runtime_command) in task_command
-    assert (
-        f'--service-log "{meeting_home / "logs" / "am-msgd.log"}"'
-        in task_command
+    assert commands[0][:4] == [
+        "schtasks",
+        "/Create",
+        "/TN",
+        "agent-meeting-am-msgd",
+    ]
+    assert commands[0][4] == "/XML"
+    definition = user_service.windows_definition(
+        message_hub_user_service._spec(
+            meeting_home,
+            meeting_home / "am-msgd.json",
+        ),
+        principal="S-1-5-21-0-0-0-1000",
     )
-    assert f'--config "{meeting_home / "am-msgd.json"}"' in task_command
+    assert f"<Command>{runtime_command}</Command>" in definition
+    arguments = definition.split("<Arguments>")[1].split("</Arguments>")[0]
+    assert (
+        f'--service-log "{meeting_home / "logs" / "am-msgd.log"}"' in arguments
+    )
+    assert f'--config "{meeting_home / "am-msgd.json"}"' in arguments
 
 
 def test_installation_migrates_legacy_host_and_stop_state(tmp_path):

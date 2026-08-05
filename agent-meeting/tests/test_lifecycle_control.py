@@ -608,7 +608,7 @@ def test_windows_login_task_preserves_custom_meeting_home(
     runtime_command = (
         meeting_home
         / "runtimes"
-        / "0.18.22"
+        / "0.18.23"
         / "venv"
         / "Scripts"
         / "am-ctld-service.exe"
@@ -636,13 +636,24 @@ def test_windows_login_task_preserves_custom_meeting_home(
         system_name="Windows",
     )
 
-    task_command = commands[0][commands[0].index("/TR") + 1]
-    assert str(runtime_command) in task_command
+    assert commands[0][:5] == [
+        "schtasks",
+        "/Create",
+        "/TN",
+        "woodor-am-ctld",
+        "/XML",
+    ]
+    definition = service_core.windows_definition(
+        user_service._spec(meeting_home),
+        principal="S-1-5-21-0-0-0-1000",
+    )
+    assert f"<Command>{runtime_command}</Command>" in definition
+    arguments = definition.split("<Arguments>")[1].split("</Arguments>")[0]
     assert (
         f'--service-log "{meeting_home / "control" / "am-ctld.log"}"'
-        in task_command
+        in arguments
     )
-    assert f'--meeting-home "{meeting_home}"' in task_command
+    assert f'--meeting-home "{meeting_home}"' in arguments
     assert commands[2][-1] == "/Enable"
     assert commands[3][:2] == ["schtasks", "/Run"]
 
