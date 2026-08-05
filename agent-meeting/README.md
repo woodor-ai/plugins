@@ -78,7 +78,9 @@ longer an update path.
 On Windows, an updater that is replacing its own stable `.exe` launcher defers
 that one locked-file replacement to a detached no-console helper. Background
 tasks execute immutable versioned launchers, so subsequent updates do not lock
-the public service commands.
+the public service commands. The Codex daemon also resolves npm-installed
+`codex.cmd` through the Windows command processor instead of assuming that a
+native `codex.exe` exists.
 
 ## Uninstall
 
