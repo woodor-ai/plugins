@@ -17,14 +17,12 @@ def _load_module():
     return module
 
 
-def test_uses_local_checkout_after_existing_marketplace_upgrade_failure(monkeypatch):
+def test_refreshes_existing_marketplace_from_release_archive(monkeypatch):
     module = _load_module()
     calls = []
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
-        if command[-3:] == ["marketplace", "upgrade", "woodor"]:
-            return SimpleNamespace(returncode=1)
         if command[-3:] == ["marketplace", "list", "--json"]:
             return SimpleNamespace(
                 returncode=0,
@@ -46,7 +44,6 @@ def test_uses_local_checkout_after_existing_marketplace_upgrade_failure(monkeypa
 
     assert module.main() == 0
     assert [command for command, _ in calls] == [
-        ["/usr/bin/codex", "plugin", "marketplace", "upgrade", "woodor"],
         ["/usr/bin/codex", "plugin", "marketplace", "list", "--json"],
         ["/usr/bin/codex", "plugin", "marketplace", "remove", "woodor"],
         ["/usr/bin/codex", "plugin", "marketplace", "add", str(ROOT)],
@@ -82,8 +79,11 @@ def test_skips_plugin_add_when_plugin_is_already_installed(monkeypatch, capsys):
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
-        if command[-3:] == ["marketplace", "upgrade", "woodor"]:
-            return SimpleNamespace(returncode=0)
+        if command[-3:] == ["marketplace", "list", "--json"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout='{"marketplaces": [{"name": "woodor"}]}',
+            )
         if command[-3:] == ["plugin", "list", "--json"]:
             return SimpleNamespace(
                 returncode=0,
@@ -92,7 +92,7 @@ def test_skips_plugin_add_when_plugin_is_already_installed(monkeypatch, capsys):
                     '"installed": true}]}'
                 ),
             )
-        raise AssertionError(f"unexpected command: {command}")
+        return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(module.shutil, "which", lambda _command: "/usr/bin/codex")
     monkeypatch.setattr(module.subprocess, "run", run)
@@ -103,11 +103,13 @@ def test_skips_plugin_add_when_plugin_is_already_installed(monkeypatch, capsys):
 
     assert module.main() == 0
     assert capsys.readouterr().out.splitlines() == [
-        "Refreshing Codex marketplace: woodor...",
+        "Refreshing Codex marketplace from the release archive...",
         "Codex plugin already installed; skipping redundant reinstall.",
     ]
     assert [command for command, _ in calls] == [
-        ["/usr/bin/codex", "plugin", "marketplace", "upgrade", "woodor"],
+        ["/usr/bin/codex", "plugin", "marketplace", "list", "--json"],
+        ["/usr/bin/codex", "plugin", "marketplace", "remove", "woodor"],
+        ["/usr/bin/codex", "plugin", "marketplace", "add", str(ROOT)],
         ["/usr/bin/codex", "plugin", "list", "--json"],
     ]
 
@@ -118,8 +120,6 @@ def test_adds_local_marketplace_only_when_listing_confirms_it_is_absent(monkeypa
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
-        if command[-3:] == ["marketplace", "upgrade", "woodor"]:
-            return SimpleNamespace(returncode=1)
         if command[-3:] == ["marketplace", "list", "--json"]:
             return SimpleNamespace(returncode=0, stdout='{"marketplaces": []}')
         if command[-3:] == ["plugin", "list", "--json"]:
@@ -132,7 +132,6 @@ def test_adds_local_marketplace_only_when_listing_confirms_it_is_absent(monkeypa
 
     assert module.main() == 0
     assert [command for command, _ in calls] == [
-        ["/usr/bin/codex", "plugin", "marketplace", "upgrade", "woodor"],
         ["/usr/bin/codex", "plugin", "marketplace", "list", "--json"],
         ["/usr/bin/codex", "plugin", "marketplace", "add", str(ROOT)],
         ["/usr/bin/codex", "plugin", "list", "--json"],

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-from pathlib import Path
 
 from agent_meeting.installation import distribution_update
 
@@ -26,13 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="show the active runtime and detected integrations without updating",
     )
     parser.add_argument(
-        "--repository",
-        default=distribution_update.PUBLIC_REPOSITORY,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--checkout",
-        type=Path,
+        "--installer-url",
+        default=distribution_update.PUBLIC_INSTALLER_URL,
         help=argparse.SUPPRESS,
     )
     return parser
@@ -52,18 +46,12 @@ def main(argv: list[str] | None = None) -> int:
     if not targets:
         print("ERROR: no installed Claude Code or Codex integration was found")
         return 1
-    checkout = args.checkout or distribution_update.default_checkout(meeting_home)
     try:
-        print("Refreshing agent-meeting update checkout...", flush=True)
-        source_root = distribution_update.refresh_checkout(
-            checkout=checkout,
-            repository=args.repository,
-        )
-        print("Installing agent-meeting integrations...", flush=True)
-        distribution_update.install_release(
-            source_root=source_root,
+        print("Downloading the current agent-meeting installer...", flush=True)
+        distribution_update.install_latest(
             meeting_home=meeting_home,
             targets=targets,
+            installer_url=args.installer_url,
         )
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         print(f"ERROR: {exc}")

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,18 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TARGET_CLAUDE_CODE = "claude-code"
 TARGET_CODEX = "codex"
 TARGET_ALL = "all"
+
+
+def _remove_legacy_update_checkout(meeting_home: Path) -> None:
+    checkout = meeting_home / "updates" / "plugins"
+    try:
+        shutil.rmtree(checkout)
+    except FileNotFoundError:
+        return
+    try:
+        checkout.parent.rmdir()
+    except OSError:
+        pass
 
 
 def _record_installation(
@@ -67,51 +80,54 @@ def install(
     control_url: str = "",
     enable_full_automation: bool = False,
 ) -> None:
-    configure_codex = target in (TARGET_CODEX, TARGET_ALL)
-    configure_claude = target in (TARGET_CLAUDE_CODE, TARGET_ALL)
-    package_arguments = [
-        "--source-root",
-        str(source_root),
-        "--meeting-home",
-        str(meeting_home),
-    ]
-    if configure_codex:
-        package_arguments.append("--configure-codex")
-        if control_url:
-            package_arguments.extend(("--control-url", control_url))
-        if enable_full_automation:
-            package_arguments.append("--enable-full-automation")
-    _run_python(
-        source_root,
-        "installers/shared/install-agent-meeting-package.py",
-        *package_arguments,
-    )
-    _run_python(
-        source_root,
-        "installers/shared/migrate-agent-meeting-legacy-layout.py",
-        "--meeting-home",
-        str(meeting_home),
-    )
-    if configure_claude:
+    try:
+        configure_codex = target in (TARGET_CODEX, TARGET_ALL)
+        configure_claude = target in (TARGET_CLAUDE_CODE, TARGET_ALL)
+        package_arguments = [
+            "--source-root",
+            str(source_root),
+            "--meeting-home",
+            str(meeting_home),
+        ]
+        if configure_codex:
+            package_arguments.append("--configure-codex")
+            if control_url:
+                package_arguments.extend(("--control-url", control_url))
+            if enable_full_automation:
+                package_arguments.append("--enable-full-automation")
         _run_python(
             source_root,
-            "installers/shared/register-claude-marketplace.py",
+            "installers/shared/install-agent-meeting-package.py",
+            *package_arguments,
         )
-    if configure_codex:
         _run_python(
             source_root,
-            "installers/shared/register-codex-marketplace.py",
+            "installers/shared/migrate-agent-meeting-legacy-layout.py",
+            "--meeting-home",
+            str(meeting_home),
         )
-        daemon = meeting_home / "bin" / (
-            "am-codexd.exe"
-            if sys.platform.startswith("win")
-            else "am-codexd"
-        )
-        subprocess.run(
-            [str(daemon), "update", "--defer-if-active"],
-            check=True,
-        )
-    _record_installation(source_root, meeting_home, target)
+        if configure_claude:
+            _run_python(
+                source_root,
+                "installers/shared/register-claude-marketplace.py",
+            )
+        if configure_codex:
+            _run_python(
+                source_root,
+                "installers/shared/register-codex-marketplace.py",
+            )
+            daemon = meeting_home / "bin" / (
+                "am-codexd.exe"
+                if sys.platform.startswith("win")
+                else "am-codexd"
+            )
+            subprocess.run(
+                [str(daemon), "update", "--defer-if-active"],
+                check=True,
+            )
+        _record_installation(source_root, meeting_home, target)
+    finally:
+        _remove_legacy_update_checkout(meeting_home)
 
 
 def main(argv=None) -> int:

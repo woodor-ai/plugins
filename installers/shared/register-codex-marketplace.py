@@ -10,17 +10,13 @@ from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-PUBLIC_REPOSITORY = "https://github.com/woodor-ai/plugins.git"
 
 
 def marketplace_is_registered(codex: str, marketplace: str) -> bool | None:
     """Return whether a marketplace is registered, or ``None`` if unknown.
 
-    A failed marketplace upgrade commonly means that its Git fetch timed out.
-    It must not be treated as evidence that the marketplace needs adding again:
-    doing so can attempt to replace an existing Git source with this local
-    checkout.  A failed or malformed listing is kept distinct so the caller
-    can preserve the original upgrade error rather than taking that risk.
+    A failed or malformed listing is kept distinct so the caller does not
+    remove a marketplace whose registration state cannot be established.
     """
     listed = subprocess.run(
         [codex, "plugin", "marketplace", "list", "--json"],
@@ -87,8 +83,8 @@ def source_plugin_version() -> str | None:
     return str(version) if version else None
 
 
-def register_local_marketplace(codex: str, marketplace: str) -> int:
-    """Use the already-refreshed updater checkout when Git upgrade fails."""
+def refresh_local_marketplace(codex: str, marketplace: str) -> int:
+    """Refresh a marketplace from the disposable release archive."""
     registered = marketplace_is_registered(codex, marketplace)
     if registered is None:
         return 1
@@ -98,7 +94,7 @@ def register_local_marketplace(codex: str, marketplace: str) -> int:
         )
         if removed.returncode != 0:
             return removed.returncode
-    added = subprocess.run(
+    return subprocess.run(
         [
             codex,
             "plugin",
@@ -106,24 +102,7 @@ def register_local_marketplace(codex: str, marketplace: str) -> int:
             "add",
             str(REPOSITORY_ROOT),
         ]
-    )
-    if added.returncode == 0:
-        return 0
-    if registered:
-        print(
-            "Local marketplace registration failed; restoring its Git source...",
-            flush=True,
-        )
-        subprocess.run(
-            [
-                codex,
-                "plugin",
-                "marketplace",
-                "add",
-                PUBLIC_REPOSITORY,
-            ]
-        )
-    return added.returncode
+    ).returncode
 
 
 def main() -> int:
@@ -140,18 +119,10 @@ def main() -> int:
             "skipping marketplace refresh."
         )
         return 0
-    print("Refreshing Codex marketplace: woodor...", flush=True)
-    updated = subprocess.run(
-        [codex, "plugin", "marketplace", "upgrade", "woodor"]
-    )
-    if updated.returncode != 0:
-        print(
-            "Marketplace refresh failed; using the refreshed local checkout...",
-            flush=True,
-        )
-        registered = register_local_marketplace(codex, "woodor")
-        if registered != 0:
-            return registered
+    print("Refreshing Codex marketplace from the release archive...", flush=True)
+    refreshed = refresh_local_marketplace(codex, "woodor")
+    if refreshed != 0:
+        return refreshed
     if plugin_is_installed(codex, plugin_id) is True:
         print("Codex plugin already installed; skipping redundant reinstall.")
         return 0

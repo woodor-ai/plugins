@@ -57,12 +57,13 @@ def test_main_updates_an_existing_outdated_plugin(registration, monkeypatch):
     monkeypatch.setattr(
         registration,
         "source_plugin_version",
-        lambda: "0.18.16",
+        lambda: "0.18.17",
     )
 
     assert registration.main() == 0
     assert commands == [
-        ["claude", "plugin", "marketplace", "update", "woodor"],
+        ["claude", "plugin", "marketplace", "remove", "woodor"],
+        ["claude", "plugin", "marketplace", "add", str(REPOSITORY_ROOT)],
         ["claude", "plugin", "update", "agent-meeting@woodor"],
     ]
 
@@ -84,13 +85,12 @@ def test_main_installs_when_plugin_is_absent(registration, monkeypatch):
     monkeypatch.setattr(
         registration,
         "source_plugin_version",
-        lambda: "0.18.16",
+        lambda: "0.18.17",
     )
 
     assert registration.main() == 0
-    assert commands[-1] == [
-        "claude",
-        "plugin",
-        "install",
-        "agent-meeting@woodor",
+    assert commands == [
+        ["claude", "plugin", "marketplace", "remove", "woodor"],
+        ["claude", "plugin", "marketplace", "add", str(REPOSITORY_ROOT)],
+        ["claude", "plugin", "install", "agent-meeting@woodor"],
     ]

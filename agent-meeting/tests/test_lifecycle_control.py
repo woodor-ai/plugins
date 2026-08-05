@@ -608,7 +608,7 @@ def test_windows_login_task_preserves_custom_meeting_home(
     runtime_command = (
         meeting_home
         / "runtimes"
-        / "0.18.16"
+        / "0.18.17"
         / "venv"
         / "Scripts"
         / "am-ctld-service.exe"

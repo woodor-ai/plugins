@@ -26,10 +26,19 @@ def test_one_cross_platform_installer_owns_every_target(tmp_path, monkeypatch):
         "run",
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
+    recorded = []
+    monkeypatch.setattr(
+        installer,
+        "_record_installation",
+        lambda *args: recorded.append(args),
+    )
+    meeting_home = tmp_path / "meeting"
+    legacy_checkout = meeting_home / "updates" / "plugins"
+    (legacy_checkout / ".git").mkdir(parents=True)
 
     installer.install(
         source_root=tmp_path / "plugins",
-        meeting_home=tmp_path / "meeting",
+        meeting_home=meeting_home,
         target="all",
         control_url="http://10.0.0.8:8765",
         enable_full_automation=True,
@@ -42,6 +51,8 @@ def test_one_cross_platform_installer_owns_every_target(tmp_path, monkeypatch):
     assert any("register-claude-marketplace.py" in command[1] for command in commands)
     assert any("register-codex-marketplace.py" in command[1] for command in commands)
     assert commands[-1][-2:] == ["update", "--defer-if-active"]
+    assert recorded == [(tmp_path / "plugins", meeting_home, "all")]
+    assert not legacy_checkout.exists()
 
 
 def test_legacy_platform_installers_are_removed():

@@ -40,27 +40,29 @@ def source_plugin_version() -> str:
     return str(json.loads(manifest.read_text(encoding="utf-8"))["version"])
 
 
+def refresh_local_marketplace(claude: str) -> int:
+    subprocess.run(
+        [claude, "plugin", "marketplace", "remove", "woodor"],
+        capture_output=True,
+        text=True,
+    )
+    return subprocess.run(
+        [
+            claude,
+            "plugin",
+            "marketplace",
+            "add",
+            str(REPOSITORY_ROOT),
+        ]
+    ).returncode
+
+
 def main() -> int:
     claude = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
     if not claude:
         print("ERROR: claude CLI not found", file=sys.stderr)
         return 1
     plugin_id = "agent-meeting@woodor"
-    updated = subprocess.run(
-        [claude, "plugin", "marketplace", "update", "woodor"]
-    )
-    if updated.returncode != 0:
-        added = subprocess.run(
-            [
-                claude,
-                "plugin",
-                "marketplace",
-                "add",
-                str(REPOSITORY_ROOT),
-            ]
-        )
-        if added.returncode != 0:
-            return added.returncode
     is_installed, installed_version = installed_plugin(claude, plugin_id)
     bundled_version = source_plugin_version()
     if is_installed and installed_version == bundled_version:
@@ -69,6 +71,10 @@ def main() -> int:
             "skipping redundant update."
         )
         return 0
+    print("Refreshing Claude marketplace from the release archive...", flush=True)
+    refreshed = refresh_local_marketplace(claude)
+    if refreshed != 0:
+        return refreshed
     if is_installed:
         print(
             f"Updating Claude plugin {installed_version or 'unknown'} "

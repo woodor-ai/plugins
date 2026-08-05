@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-04 · version 0.18.16
+Last updated: 2026-08-04 · version 0.18.17
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -45,10 +45,15 @@ The Claude Code SessionStart hook is stored outside Codex's default
 manifest. Installing the Codex plugin before the host runtime therefore does
 not produce a failed Claude hook.
 
-`am-update` is the only public distribution updater. It refreshes the public
-release checkout, creates and atomically selects one immutable host runtime,
-then updates each installed integration. It does not use cachebuster version
-suffixes: public releases use their normal semantic version.
+`am-update` is the only public distribution updater. It downloads the current
+R2-hosted installer into a temporary directory; that installer downloads one
+fixed-tag release archive, creates and atomically selects an immutable host
+runtime, and refreshes each installed integration from the extracted snapshot.
+Neither the updater nor marketplace refresh invokes Git or retains a source
+checkout. The temporary installer, archive, and extracted source are deleted
+when installation exits. A pre-0.18.17 `~/.agent-meeting/updates/plugins`
+checkout is removed during installation. Public releases use their normal
+semantic version without cachebuster suffixes.
 
 ```text
 am-update

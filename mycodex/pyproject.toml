@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "woodor-amcodex"
-version = "0.18.16"
+version = "0.18.17"
 description = "Agent-meeting-aware Codex launcher and local session broker."
 requires-python = ">=3.10"
 dependencies = [
-  "woodor-agent-meeting==0.18.16",
+  "woodor-agent-meeting==0.18.17",
   "websockets>=15",
 ]
 
