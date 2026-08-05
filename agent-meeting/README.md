@@ -18,13 +18,13 @@ clients are present.
 macOS / Linux:
 
 ```sh
-curl -fsSL https://dl.omi-atlas.com/plugins | python3 -
+curl -fsSL https://dl.omi-atlas.com/am | python3 -
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://dl.omi-atlas.com/plugins | py -3 -
+irm https://dl.omi-atlas.com/am | py -3 -
 ```
 
 Pass `--target claude-code`, `--target codex`, or `--target all` after the

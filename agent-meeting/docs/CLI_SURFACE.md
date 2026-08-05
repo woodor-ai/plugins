@@ -23,8 +23,8 @@ skill names.
 The public full-install bootstrap is available at one stable short URL:
 
 ```text
-curl -fsSL https://dl.omi-atlas.com/plugins | python3 -
-irm https://dl.omi-atlas.com/plugins | py -3 -
+curl -fsSL https://dl.omi-atlas.com/am | python3 -
+irm https://dl.omi-atlas.com/am | py -3 -
 ```
 
 It detects the locally installed clients and selects `claude-code`, `codex`,
