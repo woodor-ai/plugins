@@ -59,6 +59,7 @@ def main() -> None:
         meeting_status_line.install_meeting_status_line(
             settings_path=_claude_settings_path(),
             statusline_command=statusline,
+            meeting_home=meeting_home,
             log=_log,
         )
         print(

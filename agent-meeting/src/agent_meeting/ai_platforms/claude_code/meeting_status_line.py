@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from agent_meeting.installation.claude_integration import owns_status_line
+from agent_meeting.operating_systems.bash_command import bash_argument
+
 
 def install_meeting_status_line(
     *,
     settings_path: Path,
     statusline_command: Path,
+    meeting_home: Path,
     python_executable: Path | None = None,
     log,
 ) -> None:
@@ -17,9 +21,12 @@ def install_meeting_status_line(
         return
 
     if python_executable is None:
-        command = f'"{statusline_command}"'
+        command = bash_argument(statusline_command)
     else:
-        command = f'"{python_executable}" "{statusline_command}"'
+        command = (
+            f"{bash_argument(python_executable)} "
+            f"{bash_argument(statusline_command)}"
+        )
     settings = {}
     if settings_path.exists():
         try:
@@ -31,7 +38,7 @@ def install_meeting_status_line(
     existing = settings.get("statusLine")
     if isinstance(existing, dict):
         current_command = existing.get("command", "")
-        if "statusline.py" not in current_command:
+        if not owns_status_line(current_command, meeting_home):
             log("a custom statusLine is configured — leaving it untouched")
             return
         if current_command == command:

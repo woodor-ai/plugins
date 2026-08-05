@@ -154,7 +154,7 @@ def test_windows_activation_defers_locked_stable_launcher(
 ):
     from agent_meeting.installation import version_activation
 
-    runtime = _fake_runtime(tmp_path, "0.18.28", is_windows=True)
+    runtime = _fake_runtime(tmp_path, "0.18.29", is_windows=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     locked = bin_dir / "am-update.exe"
@@ -171,14 +171,14 @@ def test_windows_activation_defers_locked_stable_launcher(
 
     payload = version_activation.activate_runtime(
         meeting_home=tmp_path,
-        version="0.18.28",
+        version="0.18.29",
         is_windows=True,
         schedule_windows_replacements=lambda **kwargs: (
             scheduled.append(kwargs) or tmp_path / "pending.json"
         ),
     )
 
-    assert payload["version"] == "0.18.28"
+    assert payload["version"] == "0.18.29"
     assert locked.read_bytes() == b"running"
     assert len(scheduled) == 1
     replacement = scheduled[0]["replacements"]

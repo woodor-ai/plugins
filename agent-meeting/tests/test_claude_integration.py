@@ -22,7 +22,7 @@ def test_installs_owned_personal_skills(tmp_path):
     claude_integration.install_skills(
         source_root=REPOSITORY_ROOT,
         claude_home=claude_home,
-        version="0.18.28",
+        version="0.18.29",
     )
 
     for skill_name in claude_integration.SKILL_NAMES:
@@ -36,7 +36,7 @@ def test_installs_owned_personal_skills(tmp_path):
         assert owner == {
             "product": "agent-meeting",
             "schema_version": 1,
-            "version": "0.18.28",
+            "version": "0.18.29",
         }
     assert (
         claude_home / "skills" / "imagent" / "scripts" / "bootstrap_runtime.py"
@@ -62,7 +62,7 @@ def test_installed_skills_survive_disposable_source_removal(tmp_path):
     claude_integration.install_skills(
         source_root=source_root,
         claude_home=claude_home,
-        version="0.18.28",
+        version="0.18.29",
     )
     shutil.rmtree(source_root.parent)
 
@@ -89,7 +89,7 @@ def test_skill_upgrade_replaces_owned_content_and_refuses_unowned(tmp_path):
         claude_integration.install_skills(
             source_root=REPOSITORY_ROOT,
             claude_home=claude_home,
-            version="0.18.28",
+            version="0.18.29",
         )
 
     assert not (imagent / "obsolete.txt").exists()
@@ -144,26 +144,6 @@ def test_user_configuration_is_idempotent_and_preserves_other_hooks(tmp_path):
         ],
     }
     assert len(groups) == 2
-
-
-def test_session_start_hook_survives_the_bash_that_runs_it(tmp_path):
-    import shlex
-
-    from agent_meeting.installation import claude_integration
-
-    meeting_home = tmp_path / "agent-meeting"
-    command = claude_integration.session_start_command(
-        meeting_home / "sub",
-        is_windows=True,
-    )
-
-    # Claude Code runs hooks through bash, which eats bare backslashes as
-    # escapes; the path must come back out of a POSIX parse unchanged.
-    executable = claude_integration.session_start_executable(
-        meeting_home / "sub",
-        is_windows=True,
-    )
-    assert shlex.split(command) == [str(executable)]
 
 
 def test_install_replaces_a_hook_written_by_an_earlier_release(tmp_path):

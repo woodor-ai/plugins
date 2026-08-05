@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import shutil
 import sys
 from pathlib import Path
+
+from agent_meeting.operating_systems.bash_command import bash_argument
 
 
 SKILL_NAMES = ("imagent", "talkto")
@@ -127,18 +128,12 @@ def session_start_command(
     *,
     is_windows: bool | None = None,
 ) -> str:
-    """Quote the hook for the shell Claude Code runs it in.
-
-    Claude Code executes hook commands through bash on every platform, so a
-    Windows path must be quoted the POSIX way. Quoting it for ``cmd.exe``
-    leaves the backslashes bare whenever the path has no spaces, and bash then
-    eats them as escapes.
-    """
+    """Render the hook for the bash command line Claude Code runs it in."""
     executable = session_start_executable(
         meeting_home,
         is_windows=is_windows,
     )
-    return shlex.quote(str(executable))
+    return bash_argument(executable)
 
 
 def _read_settings(settings_path: Path) -> dict:
@@ -241,7 +236,13 @@ def install_user_configuration(
     _write_settings(settings_path, settings)
 
 
-def _owned_status_line(command: object, meeting_home: Path) -> bool:
+def owns_status_line(command: object, meeting_home: Path) -> bool:
+    """Report whether a configured status line is the one we install.
+
+    Both the installer and the runtime bootstrap ask this question, and they
+    have to answer it the same way: an entry we no longer recognize is treated
+    as the user's own and left alone forever.
+    """
     return _owned_path(
         command,
         meeting_home,
@@ -272,7 +273,7 @@ def remove_user_configuration(
         if not hooks:
             settings.pop("hooks", None)
     status_line = settings.get("statusLine")
-    if isinstance(status_line, dict) and _owned_status_line(
+    if isinstance(status_line, dict) and owns_status_line(
         status_line.get("command"),
         meeting_home,
     ):

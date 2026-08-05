@@ -8,6 +8,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from agent_meeting.operating_systems.bash_command import bash_argument
+
 
 def read_online_peers(
     database_path: Path,
@@ -64,14 +66,14 @@ def build_session_start_payload(
     hostname = hostname or socket.gethostname()
 
     if standalone_commands:
-        cli = f'"{am_command}"' if is_windows else str(am_command)
-        monitor = f'"{monitor_script}" <name>'
+        cli = bash_argument(am_command) if is_windows else str(am_command)
+        monitor = f"{bash_argument(monitor_script)} <name>"
         os_label = "windows" if is_windows else "posix"
     elif is_windows:
-        cli = f'"{python_executable}" "{am_command}"'
+        cli = f"{bash_argument(python_executable)} {bash_argument(am_command)}"
         monitor = (
-            f'"{python_executable.as_posix()}" '
-            f'"{monitor_script.as_posix()}" <name>'
+            f"{bash_argument(python_executable)} "
+            f"{bash_argument(monitor_script)} <name>"
         )
         os_label = "windows"
     else:
