@@ -1,6 +1,6 @@
 {
   "name": "agent-meeting",
-  "version": "0.18.25",
+  "version": "0.18.26",
   "description": "Peer messaging for Claude Code and Codex agents. Includes a loopback-first am-msgd hub with optional LAN listeners and the machine-wide am-codexd daemon.",
   "author": {
     "name": "Woodor",
