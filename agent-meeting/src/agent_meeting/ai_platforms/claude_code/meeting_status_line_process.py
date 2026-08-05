@@ -3,20 +3,26 @@
 Status line renderer for the agent-meeting plugin.
 
 Claude Code invokes this on every status-line refresh, passing a JSON blob on
-stdin (session_id, cwd, model, workspace, ...). We print ONE line to stdout
-that Claude Code shows in the TUI status bar.
+stdin (session_id, cwd, model, workspace, ...). We print TWO lines to stdout
+that Claude Code shows in the TUI status bar. It splits our output on newlines,
+trims each line and drops the empty ones, so a two-line bar needs nothing but a
+newline here.
 
-The line is composed of, in order (segments are dropped when unavailable):
+The bar is composed of (segments are dropped when unavailable):
 
-    📞 <meeting-name>@<project> 🛰 <control>  |  <model> · <effort>  |  <dir>
-      |  ctx <n>% left  |  5h <n>% left  |  wk <n>% left  |  tasks <done>/<n>
-      |  v<claude-code-version>  |  <git-branch>
+    📞 <name>@<project> 🛰 <control>  |  <model> · <effort>  |  <dir>  |  v<x>
+    ctx <n>% left  |  5h <n>% left  |  wk <n>% left  |  tasks <done>/<n>  |  <branch>
 
-Segment order and wording deliberately mirror the Codex status line, whose
-items are selected in ~/.codex/config.toml under [tui] status_line. Codex only
-offers a fixed menu of built-in items and has no custom-command hook, so the
-meeting badge has no Codex counterpart; every other segment does. Usage limits
-render as REMAINING percent on both hosts because Codex offers no used-percent
+One line held everything until the identity and directory segments pushed the
+usage numbers off the right edge of the terminal. The split keeps the slow-
+moving identity of the session on the first line and the numbers that change
+every turn on the second.
+
+Segment wording deliberately mirrors the Codex status line, whose items are
+selected in ~/.codex/config.toml under [tui] status_line. Codex only offers a
+fixed menu of built-in items on a single line and has no custom-command hook,
+so the meeting badge has no Codex counterpart and the wrap is ours alone. Usage
+renders as REMAINING percent on both hosts because Codex offers no used-percent
 item.
 
 The meeting name is NOT looked up from the central SQLite DB (that would be
@@ -241,7 +247,8 @@ def main():
     context = data.get("context_window") or {}
     limits = data.get("rate_limits") or {}
 
-    segments = []
+    identity = []
+    numbers = []
 
     cache = _read_statusline_cache(cwd, session_id)
     name = cache.get("name", "")
@@ -255,37 +262,39 @@ def main():
         ctrl = _control_label(cwd, session_id)
         if ctrl:
             badge += f" {ctrl}"
-        segments.append(badge)
+        identity.append(badge)
     if model:
         # Codex renders its model item as "<model> <reasoning-level>"; keep the
         # same pairing so the two hosts read alike.
-        segments.append(f"{model} · {effort}" if effort else model)
+        identity.append(f"{model} · {effort}" if effort else model)
     if cwd:
-        segments.append(_collapse_home(cwd))  # home-relative path (~/...) to avoid truncation
+        identity.append(_collapse_home(cwd))  # home-relative path (~/...) to avoid truncation
+    version = data.get("version") or ""
+    if version:
+        identity.append(f"v{version}")
+
     ctx = _percent_left(context.get("used_percentage"))
     if ctx:
-        segments.append(f"ctx {ctx} left")
+        numbers.append(f"ctx {ctx} left")
     five_hour = _percent_left(
         (limits.get("five_hour") or {}).get("used_percentage")
     )
     if five_hour:
-        segments.append(f"5h {five_hour} left")
+        numbers.append(f"5h {five_hour} left")
     weekly = _percent_left(
         (limits.get("seven_day") or {}).get("used_percentage")
     )
     if weekly:
-        segments.append(f"wk {weekly} left")
+        numbers.append(f"wk {weekly} left")
     tasks = task_progress(session_id)
     if tasks:
-        segments.append(f"tasks {tasks}")
-    version = data.get("version") or ""
-    if version:
-        segments.append(f"v{version}")
+        numbers.append(f"tasks {tasks}")
     branch = git_branch(cwd)
     if branch:
-        segments.append(branch)
+        numbers.append(branch)
 
-    sys.stdout.write(SEP.join(segments))
+    lines = [SEP.join(line) for line in (identity, numbers) if line]
+    sys.stdout.write("\n".join(lines))
 
 
 if __name__ == "__main__":

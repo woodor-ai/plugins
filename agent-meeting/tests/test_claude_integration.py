@@ -22,7 +22,7 @@ def test_installs_owned_personal_skills(tmp_path):
     claude_integration.install_skills(
         source_root=REPOSITORY_ROOT,
         claude_home=claude_home,
-        version="0.18.33",
+        version="0.18.34",
     )
 
     for skill_name in claude_integration.SKILL_NAMES:
@@ -36,7 +36,7 @@ def test_installs_owned_personal_skills(tmp_path):
         assert owner == {
             "product": "agent-meeting",
             "schema_version": 1,
-            "version": "0.18.33",
+            "version": "0.18.34",
         }
     assert (
         claude_home / "skills" / "imagent" / "scripts" / "bootstrap_runtime.py"
@@ -62,7 +62,7 @@ def test_installed_skills_survive_disposable_source_removal(tmp_path):
     claude_integration.install_skills(
         source_root=source_root,
         claude_home=claude_home,
-        version="0.18.33",
+        version="0.18.34",
     )
     shutil.rmtree(source_root.parent)
 
@@ -89,7 +89,7 @@ def test_skill_upgrade_replaces_owned_content_and_refuses_unowned(tmp_path):
         claude_integration.install_skills(
             source_root=REPOSITORY_ROOT,
             claude_home=claude_home,
-            version="0.18.33",
+            version="0.18.34",
         )
 
     assert not (imagent / "obsolete.txt").exists()

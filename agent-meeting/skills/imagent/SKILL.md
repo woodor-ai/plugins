@@ -191,7 +191,14 @@ For `/imagent setup am-msgd …` / `/imagent setup token …` / `/imagent setup 
 5. **Update terminal tab title (best-effort)**: `{ printf '\033]0;%s\a' "<name>" > /dev/tty; } 2>/dev/null || true`
 6. **Confirm to user**: "Meeting registered as `<name>`. You can now /talkto <peer> or receive calls."
 
-   The TUI status line shows `📞 <name>@<project> 🛰 <control>  |  <model> · <effort>  |  <dir>  |  ctx <n>% left  |  5h <n>% left  |  wk <n>% left  |  tasks <done>/<n>  |  v<version>  |  <branch>` automatically, dropping any segment whose data is unavailable. `am-session-monitor` writes the room name to a local cache and `am-statusline` reads it; both operations are local. Segment order matches the Codex status line, which is configured by selecting built-in items under `[tui] status_line` in `~/.codex/config.toml`; Codex has no custom-command hook, so the meeting badge is the one segment with no Codex counterpart.
+   The TUI status line shows two lines automatically, dropping any segment whose data is unavailable:
+
+   ```
+   📞 <name>@<project> 🛰 <control>  |  <model> · <effort>  |  <dir>  |  v<version>
+   ctx <n>% left  |  5h <n>% left  |  wk <n>% left  |  tasks <done>/<n>  |  <branch>
+   ```
+
+   `am-session-monitor` writes the room name to a local cache and `am-statusline` reads it; both operations are local. Segment wording matches the Codex status line, which is configured by selecting built-in items under `[tui] status_line` in `~/.codex/config.toml`; Codex renders a single line, has no custom-command hook, and so cannot mirror the meeting badge.
 
 7. **接手在途交接（若有）**：注册成功后，检查当前工作区有没有在途交接卡，有就直接接手，不要空 idle 等指示。判定顺序：
    - **优先看本 session 已注入的交接 context**：handoff plugin 的 SessionStart hook 会把 `<cwd>/.claude/handoff-pending.md` 注入为「上 session 交接（auto-loaded…）」段并归档。若本 session context 里已有这一段，直接按它的「## 3. 新会话接手第一步」开始执行。

@@ -109,7 +109,14 @@ def test_a_registered_badge_survives_a_cp1252_stdout(homes):
     assert "Opus 5 · high" in rendered
 
 
-def test_every_segment_renders_in_the_documented_order(homes):
+def _layout(rendered: str) -> list[list[str]]:
+    return [
+        [segment.strip() for segment in line.split("|")]
+        for line in rendered.split("\n")
+    ]
+
+
+def test_identity_and_numbers_split_across_two_lines(homes):
     meeting_home, claude_home = homes
     _register(meeting_home)
     tasks = claude_home / "tasks" / SESSION_ID
@@ -124,15 +131,14 @@ def test_every_segment_renders_in_the_documented_order(homes):
         FULL_PAYLOAD, meeting_home=meeting_home, claude_home=claude_home
     )
 
-    assert [segment.strip() for segment in rendered.split("|")] == [
-        "\U0001F4DE am-win@plugins \U0001F6F0 10.0.0.114:8765",
-        "Opus 5 · high",
-        "/repo",
-        "ctx 63% left",
-        "5h 78% left",
-        "wk 92% left",
-        "tasks 2/3",
-        "v2.1.222",
+    assert _layout(rendered) == [
+        [
+            "\U0001F4DE am-win@plugins \U0001F6F0 10.0.0.114:8765",
+            "Opus 5 · high",
+            "/repo",
+            "v2.1.222",
+        ],
+        ["ctx 63% left", "5h 78% left", "wk 92% left", "tasks 2/3"],
     ]
 
 
@@ -152,8 +158,6 @@ def test_unavailable_segments_drop_out_instead_of_rendering_blanks(homes):
         claude_home=claude_home,
     )
 
-    assert [segment.strip() for segment in rendered.split("|")] == [
-        "Haiku 4.5",
-        "/repo",
-        "v2.1.222",
-    ]
+    # Nothing on the second line survives here, so the bar collapses to one
+    # line rather than emitting a trailing newline Claude Code would drop.
+    assert _layout(rendered) == [["Haiku 4.5", "/repo", "v2.1.222"]]
