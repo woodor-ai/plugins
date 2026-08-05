@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 import pytest
@@ -20,7 +19,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.18.15"
+    assert mycodex.__version__ == "0.18.16"
     assert mycodex.__version__ == agent_meeting.__version__
     manifests = (
         REPOSITORY_ROOT / "agent-meeting/.codex-plugin/plugin.json",
@@ -126,35 +125,51 @@ def test_codex_app_server_environment_marks_mycodex_runtime(monkeypatch):
     }
 
 
-def test_windows_codex_app_server_uses_npm_cmd_wrapper():
+def test_windows_codex_app_server_uses_npm_native_executable(tmp_path):
     from mycodex.operating_systems import codex_cli_command
 
+    npm_root = tmp_path / "npm"
+    batch_file = npm_root / "codex.cmd"
+    native_executable = (
+        npm_root
+        / "node_modules/@openai/codex/node_modules/@openai"
+        / "codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe"
+    )
+    native_executable.parent.mkdir(parents=True)
+    native_executable.touch()
+    batch_file.touch()
     locations = {
         "codex.exe": None,
-        "codex.cmd": r"C:\Users\User Name\AppData\Roaming\npm\codex.cmd",
-        "cmd.exe": None,
+        "codex.cmd": str(batch_file),
     }
+    effort = 'model_reasoning_effort="high"'
     command = codex_cli_command.resolve(
-        ["app-server", "--listen", "ws://127.0.0.1:8792"],
+        ["app-server", "--config", effort],
         platform_name="win32",
-        environment={"COMSPEC": r"C:\Windows\System32\cmd.exe"},
         which=locations.get,
     )
 
     assert command == [
-        r"C:\Windows\System32\cmd.exe",
-        "/d",
-        "/s",
-        "/c",
-        subprocess.list2cmdline(
-            [
-                r"C:\Users\User Name\AppData\Roaming\npm\codex.cmd",
-                "app-server",
-                "--listen",
-                "ws://127.0.0.1:8792",
-            ]
-        ),
+        str(native_executable),
+        "app-server",
+        "--config",
+        effort,
     ]
+
+
+def test_windows_codex_app_server_rejects_incomplete_npm_install(tmp_path):
+    from mycodex.operating_systems import codex_cli_command
+
+    batch_file = tmp_path / "npm" / "codex.cmd"
+    batch_file.parent.mkdir()
+    batch_file.touch()
+
+    with pytest.raises(FileNotFoundError, match="reinstall @openai/codex"):
+        codex_cli_command.resolve(
+            ["app-server"],
+            platform_name="win32",
+            which=lambda name: str(batch_file) if name == "codex.cmd" else None,
+        )
 
 
 def test_windows_codex_app_server_prefers_native_executable():

@@ -23,6 +23,7 @@ import time
 import uuid
 from pathlib import Path
 
+from agent_meeting.clients.endpoint import normalize_am_msgd
 from agent_meeting.lifecycle_control.terminals import current_terminal_handle
 from agent_meeting.messaging import project_identity
 
@@ -66,6 +67,8 @@ def _atomic_json(path: Path, payload: dict) -> None:
 
 
 def _tty_name() -> str | None:
+    if os.name == "nt":
+        return None
     try:
         if sys.stdin.isatty():
             return os.ttyname(sys.stdin.fileno())
@@ -81,12 +84,14 @@ class ClaudeSupervisor:
         *,
         name: str,
         project: str | None,
+        control_url: str | None = None,
         model: str = "claude-opus-5",
         effort: str = "high",
     ):
         self.claude_args = list(claude_args)
         self.name = name
         self.project = project
+        self.control_url = control_url
         self.model = model
         self.effort = effort
         self.instance_id = uuid.uuid4().hex
@@ -108,6 +113,8 @@ class ClaudeSupervisor:
     def descriptor(self) -> dict:
         with self.lock:
             process = self.process
+            tty = _tty_name()
+            terminal_handle = current_terminal_handle()
             return {
                 "schema_version": 1,
                 "wrapper": "amclaude",
@@ -121,10 +128,10 @@ class ClaudeSupervisor:
                 "wrapper_pid": os.getpid(),
                 "child_pid": process.pid if process and process.poll() is None else None,
                 "cwd": os.getcwd(),
-                "tty": _tty_name(),
+                "tty": tty,
                 "terminal_handle": {
-                    **current_terminal_handle(),
-                    "tty": _tty_name(),
+                    **terminal_handle,
+                    "tty": tty,
                 },
                 "started_at": self.started_at,
                 "status": (
@@ -166,7 +173,7 @@ class ClaudeSupervisor:
                     "restart_same_terminal",
                     *(
                         ["send_text"]
-                        if current_terminal_handle().get("type")
+                        if terminal_handle.get("type")
                         in {"tmux", "iterm2"}
                         else []
                     ),
@@ -280,6 +287,11 @@ class ClaudeSupervisor:
             effort=self.effort,
         )
         kwargs = {}
+        if self.control_url:
+            kwargs["env"] = {
+                **os.environ,
+                "AM_MSGD_HOST": self.control_url,
+            }
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         return subprocess.Popen(command, **kwargs)
@@ -332,6 +344,12 @@ def main(argv=None) -> int:
     )
     parser.add_argument("name", nargs="?", default=None)
     parser.add_argument("--proj", default=None)
+    parser.add_argument(
+        "--am-msgd",
+        default=None,
+        metavar="HOST[:PORT]",
+        help="am-msgd address; defaults to port 8765",
+    )
     parser.add_argument("--global", dest="is_global", action="store_true")
     parser.add_argument(
         "--model",
@@ -360,6 +378,11 @@ def main(argv=None) -> int:
     if known.proj is not None and known.is_global:
         print("amclaude: --proj and --global are mutually exclusive", file=sys.stderr)
         return 2
+    try:
+        control_url = normalize_am_msgd(known.am_msgd) if known.am_msgd else None
+    except ValueError as error:
+        print(f"amclaude: invalid am-msgd endpoint: {error}", file=sys.stderr)
+        return 2
     host = os.uname().nodename.split(".")[0] if hasattr(os, "uname") else "host"
     name = known.name or f"claude-{host}"[:20]
     project = "*" if known.is_global else known.proj
@@ -380,6 +403,7 @@ def main(argv=None) -> int:
             claude_args,
             name=name,
             project=project,
+            control_url=control_url,
             model=known.model,
             effort=known.effort,
         ).run()

@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-04 · version 0.18.15
+Last updated: 2026-08-04 · version 0.18.16
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -67,8 +67,8 @@ services use immutable versioned GUI launchers and therefore do not lock their
 stable command names.
 
 When Codex is installed through npm on Windows, `amcodex` and `am-codexd` use
-one shared resolver for `codex.cmd` and launch it through `cmd.exe`; neither
-passes the bare extensionless command to `CreateProcess`.
+one shared resolver to launch the npm package's native `codex.exe`. This avoids
+both `CreateProcess` failures and the extra `cmd.exe` quoting layer.
 
 ## Complete uninstall
 
@@ -105,7 +105,7 @@ am-ctl agent --name NAME --proj PROJECT --cmd exit
 am-ctl agent --name NAME --proj PROJECT --cmd restart
 ```
 
-`amclaude [name] [--proj PROJECT]
+`amclaude [name] [--proj PROJECT] [--am-msgd HOST[:PORT]]
 [--model claude-fable-5|claude-opus-5|claude-sonnet-5]
 [--effort ultracode|max|extra|high|medium] -- [claude arguments...]` launches
 Claude Code in its lifecycle wrapper. It defaults to `claude-opus-5` with `high`
@@ -129,6 +129,7 @@ port 8765:
 ```text
 amcodex [name] --am-msgd localhost
 amcodex [name] --am-msgd 192.168.1.20:9000
+amclaude [name] --am-msgd 192.168.1.20
 ```
 
 `am-ctl status --json` is the machine-readable local inventory used by

@@ -278,6 +278,64 @@ def test_amclaude_help_exposes_model_and_effort_choices(capsys):
         "--model {claude-fable-5,claude-opus-5,claude-sonnet-5}" in output
     )
     assert "--effort {ultracode,max,extra,high,medium}" in output
+    assert "--am-msgd HOST[:PORT]" in output
+
+
+def test_amclaude_consumes_and_normalizes_explicit_am_msgd(monkeypatch):
+    from agent_meeting.launcher import amclaude_session
+
+    captured = {}
+
+    class FakeSupervisor:
+        def __init__(self, claude_args, **kwargs):
+            captured["claude_args"] = claude_args
+            captured.update(kwargs)
+
+        def run(self):
+            return 0
+
+    monkeypatch.setattr(amclaude_session.shutil, "which", lambda _name: "claude")
+    monkeypatch.setattr(amclaude_session, "ClaudeSupervisor", FakeSupervisor)
+
+    assert amclaude_session.main(
+        ["worker", "--proj=tools", "--am-msgd=10.0.0.114", "--verbose"]
+    ) == 0
+    assert captured["claude_args"] == ["--verbose"]
+    assert captured["control_url"] == "http://10.0.0.114:8765"
+
+
+def test_amclaude_passes_explicit_am_msgd_to_child_environment(monkeypatch):
+    from agent_meeting.launcher import amclaude_session
+
+    captured = {}
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setenv("KEEP", "yes")
+    monkeypatch.setattr(amclaude_session.subprocess, "Popen", popen)
+    supervisor = amclaude_session.ClaudeSupervisor(
+        [],
+        name="worker",
+        project="tools",
+        control_url="http://10.0.0.114:8765",
+    )
+
+    supervisor._spawn()
+
+    assert captured["env"]["KEEP"] == "yes"
+    assert captured["env"]["AM_MSGD_HOST"] == "http://10.0.0.114:8765"
+
+
+def test_amclaude_windows_tty_lookup_is_safe(monkeypatch):
+    from agent_meeting.launcher import amclaude_session
+
+    monkeypatch.setattr(amclaude_session.os, "name", "nt")
+    monkeypatch.delattr(amclaude_session.os, "ttyname", raising=False)
+
+    assert amclaude_session._tty_name() is None
 
 
 def test_amclaude_exit_sends_exactly_two_interrupts(tmp_path, monkeypatch):
@@ -550,7 +608,7 @@ def test_windows_login_task_preserves_custom_meeting_home(
     runtime_command = (
         meeting_home
         / "runtimes"
-        / "0.18.15"
+        / "0.18.16"
         / "venv"
         / "Scripts"
         / "am-ctld-service.exe"
