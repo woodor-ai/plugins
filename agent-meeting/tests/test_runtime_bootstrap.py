@@ -41,18 +41,18 @@ def test_release_archive_uses_installed_plugin_version(tmp_path):
     manifest = tmp_path / ".codex-plugin" / "plugin.json"
     manifest.parent.mkdir()
     manifest.write_text(
-        json.dumps({"version": "0.18.13+codex.local-test"}),
+        json.dumps({"version": "0.18.14+codex.local-test"}),
         encoding="utf-8",
     )
 
-    assert module.release_archive_url(tmp_path).endswith("/tags/v0.18.13")
+    assert module.release_archive_url(tmp_path).endswith("/tags/v0.18.14")
 
 
 def test_bundled_script_resolves_plugin_root_and_version():
     module = load_bootstrap()
 
     assert module.plugin_root(SCRIPT) == PRODUCT_ROOT
-    assert module.plugin_version(PRODUCT_ROOT) == "0.18.13"
+    assert module.plugin_version(PRODUCT_ROOT) == "0.18.14"
 
 
 def test_standalone_bootstrap_uses_main_archive():

@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-04 · version 0.18.13
+Last updated: 2026-08-04 · version 0.18.14
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -66,9 +66,9 @@ helper retries that one atomic replacement after the updater exits. Windows
 services use immutable versioned GUI launchers and therefore do not lock their
 stable command names.
 
-When Codex is installed through npm on Windows, `am-codexd` resolves
-`codex.cmd` and launches it through `cmd.exe`; it does not pass the bare
-extensionless command to `CreateProcess`.
+When Codex is installed through npm on Windows, `amcodex` and `am-codexd` use
+one shared resolver for `codex.cmd` and launch it through `cmd.exe`; neither
+passes the bare extensionless command to `CreateProcess`.
 
 ## Complete uninstall
 

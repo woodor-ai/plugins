@@ -20,7 +20,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.18.13"
+    assert mycodex.__version__ == "0.18.14"
     assert mycodex.__version__ == agent_meeting.__version__
     manifests = (
         REPOSITORY_ROOT / "agent-meeting/.codex-plugin/plugin.json",
@@ -127,15 +127,15 @@ def test_codex_app_server_environment_marks_mycodex_runtime(monkeypatch):
 
 
 def test_windows_codex_app_server_uses_npm_cmd_wrapper():
-    from mycodex.codex_session_broker import broker_process
+    from mycodex.operating_systems import codex_cli_command
 
     locations = {
         "codex.exe": None,
         "codex.cmd": r"C:\Users\User Name\AppData\Roaming\npm\codex.cmd",
         "cmd.exe": None,
     }
-    command = broker_process.codex_app_server_command(
-        "ws://127.0.0.1:8792",
+    command = codex_cli_command.resolve(
+        ["app-server", "--listen", "ws://127.0.0.1:8792"],
         platform_name="win32",
         environment={"COMSPEC": r"C:\Windows\System32\cmd.exe"},
         which=locations.get,
@@ -158,10 +158,10 @@ def test_windows_codex_app_server_uses_npm_cmd_wrapper():
 
 
 def test_windows_codex_app_server_prefers_native_executable():
-    from mycodex.codex_session_broker import broker_process
+    from mycodex.operating_systems import codex_cli_command
 
-    command = broker_process.codex_app_server_command(
-        "ws://127.0.0.1:8792",
+    command = codex_cli_command.resolve(
+        ["app-server", "--listen", "ws://127.0.0.1:8792"],
         platform_name="win32",
         which=lambda name: r"C:\Tools\codex.exe"
         if name == "codex.exe"

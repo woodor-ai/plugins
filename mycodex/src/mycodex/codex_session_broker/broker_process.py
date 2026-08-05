@@ -28,7 +28,6 @@ import contextlib
 import json
 import os
 import platform
-import shutil
 import signal
 import socket
 import subprocess
@@ -48,6 +47,7 @@ from mycodex.codex_session_broker import (
     session_lease_registry,
     tui_websocket_proxy,
 )
+from mycodex.operating_systems import codex_cli_command
 
 try:
     import websockets
@@ -75,47 +75,6 @@ def codex_app_server_environment(base_environment=None):
     environment = dict(os.environ if base_environment is None else base_environment)
     environment["AGENT_MEETING_CODEX_RUNTIME"] = "1"
     return environment
-
-
-def codex_app_server_command(
-    ws_url,
-    *,
-    platform_name=None,
-    environment=None,
-    which=shutil.which,
-):
-    """Resolve a directly executable Codex app-server command."""
-    platform_name = sys.platform if platform_name is None else platform_name
-    environment = os.environ if environment is None else environment
-    arguments = ["app-server", "--listen", ws_url]
-    if platform_name.startswith("win"):
-        executable = which("codex.exe")
-        if executable:
-            return [executable, *arguments]
-        batch_file = which("codex.cmd")
-        if batch_file:
-            command_processor = (
-                environment.get("COMSPEC")
-                or which("cmd.exe")
-                or "cmd.exe"
-            )
-            batch_command = subprocess.list2cmdline(
-                [batch_file, *arguments]
-            )
-            return [
-                command_processor,
-                "/d",
-                "/s",
-                "/c",
-                batch_command,
-            ]
-        raise FileNotFoundError(
-            "Codex CLI was not found as codex.exe or codex.cmd on PATH"
-        )
-    executable = which("codex")
-    if not executable:
-        raise FileNotFoundError("Codex CLI was not found on PATH")
-    return [executable, *arguments]
 
 
 def central_websocket_options(headers):
@@ -282,7 +241,9 @@ class AppServer:
         )
         kwargs["env"] = codex_app_server_environment()
         self.process = subprocess.Popen(
-            codex_app_server_command(ws_url),
+            codex_cli_command.resolve(
+                ["app-server", "--listen", ws_url]
+            ),
             **kwargs,
         )
         self.port = port

@@ -36,6 +36,7 @@ from agent_meeting.lifecycle_control.terminals import current_terminal_handle
 from agent_meeting.messaging import project_identity
 
 from mycodex import __version__
+from mycodex.operating_systems import codex_cli_command
 
 HOME = Path.home()
 DATA = Path(os.environ.get("MEETING_HOME") or (HOME / ".agent-meeting"))
@@ -482,11 +483,12 @@ class Launcher:
         self.control_thread.start()
 
     def run_codex(self):
-        command = build_codex_launch_cmd(
+        logical_command = build_codex_launch_cmd(
             self.session["proxy_url"],
             model=self.model,
             effort=self.effort,
         )
+        command = codex_cli_command.resolve(logical_command[1:])
         set_terminal_title(title_text(self.name, self.project, self.control_url))
         log(f"launching Codex foreground; am-msgd={self.control_url}")
         self.start_control_server()

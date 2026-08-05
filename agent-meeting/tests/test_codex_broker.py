@@ -1210,6 +1210,63 @@ def test_launcher_does_not_export_meeting_identity_or_host(monkeypatch):
     assert "env" not in observed["kwargs"]
 
 
+def test_windows_launcher_uses_shared_codex_command_resolver(monkeypatch):
+    module = load(LAUNCHER_PATH, "codex_meeting_windows_command")
+    launcher = module.Launcher(
+        "alice",
+        "proj",
+        "http://10.0.0.114:8765",
+    )
+    launcher.session = {
+        "identity": "alice@proj",
+        "proxy_url": "ws://127.0.0.1:49152",
+    }
+    observed = {}
+
+    class FakeProcess:
+        pid = 123
+
+        def poll(self):
+            return None
+
+        def wait(self):
+            return 0
+
+    def resolve(arguments):
+        observed["arguments"] = arguments
+        return ["cmd.exe", "/d", "/s", "/c", "codex.cmd ..."]
+
+    monkeypatch.setattr(module, "IS_WINDOWS", True)
+    monkeypatch.setattr(module.codex_cli_command, "resolve", resolve)
+    monkeypatch.setattr(
+        module.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        512,
+        raising=False,
+    )
+    monkeypatch.setattr(module, "set_terminal_title", lambda _title: None)
+    monkeypatch.setattr(module.subprocess, "Popen", lambda command, **kwargs: (
+        observed.update(command=command, kwargs=kwargs) or FakeProcess()
+    ))
+    monkeypatch.setattr(launcher, "start_control_server", lambda: None)
+    monkeypatch.setattr(launcher, "publish_descriptor", lambda: None)
+
+    launcher.run_codex()
+
+    assert observed["arguments"] == [
+        "--remote",
+        "ws://127.0.0.1:49152",
+        "--model",
+        "gpt-5.6-sol",
+        "--config",
+        'model_reasoning_effort="high"',
+        "--config",
+        "tui.terminal_title=[]",
+    ]
+    assert observed["command"][0] == "cmd.exe"
+    assert observed["kwargs"]["creationflags"] == 512
+
+
 def test_session_proxy_url_is_a_codex_compatible_host_port():
     module = load(BROKER_PATH, "codex_broker_proxy_url")
     session = make_session(module)
