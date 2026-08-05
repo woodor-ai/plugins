@@ -1267,6 +1267,42 @@ def test_windows_launcher_uses_shared_codex_command_resolver(monkeypatch):
     assert observed["kwargs"]["creationflags"] == 512
 
 
+def test_windows_descriptor_does_not_call_posix_ttyname(monkeypatch):
+    module = load(LAUNCHER_PATH, "codex_meeting_windows_descriptor")
+    launcher = module.Launcher(
+        "alice",
+        "proj",
+        "http://10.0.0.114:8765",
+    )
+    launcher.session = {
+        "identity": "alice@proj",
+        "proxy_url": "ws://127.0.0.1:49152",
+    }
+
+    class WindowsStdin:
+        @staticmethod
+        def isatty():
+            return True
+
+        @staticmethod
+        def fileno():
+            return 0
+
+    monkeypatch.setattr(module, "IS_WINDOWS", True)
+    monkeypatch.setattr(module.sys, "stdin", WindowsStdin())
+    monkeypatch.setattr(
+        module.os,
+        "ttyname",
+        lambda _fd: pytest.fail("Windows descriptor called os.ttyname"),
+    )
+    monkeypatch.setattr(module, "current_terminal_handle", lambda: {})
+
+    descriptor = launcher.descriptor()
+
+    assert descriptor["tty"] is None
+    assert descriptor["terminal_handle"]["tty"] is None
+
+
 def test_session_proxy_url_is_a_codex_compatible_host_port():
     module = load(BROKER_PATH, "codex_broker_proxy_url")
     session = make_session(module)

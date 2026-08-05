@@ -302,10 +302,12 @@ class Launcher:
                 if self.session is not None
                 else []
             )
-            try:
-                tty = os.ttyname(sys.stdin.fileno()) if sys.stdin.isatty() else None
-            except OSError:
-                tty = None
+            tty = None
+            if not IS_WINDOWS and sys.stdin.isatty():
+                try:
+                    tty = os.ttyname(sys.stdin.fileno())
+                except OSError:
+                    pass
             terminal_handle = {
                 **current_terminal_handle(),
                 "tty": tty,
