@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 
 
-RELEASE = "v0.18.23"
+RELEASE = "v0.18.24"
 ARCHIVE_URL = (
     "https://codeload.github.com/woodor-ai/plugins/zip/refs/tags/" + RELEASE
 )

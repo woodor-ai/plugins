@@ -6,7 +6,6 @@ import json
 import os
 import shlex
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -128,17 +127,17 @@ def session_start_command(
     *,
     is_windows: bool | None = None,
 ) -> str:
-    is_windows = (
-        sys.platform.startswith("win")
-        if is_windows is None
-        else is_windows
-    )
+    """Quote the hook for the shell Claude Code runs it in.
+
+    Claude Code executes hook commands through bash on every platform, so a
+    Windows path must be quoted the POSIX way. Quoting it for ``cmd.exe``
+    leaves the backslashes bare whenever the path has no spaces, and bash then
+    eats them as escapes.
+    """
     executable = session_start_executable(
         meeting_home,
         is_windows=is_windows,
     )
-    if is_windows:
-        return subprocess.list2cmdline([str(executable)])
     return shlex.quote(str(executable))
 
 
@@ -168,7 +167,20 @@ def _write_settings(settings_path: Path, payload: dict) -> None:
     os.replace(temporary, settings_path)
 
 
-def _without_command(groups: list, command: str) -> list:
+def _owned_path(command: object, meeting_home: Path, leaf: str) -> bool:
+    if not isinstance(command, str):
+        return False
+    normalized = command.replace("\\", "/").lower()
+    root = str(meeting_home).replace("\\", "/").lower().rstrip("/")
+    return root in normalized and leaf in normalized
+
+
+def _without_owned_hooks(groups: list, meeting_home: Path) -> list:
+    """Drop our hook however an earlier release happened to quote it.
+
+    Matching the command string exactly cannot survive a change in quoting,
+    which would strand the previous release's entry in the user's settings.
+    """
     updated = []
     for group in groups:
         if not isinstance(group, dict):
@@ -184,7 +196,11 @@ def _without_command(groups: list, command: str) -> list:
             if not (
                 isinstance(handler, dict)
                 and handler.get("type") == "command"
-                and handler.get("command") == command
+                and _owned_path(
+                    handler.get("command"),
+                    meeting_home,
+                    "/bin/am-claude-session-start",
+                )
             )
         ]
         if remaining:
@@ -209,7 +225,7 @@ def install_user_configuration(
     groups = hooks.setdefault("SessionStart", [])
     if not isinstance(groups, list):
         raise RuntimeError("Claude SessionStart hooks must be a JSON array")
-    groups = _without_command(groups, command)
+    groups = _without_owned_hooks(groups, meeting_home)
     groups.append(
         {
             "matcher": "startup",
@@ -226,35 +242,27 @@ def install_user_configuration(
 
 
 def _owned_status_line(command: object, meeting_home: Path) -> bool:
-    if not isinstance(command, str):
-        return False
-    normalized = command.replace("\\", "/").lower()
-    root = str(meeting_home).replace("\\", "/").lower().rstrip("/")
-    return root in normalized and (
-        "/bin/am-statusline" in normalized
-        or "/bin/statusline.py" in normalized
-    )
+    return _owned_path(
+        command,
+        meeting_home,
+        "/bin/am-statusline",
+    ) or _owned_path(command, meeting_home, "/bin/statusline.py")
 
 
 def remove_user_configuration(
     *,
     settings_path: Path,
     meeting_home: Path,
-    is_windows: bool | None = None,
 ) -> None:
     if not settings_path.exists():
         return
-    command = session_start_command(
-        meeting_home,
-        is_windows=is_windows,
-    )
     settings = _read_settings(settings_path)
     changed = False
     hooks = settings.get("hooks")
     if isinstance(hooks, dict):
         groups = hooks.get("SessionStart")
         if isinstance(groups, list):
-            remaining = _without_command(groups, command)
+            remaining = _without_owned_hooks(groups, meeting_home)
             if remaining != groups:
                 changed = True
                 if remaining:
