@@ -358,6 +358,51 @@ def test_amclaude_passes_explicit_am_msgd_to_child_environment(monkeypatch):
     assert captured["env"]["AM_MSGD_HOST"] == "http://10.0.0.114:8765"
 
 
+def test_amclaude_assigns_a_chosen_name_to_the_session(monkeypatch):
+    from agent_meeting.launcher import amclaude_session
+
+    monkeypatch.delenv("MEETING_SELF", raising=False)
+    monkeypatch.delenv("MEETING_PROJECT", raising=False)
+    chosen = amclaude_session.ClaudeSupervisor(
+        [],
+        name="worker",
+        project="tools",
+        assign_identity=True,
+    ).child_environment()
+    default = amclaude_session.ClaudeSupervisor(
+        [],
+        name="claude-host",
+        project="tools",
+    ).child_environment()
+
+    assert chosen["MEETING_SELF"] == "worker"
+    assert chosen["MEETING_PROJECT"] == "tools"
+    # A generated fallback name is a lifecycle label, not a registration.
+    assert "MEETING_SELF" not in default
+
+
+def test_amclaude_only_assigns_an_identity_the_user_asked_for(monkeypatch):
+    from agent_meeting.launcher import amclaude_session
+
+    captured = {}
+
+    class FakeSupervisor:
+        def __init__(self, claude_args, **kwargs):
+            captured.update(kwargs)
+
+        def run(self):
+            return 0
+
+    monkeypatch.setattr(amclaude_session.shutil, "which", lambda _name: "claude")
+    monkeypatch.setattr(amclaude_session, "ClaudeSupervisor", FakeSupervisor)
+
+    assert amclaude_session.main(["--name=worker", "--proj=tools"]) == 0
+    assert captured["assign_identity"] is True
+
+    assert amclaude_session.main(["--proj=tools"]) == 0
+    assert captured["assign_identity"] is False
+
+
 def test_amclaude_windows_tty_lookup_is_safe(monkeypatch):
     from agent_meeting.launcher import amclaude_session
 
@@ -637,7 +682,7 @@ def test_windows_login_task_preserves_custom_meeting_home(
     runtime_command = (
         meeting_home
         / "runtimes"
-        / "0.18.30"
+        / "0.18.31"
         / "venv"
         / "Scripts"
         / "am-ctld-service.exe"

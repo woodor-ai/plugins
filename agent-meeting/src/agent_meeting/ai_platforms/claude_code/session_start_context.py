@@ -56,6 +56,9 @@ def build_session_start_payload(
     hostname: str | None = None,
     online_peers: str | None = None,
     standalone_commands: bool = False,
+    assigned_name: str | None = None,
+    assigned_project: str | None = None,
+    control_url: str | None = None,
 ) -> dict:
     role = "host" if config.get("is_host") else "client"
     peers = (
@@ -81,7 +84,21 @@ def build_session_start_payload(
         monitor = f"python3 {monitor_script} <name>"
         os_label = "posix"
 
-    if is_codex_thread:
+    if assigned_name and not is_codex_thread:
+        registration = [bash_argument(monitor_script), assigned_name]
+        if assigned_project == "*":
+            registration.append("--global")
+        elif assigned_project:
+            registration.append(f"--proj={assigned_project}")
+        if control_url:
+            registration.extend(["--host", control_url])
+        registration_context = f"""This session was launched by `amclaude` with the meeting name `{assigned_name}` already chosen on the command line. It is NOT registered yet: registration happens when the monitor starts.
+
+- Start the monitor with the Monitor tool BEFORE doing anything else, exactly as written: `{" ".join(registration)}`
+- Do NOT ask the user to run `/imagent`, and do NOT pick a different name: they already chose this one.
+- Once the monitor is running, report exactly one line at the end of your first reply: `📞 Meeting registered as {assigned_name}`.
+- If the monitor exits non-zero, surface its output verbatim, do not retry, and do not add `--force`. Then carry on with the user's task: registration is never a prerequisite for the work."""
+    elif is_codex_thread:
         registration_context = """This is a Codex session. An `amcodex` launch supplies its exact agent-meeting recipient and control URL through thread and turn request parameters. Pass those values as explicit `am` CLI arguments; do not use `MEETING_SELF` or `AM_MSGD_HOST`.
 
 If no agent-meeting recipient is present in the current runtime context, this Codex session is not registered — and that's fine. Peer-to-peer agent messaging is optional. Never gate, block, or delay the user's work to register a name.

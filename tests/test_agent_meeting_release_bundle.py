@@ -24,12 +24,12 @@ def _load_builder():
 
 
 def _write_bundle(path: Path, module, *, extra: str | None = None) -> None:
-    prefix = module.bundle_prefix("0.18.30")
+    prefix = module.bundle_prefix("0.18.31")
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(prefix + "LICENSE", "MIT\n")
         for required in module.REQUIRED_BUNDLE_FILES:
             content = (
-                json.dumps({"version": "0.18.30"})
+                json.dumps({"version": "0.18.31"})
                 if required == "agent-meeting/.codex-plugin/plugin.json"
                 else "test\n"
             )
@@ -58,7 +58,7 @@ def test_verify_bundle_accepts_agent_meeting_only_archive(tmp_path):
     bundle = tmp_path / "agent-meeting.zip"
     _write_bundle(bundle, module)
 
-    module.verify_bundle(bundle, "0.18.30")
+    module.verify_bundle(bundle, "0.18.31")
 
 
 def test_verify_bundle_rejects_unrelated_plugin(tmp_path):
@@ -67,4 +67,4 @@ def test_verify_bundle_rejects_unrelated_plugin(tmp_path):
     _write_bundle(bundle, module, extra="handoff/README.md")
 
     with pytest.raises(RuntimeError, match="top-level entries"):
-        module.verify_bundle(bundle, "0.18.30")
+        module.verify_bundle(bundle, "0.18.31")

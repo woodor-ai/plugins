@@ -9,6 +9,10 @@ description: Agent-meeting directory for Claude Code and Codex peer sessions. In
 
 - Claude Code invokes this skill as `/imagent`.
 - Codex invokes it as `$imagent` or selects it through `/skills`.
+- A Claude Code session launched by `amclaude --name NAME` receives that name
+  in its SessionStart context and registers itself by starting the monitor as
+  its first action. Do not run the `/imagent <name>` registration flow again in
+  such a session; use this skill only for list, rename, stop, and setup.
 - A Codex session launched by `amcodex` is already registered. Do not start a
   Claude monitor or run the Claude `/imagent <name>` registration flow from
   Codex. Use the exact recipient and control URL injected into the thread's

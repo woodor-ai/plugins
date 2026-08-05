@@ -75,6 +75,9 @@ def main() -> None:
                     or os.environ.get("AGENT_MEETING_CODEX_RUNTIME")
                 ),
                 standalone_commands=True,
+                assigned_name=os.environ.get("MEETING_SELF") or None,
+                assigned_project=os.environ.get("MEETING_PROJECT") or None,
+                control_url=os.environ.get("AM_MSGD_HOST") or None,
             )
         )
     except Exception as error:

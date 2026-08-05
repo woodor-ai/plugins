@@ -87,11 +87,13 @@ class ClaudeSupervisor:
         control_url: str | None = None,
         model: str = "claude-opus-5",
         effort: str = "high",
+        assign_identity: bool = False,
     ):
         self.claude_args = list(claude_args)
         self.name = name
         self.project = project
         self.control_url = control_url
+        self.assign_identity = assign_identity
         self.model = model
         self.effort = effort
         self.instance_id = uuid.uuid4().hex
@@ -280,18 +282,31 @@ class ClaudeSupervisor:
         )
         self.server_thread.start()
 
+    def child_environment(self) -> dict:
+        """Hand the session its assigned identity.
+
+        A name the user typed on the command line is a registration request.
+        The wrapper cannot register it, because a Claude session receives
+        messages through the monitor that only the session itself can start, so
+        it passes the identity down and the SessionStart hook turns it into the
+        session's first action.
+        """
+        environment = dict(os.environ)
+        if self.assign_identity:
+            environment["MEETING_SELF"] = self.name
+            if self.project:
+                environment["MEETING_PROJECT"] = self.project
+        if self.control_url:
+            environment["AM_MSGD_HOST"] = self.control_url
+        return environment
+
     def _spawn(self) -> subprocess.Popen:
         command = build_claude_launch_cmd(
             self.claude_args,
             model=self.model,
             effort=self.effort,
         )
-        kwargs = {}
-        if self.control_url:
-            kwargs["env"] = {
-                **os.environ,
-                "AM_MSGD_HOST": self.control_url,
-            }
+        kwargs = {"env": self.child_environment()}
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         return subprocess.Popen(command, **kwargs)
@@ -405,6 +420,7 @@ def main(argv=None) -> int:
             control_url=control_url,
             model=known.model,
             effort=known.effort,
+            assign_identity=known.name is not None,
         ).run()
     except KeyboardInterrupt:
         return 130

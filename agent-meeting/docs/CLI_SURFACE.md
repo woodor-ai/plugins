@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-05 · version 0.18.30
+Last updated: 2026-08-05 · version 0.18.31
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -126,7 +126,11 @@ am-ctl agent --name NAME --proj PROJECT --cmd restart
 Claude Code in its lifecycle wrapper. It defaults to `claude-opus-5` with `high`
 effort. Every argument the wrapper does not define is passed to `claude`,
 including a positional prompt, and `amclaude --help` documents the wrapper
-itself rather than `claude`. `amcodex` is the corresponding Codex wrapper and
+itself rather than `claude`. An explicit `--name` is a registration request:
+the wrapper passes the name, project, and hub address to the session, and the
+SessionStart context directs the session to start its monitor as its first
+action, so `/imagent NAME` is not needed. A generated fallback name registers
+nothing and only labels the session for lifecycle control. `amcodex` is the corresponding Codex wrapper and
 accepts the same `--name` option plus `--model sol|terra` (default `sol`) and
 `--effort xhigh|high|medium` (default `high`). The old `myclaude`
 subscription/API selector is not part of agent-meeting and is neither invoked

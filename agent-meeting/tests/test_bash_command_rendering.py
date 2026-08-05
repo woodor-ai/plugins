@@ -165,3 +165,82 @@ def test_windows_session_context_advertises_no_backslash_commands(tmp_path):
         assert len(advertised) == 2
         for line in advertised:
             assert "\\" not in line
+
+
+def test_assigned_session_context_orders_the_monitor_not_a_slash_command(
+    tmp_path,
+):
+    from agent_meeting.ai_platforms.claude_code.session_start_context import (
+        build_session_start_payload,
+    )
+
+    payload = build_session_start_payload(
+        config={"is_host": True},
+        database_path=tmp_path / "db" / "rooms.db",
+        am_command=tmp_path / "bin" / "am.exe",
+        monitor_script=tmp_path / "bin" / "am-session-monitor.exe",
+        python_executable=tmp_path / "venv" / "Scripts" / "python.exe",
+        is_windows=True,
+        is_codex_thread=False,
+        online_peers="(none online)",
+        hostname="test-host",
+        standalone_commands=True,
+        assigned_name="worker",
+        assigned_project="tools",
+        control_url="http://10.0.0.114:8765",
+    )
+
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    monitor = (tmp_path / "bin" / "am-session-monitor.exe").as_posix()
+    assert f"{monitor} worker --proj=tools --host http://10.0.0.114:8765" in context
+    assert "NO meeting name yet" not in context
+    assert "\\" not in context.split("Backend:")[0]
+
+
+def test_a_global_assigned_session_registers_without_a_project(tmp_path):
+    from agent_meeting.ai_platforms.claude_code.session_start_context import (
+        build_session_start_payload,
+    )
+
+    payload = build_session_start_payload(
+        config={"is_host": True},
+        database_path=tmp_path / "db" / "rooms.db",
+        am_command=tmp_path / "bin" / "am",
+        monitor_script=tmp_path / "bin" / "am-session-monitor",
+        python_executable=tmp_path / "venv" / "bin" / "python",
+        is_windows=False,
+        is_codex_thread=False,
+        online_peers="(none online)",
+        hostname="test-host",
+        standalone_commands=True,
+        assigned_name="director",
+        assigned_project="*",
+    )
+
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    assert "am-session-monitor director --global" in context
+    assert "--proj=" not in context
+
+
+def test_an_unassigned_session_still_gets_the_optional_registration_notice(
+    tmp_path,
+):
+    from agent_meeting.ai_platforms.claude_code.session_start_context import (
+        build_session_start_payload,
+    )
+
+    payload = build_session_start_payload(
+        config={"is_host": True},
+        database_path=tmp_path / "db" / "rooms.db",
+        am_command=tmp_path / "bin" / "am",
+        monitor_script=tmp_path / "bin" / "am-session-monitor",
+        python_executable=tmp_path / "venv" / "bin" / "python",
+        is_windows=False,
+        is_codex_thread=False,
+        online_peers="(none online)",
+        hostname="test-host",
+        standalone_commands=True,
+    )
+
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    assert "NO meeting name yet" in context
