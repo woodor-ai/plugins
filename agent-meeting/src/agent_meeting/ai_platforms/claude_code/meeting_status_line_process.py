@@ -8,7 +8,16 @@ that Claude Code shows in the TUI status bar.
 
 The line is composed of, in order (segments are dropped when unavailable):
 
-    📞 <meeting-name>  |  <model>  |  <dir>  |  <git-branch>
+    📞 <meeting-name>@<project> 🛰 <control>  |  <model> · <effort>  |  <dir>
+      |  ctx <n>% left  |  5h <n>% left  |  wk <n>% left  |  tasks <done>/<n>
+      |  v<claude-code-version>  |  <git-branch>
+
+Segment order and wording deliberately mirror the Codex status line, whose
+items are selected in ~/.codex/config.toml under [tui] status_line. Codex only
+offers a fixed menu of built-in items and has no custom-command hook, so the
+meeting badge has no Codex counterpart; every other segment does. Usage limits
+render as REMAINING percent on both hosts because Codex offers no used-percent
+item.
 
 The meeting name is NOT looked up from the central SQLite DB (that would be
 slow and would require mDNS/central-am-msgd discovery on every refresh, and wouldn't
@@ -28,10 +37,23 @@ import os
 import sys
 from pathlib import Path
 
+# stdout is a pipe here, so Python picks the locale encoding -- cp1252 on a
+# stock Windows box, which cannot encode the badge emoji. Without this the
+# whole line raises UnicodeEncodeError and the status bar goes blank for every
+# registered session. errors="replace" keeps a partial line alive if a peer
+# name ever carries something even UTF-8-hostile.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 DATA = Path(
     os.environ.get("MEETING_HOME") or (Path.home() / ".agent-meeting")
 )
 STATUSLINE_DIR = DATA / "statusline"
+CLAUDE_TASKS_DIR = Path(
+    os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")
+) / "tasks"
 
 SEP = "  |  "
 
@@ -136,6 +158,56 @@ def git_branch(cwd: str) -> str:
         return ""
 
 
+def _percent_left(value) -> str:
+    """Render a 0-100 usage number as remaining percent. '' when unusable.
+
+    Claude Code reports how much is USED; Codex's built-in status line only
+    offers a remaining-percent item, so both hosts render remaining here.
+    """
+    try:
+        used = float(value)
+    except (TypeError, ValueError):
+        return ""
+    left = 100 - used
+    if left < 0:
+        left = 0.0
+    elif left > 100:
+        left = 100.0
+    return f"{round(left)}%"
+
+
+def task_progress(session_id: str | None) -> str:
+    """'<resolved>/<total>' for this session's task list, or '' when empty.
+
+    Claude Code does not put the task list in the status-line payload, but it
+    persists one small JSON file per task under <config>/tasks/<session-id>/.
+    Reading that directory is local and cheap enough for a status-line refresh.
+    """
+    if not session_id:
+        return ""
+    try:
+        directory = CLAUDE_TASKS_DIR / session_id
+        if not directory.is_dir():
+            return ""
+        total = 0
+        done = 0
+        for entry in directory.iterdir():
+            if entry.suffix != ".json":
+                continue
+            try:
+                task = json.loads(entry.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(task, dict):
+                continue
+            total += 1
+            if task.get("status") == "completed":
+                done += 1
+        return f"{done}/{total}" if total else ""
+    except Exception:
+        return ""
+
+
 def _collapse_home(path: str) -> str:
     """Collapse the user's home-dir prefix to '~' so the path fits the status bar.
 
@@ -164,7 +236,10 @@ def main():
     workspace = data.get("workspace") or {}
     cwd = workspace.get("current_dir") or data.get("cwd") or os.getcwd()
     model = (data.get("model") or {}).get("display_name") or ""
+    effort = (data.get("effort") or {}).get("level") or ""
     session_id = data.get("session_id") or None
+    context = data.get("context_window") or {}
+    limits = data.get("rate_limits") or {}
 
     segments = []
 
@@ -182,9 +257,30 @@ def main():
             badge += f" {ctrl}"
         segments.append(badge)
     if model:
-        segments.append(model)
+        # Codex renders its model item as "<model> <reasoning-level>"; keep the
+        # same pairing so the two hosts read alike.
+        segments.append(f"{model} · {effort}" if effort else model)
     if cwd:
         segments.append(_collapse_home(cwd))  # home-relative path (~/...) to avoid truncation
+    ctx = _percent_left(context.get("used_percentage"))
+    if ctx:
+        segments.append(f"ctx {ctx} left")
+    five_hour = _percent_left(
+        (limits.get("five_hour") or {}).get("used_percentage")
+    )
+    if five_hour:
+        segments.append(f"5h {five_hour} left")
+    weekly = _percent_left(
+        (limits.get("seven_day") or {}).get("used_percentage")
+    )
+    if weekly:
+        segments.append(f"wk {weekly} left")
+    tasks = task_progress(session_id)
+    if tasks:
+        segments.append(f"tasks {tasks}")
+    version = data.get("version") or ""
+    if version:
+        segments.append(f"v{version}")
     branch = git_branch(cwd)
     if branch:
         segments.append(branch)
