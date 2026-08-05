@@ -75,11 +75,13 @@ Bucket: `omi-dist`
 | --- | --- | --- | --- |
 | `am` | `https://dl.omi-atlas.com/am` | `no-store, max-age=0` | short one-command installer |
 | `am/install.py` | `https://dl.omi-atlas.com/am/install.py` | `no-store, max-age=0` | stable installer fetched by `am-update` |
-| `am/releases/vX.Y.Z/plugins.zip` | `https://dl.omi-atlas.com/am/releases/vX.Y.Z/plugins.zip` | `public, max-age=31536000, immutable` | immutable source bundle for that release |
+| `am/releases/vX.Y.Z/agent-meeting.zip` | `https://dl.omi-atlas.com/am/releases/vX.Y.Z/agent-meeting.zip` | `public, max-age=31536000, immutable` | immutable minimal agent-meeting source bundle |
 
 The two stable installer objects contain identical bytes. They select one
 immutable release bundle; publish the bundle first, then replace the stable
-installer objects. Never overwrite or delete a versioned bundle.
+installer objects. Never overwrite or delete a versioned bundle. The bundle
+name and its top-level directory must use `agent-meeting`, never the repository
+name `plugins`.
 
 ### User installation and update
 
@@ -118,23 +120,33 @@ For release `vX.Y.Z`:
 2. Run the full test suite and platform-specific installer tests.
 3. Commit and push `main`, create annotated tag `vX.Y.Z` on that commit, and
    push the tag over SSH.
-4. Build the immutable bundle from the tag with one top-level directory:
+4. Build the immutable bundle with the repository's dedicated builder. The
+   builder has the only authoritative file allowlist and rejects unrelated
+   top-level content:
 
    ```sh
-   git archive --format=zip \
-     --prefix="plugins-vX.Y.Z/" \
-     --output="/tmp/plugins-vX.Y.Z.zip" \
-     "vX.Y.Z"
+   python3 installers/build-agent-meeting-release.py \
+     --ref "vX.Y.Z" \
+     --output "/tmp/agent-meeting-vX.Y.Z.zip"
    ```
 
-5. Confirm the bundle contains `plugins-vX.Y.Z/installers/install.py` and that
-   its manifests and public installer carry `X.Y.Z`.
+5. Confirm the bundle contains exactly these agent-meeting installation
+   inputs under `agent-meeting-vX.Y.Z/`:
+
+   - `agent-meeting` README, package source, manifests, skills, and runtime
+     bootstrap;
+   - `mycodex` package source;
+   - the unified installer and shared installer stages;
+   - `LICENSE`.
+
+   The bundle must not contain other plugins, repository-level docs or rules,
+   tests, marketplace catalogs, or project-level names such as `plugins`.
 6. Upload the immutable bundle before either stable installer object:
 
    ```sh
    wrangler r2 object put \
-     "omi-dist/am/releases/vX.Y.Z/plugins.zip" \
-     --file "/tmp/plugins-vX.Y.Z.zip" \
+     "omi-dist/am/releases/vX.Y.Z/agent-meeting.zip" \
+     --file "/tmp/agent-meeting-vX.Y.Z.zip" \
      --content-type "application/zip" \
      --cache-control "public, max-age=31536000, immutable" \
      --remote

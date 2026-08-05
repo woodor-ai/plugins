@@ -41,12 +41,12 @@ def test_release_archive_uses_installed_plugin_version(tmp_path):
     manifest = tmp_path / ".codex-plugin" / "plugin.json"
     manifest.parent.mkdir()
     manifest.write_text(
-        json.dumps({"version": "0.18.27+codex.local-test"}),
+        json.dumps({"version": "0.18.28+codex.local-test"}),
         encoding="utf-8",
     )
 
     assert module.release_archive_url(tmp_path) == (
-        "https://dl.omi-atlas.com/am/releases/v0.18.27/plugins.zip"
+        "https://dl.omi-atlas.com/am/releases/v0.18.28/agent-meeting.zip"
     )
 
 
@@ -54,7 +54,7 @@ def test_bundled_script_resolves_plugin_root_and_version():
     module = load_bootstrap()
 
     assert module.plugin_root(SCRIPT) == PRODUCT_ROOT
-    assert module.plugin_version(PRODUCT_ROOT) == "0.18.27"
+    assert module.plugin_version(PRODUCT_ROOT) == "0.18.28"
 
 
 def test_standalone_bootstrap_requires_a_plugin_version():
@@ -78,12 +78,12 @@ def test_bootstrap_downloads_and_runs_shared_installer(capsys):
     module.install_runtime(
         target="codex",
         root=None,
-        archive_url="https://example.test/plugins.zip",
+        archive_url="https://example.test/agent-meeting.zip",
         opener=open_archive,
         run=run_installer,
     )
 
-    assert calls[0] == ("https://example.test/plugins.zip", 120)
+    assert calls[0] == ("https://example.test/agent-meeting.zip", 120)
     command, check = calls[1]
     assert check is True
     assert command[0] == module.sys.executable
@@ -113,7 +113,7 @@ def test_bootstrap_identifies_download_failure_stage():
         module.install_runtime(
             target="codex",
             root=None,
-            archive_url="https://example.test/plugins.zip",
+            archive_url="https://example.test/agent-meeting.zip",
             opener=fail_download,
         )
 
@@ -136,7 +136,7 @@ def test_bootstrap_identifies_runtime_installer_failure_stage():
         module.install_runtime(
             target="codex",
             root=None,
-            archive_url="https://example.test/plugins.zip",
+            archive_url="https://example.test/agent-meeting.zip",
             opener=open_archive,
             run=fail_installer,
         )

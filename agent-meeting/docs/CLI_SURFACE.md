@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-06 · version 0.18.27
+Last updated: 2026-08-05 · version 0.18.28
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -29,7 +29,9 @@ irm https://dl.omi-atlas.com/am | py -3 -
 
 It detects the locally installed clients and selects `claude-code`, `codex`,
 or `all`. Its source bundle is the immutable R2 object
-`am/releases/vX.Y.Z/plugins.zip` for the matching plugin version.
+`am/releases/vX.Y.Z/agent-meeting.zip` for the matching plugin version. The
+bundle contains only the agent-meeting runtime, its Codex launcher package,
+the shared installers, and the repository license.
 
 When bare `$imagent` finds no PATH command named `am`, it runs the bundled
 `scripts/bootstrap_runtime.py`. Subcommands invoke their stable launcher

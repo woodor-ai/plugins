@@ -80,7 +80,7 @@ def test_install_downloads_pinned_release_and_runs_repository_installer(
 
     assert requested == [(public_installer.ARCHIVE_URL, 60)]
     assert public_installer.ARCHIVE_URL == (
-        "https://dl.omi-atlas.com/am/releases/v0.18.27/plugins.zip"
+        "https://dl.omi-atlas.com/am/releases/v0.18.28/agent-meeting.zip"
     )
     assert commands[0][2:4] == ["--target", "codex"]
     assert commands[0][-2:] == [

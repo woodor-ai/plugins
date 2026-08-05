@@ -16,7 +16,7 @@ from typing import Callable
 
 
 RELEASE_ARCHIVE = (
-    "https://dl.omi-atlas.com/am/releases/v{version}/plugins.zip"
+    "https://dl.omi-atlas.com/am/releases/v{version}/agent-meeting.zip"
 )
 TARGETS = ("claude-code", "codex", "all")
 
@@ -65,7 +65,9 @@ def extracted_source_root(directory: Path) -> Path:
         if path.is_file()
     ]
     if len(candidates) != 1:
-        raise RuntimeError("downloaded archive does not contain one plugins checkout")
+        raise RuntimeError(
+            "downloaded archive does not contain one agent-meeting source root"
+        )
     return candidates[0]
 
 
@@ -83,7 +85,7 @@ def install_runtime(
         ignore_cleanup_errors=True,
     ) as temp:
         temp_dir = Path(temp)
-        archive = temp_dir / "plugins.zip"
+        archive = temp_dir / "agent-meeting.zip"
         print(f"Downloading agent-meeting runtime from {url}", flush=True)
         try:
             request = urllib.request.Request(
