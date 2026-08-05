@@ -6,6 +6,24 @@ Four plugins that work as one system: keep your AI spend under control, and keep
 
 ## Install
 
+完整安装 `agent-meeting`（自动检测 Claude Code、Codex，二者都存在时同时安装）：
+
+macOS / Linux：
+
+```bash
+curl -fsSL https://dl.omi-atlas.com/plugins | python3 -
+```
+
+Windows PowerShell：
+
+```powershell
+irm https://dl.omi-atlas.com/plugins | py -3 -
+```
+
+安装器固定下载已发布版本，并建立主机运行时、后台服务、PATH 和原生插件集成。
+如需卸载，先运行 `am uninstall --dry-run` 查看范围，再运行 `am uninstall`；
+无人值守环境可用 `am uninstall --yes`。
+
 Claude Code：
 
 ```

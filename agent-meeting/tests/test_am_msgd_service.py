@@ -460,6 +460,22 @@ def test_windows_service_uses_console_free_entrypoint_and_log(
     )
 
     meeting_home = tmp_path / "custom meeting"
+    runtime_command = (
+        meeting_home
+        / "runtimes"
+        / "0.18.11"
+        / "venv"
+        / "Scripts"
+        / "am-msgd-service.exe"
+    )
+    runtime_command.parent.mkdir(parents=True)
+    runtime_command.write_bytes(b"launcher")
+    (meeting_home / "active-runtime.json").write_text(
+        json.dumps(
+            {"commands": {"am-msgd-service": str(runtime_command)}}
+        ),
+        encoding="utf-8",
+    )
     message_hub_user_service.ensure_installed(
         meeting_home,
         meeting_home / "am-msgd.json",
@@ -467,7 +483,7 @@ def test_windows_service_uses_console_free_entrypoint_and_log(
     )
 
     task_command = commands[0][commands[0].index("/TR") + 1]
-    assert str(meeting_home / "bin" / "am-msgd-service.exe") in task_command
+    assert str(runtime_command) in task_command
     assert (
         f'--service-log "{meeting_home / "logs" / "am-msgd.log"}"'
         in task_command

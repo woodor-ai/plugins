@@ -64,3 +64,39 @@ def ensure_command_directory(bin_directory: Path) -> None:
             updated,
         )
     _broadcast_environment_change()
+
+
+def remove_command_directory(bin_directory: Path) -> bool:
+    """Remove only the exact agent-meeting bin entry from the user PATH."""
+    import winreg
+
+    entry = str(bin_directory)
+    with winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER,
+        "Environment",
+        0,
+        winreg.KEY_READ,
+    ) as key:
+        try:
+            current, kind = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            return False
+    parts = [part for part in (current or "").split(os.pathsep) if part.strip()]
+    kept = [part for part in parts if not _path_contains(part, entry)]
+    if len(kept) == len(parts):
+        return False
+    with winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER,
+        "Environment",
+        0,
+        winreg.KEY_SET_VALUE,
+    ) as key:
+        winreg.SetValueEx(
+            key,
+            "Path",
+            0,
+            kind,
+            os.pathsep.join(kept),
+        )
+    _broadcast_environment_change()
+    return True

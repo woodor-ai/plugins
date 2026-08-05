@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-04 · version 0.18.10
+Last updated: 2026-08-04 · version 0.18.11
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -19,6 +19,16 @@ same skills from the native plugin and exposes them through `/skills` or
 skill names.
 
 ## Distribution update
+
+The public full-install bootstrap is available at one stable short URL:
+
+```text
+curl -fsSL https://dl.omi-atlas.com/plugins | python3 -
+irm https://dl.omi-atlas.com/plugins | py -3 -
+```
+
+It detects the locally installed clients and selects `claude-code`, `codex`,
+or `all`. Its source archive is pinned to the matching release tag.
 
 When bare `$imagent` finds no PATH command named `am`, it runs the bundled
 `scripts/bootstrap_runtime.py`. Subcommands invoke their stable launcher
@@ -49,6 +59,28 @@ am-update --check
 
 `amcodex` is a session launcher only. `amcodex --update` exits with a migration
 message and does not perform installation work.
+
+Windows activation copies interactive launchers into the stable bin directory.
+If the running updater locks its own destination, a detached GUI-subsystem
+helper retries that one atomic replacement after the updater exits. Windows
+services use immutable versioned GUI launchers and therefore do not lock their
+stable command names.
+
+## Complete uninstall
+
+```text
+am uninstall --dry-run
+am uninstall
+am uninstall --yes
+```
+
+The installer writes `~/.agent-meeting/install-manifest.json`; uninstall uses
+that ownership record to remove only the selected Claude Code/Codex plugin
+registrations, both user services, the exact PATH entry created at install
+time, and the complete agent-meeting home including messages. The shared
+Woodor marketplace is preserved. An active amcodex lease blocks uninstall.
+The final runtime-directory deletion is delegated so Windows can remove the
+launcher that invoked the command.
 
 ## Local lifecycle control
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -14,6 +15,33 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TARGET_CLAUDE_CODE = "claude-code"
 TARGET_CODEX = "codex"
 TARGET_ALL = "all"
+
+
+def _record_installation(
+    source_root: Path,
+    meeting_home: Path,
+    target: str,
+) -> None:
+    package_source = source_root / "agent-meeting" / "src"
+    sys.path.insert(0, str(package_source))
+    try:
+        from agent_meeting.installation.install_manifest import (
+            record_installation,
+        )
+    finally:
+        sys.path.pop(0)
+    manifest = source_root / "agent-meeting" / ".codex-plugin" / "plugin.json"
+    version = str(json.loads(manifest.read_text(encoding="utf-8"))["version"])
+    targets = (
+        {TARGET_CLAUDE_CODE, TARGET_CODEX}
+        if target == TARGET_ALL
+        else {target}
+    )
+    record_installation(
+        meeting_home,
+        version=version,
+        targets=targets,
+    )
 
 
 def _run_python(
@@ -83,6 +111,7 @@ def install(
             [str(daemon), "update", "--defer-if-active"],
             check=True,
         )
+    _record_installation(source_root, meeting_home, target)
 
 
 def main(argv=None) -> int:

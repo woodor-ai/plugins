@@ -11,6 +11,26 @@ The supported command surface is documented in
 
 ## Install
 
+For a complete installation, use the short public bootstrap. It detects Claude
+Code and Codex on the current machine and installs both integrations when both
+clients are present.
+
+macOS / Linux:
+
+```sh
+curl -fsSL https://dl.omi-atlas.com/plugins | python3 -
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://dl.omi-atlas.com/plugins | py -3 -
+```
+
+Pass `--target claude-code`, `--target codex`, or `--target all` after the
+stdin marker when a specific integration is required. The public bootstrap is
+pinned to a released Git tag rather than a moving branch.
+
 Install the plugin from the Woodor marketplace, start a new Codex session, and
 invoke bare `$imagent`. On first use, Codex requests one scoped sandbox approval
 and the bundled cross-platform bootstrap downloads the matching tagged release
@@ -54,6 +74,28 @@ or `am-update --target codex` to select one explicitly, and `am-update --check`
 to inspect the current state. A Codex runtime switch refuses to interrupt active
 `amcodex` sessions. `amcodex` launches sessions only; `amcodex --update` is no
 longer an update path.
+
+On Windows, an updater that is replacing its own stable `.exe` launcher defers
+that one locked-file replacement to a detached no-console helper. Background
+tasks execute immutable versioned launchers, so subsequent updates do not lock
+the public service commands.
+
+## Uninstall
+
+Preview the complete removal plan first:
+
+```sh
+am uninstall --dry-run
+```
+
+Then run `am uninstall` and type `uninstall` at the confirmation prompt. For
+an unattended uninstall, use `am uninstall --yes`. The command removes the
+Claude Code and/or Codex plugin registration recorded by the installer, both
+user services, the exact agent-meeting PATH entry, and the complete
+`~/.agent-meeting` tree including runtime versions, configuration, logs, and
+message history. It preserves the shared Woodor marketplace because other
+plugins may use it. The command refuses to proceed while amcodex sessions are
+active.
 
 The feature set is shared across Claude Code and Codex. Claude Code exposes
 skills as `/imagent` and `/talkto`; Codex invokes the same skills as `$imagent`
@@ -114,6 +156,7 @@ Not exposed as slash commands — run directly via `~/.agent-meeting/bin/am <cmd
 | `am msgd [--json]` | List discovered am-msgd instances and their runtime versions |
 | `am prune [--older-than N] [--include-referenced] [--yes]` | Drop stale `sessions` rows (dry run unless `--yes`); never touches message history |
 | `am projcache [list\|clear] [--all]` | Inspect or clear this machine's cached `--proj` declarations (local file only, no central am-msgd call) |
+| `am uninstall [--dry-run] [--yes]` | Preview or perform a manifest-owned complete uninstall |
 
 ## Configuration
 

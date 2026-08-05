@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from agent_meeting.installation.version_activation import active_runtime_command
 from agent_meeting.operating_systems import user_service
 
 
@@ -15,7 +16,15 @@ LINUX_UNIT_NAME = "woodor-am-ctld.service"
 
 def _spec(meeting_home: Path) -> user_service.UserServiceSpec:
     is_windows = sys.platform.startswith("win")
-    command_name = "am-ctld-service.exe" if is_windows else "am-ctld"
+    command = (
+        active_runtime_command(
+            meeting_home,
+            "am-ctld-service",
+            is_windows=True,
+        )
+        if is_windows
+        else meeting_home / "bin" / "am-ctld"
+    )
     log_path = meeting_home / "control" / "am-ctld.log"
     service_arguments = (
         ("--service-log", str(log_path))
@@ -25,7 +34,7 @@ def _spec(meeting_home: Path) -> user_service.UserServiceSpec:
     return user_service.UserServiceSpec(
         description="agent-meeting lifecycle controller",
         command=(
-            str(meeting_home / "bin" / command_name),
+            str(command),
             *service_arguments,
             "--meeting-home",
             str(meeting_home),
@@ -61,3 +70,14 @@ def stop_lifecycle_control_service(meeting_home: Path) -> bool:
 
 def ensure_lifecycle_control_service(meeting_home: Path) -> None:
     user_service.restart(_spec(meeting_home))
+
+
+def uninstall_lifecycle_control_service(
+    meeting_home: Path,
+    *,
+    system_name: str | None = None,
+) -> None:
+    user_service.uninstall(
+        _spec(meeting_home),
+        system_name=system_name,
+    )

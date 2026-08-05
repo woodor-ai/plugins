@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "mycodex" / "src"))
 
 from agent_meeting.installation.version_activation import (
     activate_runtime,
+    remove_legacy_windows_service_launchers,
     runtime_commands,
     runtime_command_path,
 )
@@ -187,6 +188,8 @@ def main(argv=None) -> int:
     meeting_home = args.meeting_home.resolve()
     ensure_local_message_hub_service(meeting_home)
     ensure_lifecycle_control_service(meeting_home)
+    if sys.platform.startswith("win"):
+        remove_legacy_windows_service_launchers(meeting_home)
     codex_configuration = None
     if args.configure_codex:
         codex_configuration = configure_codex_user_environment(

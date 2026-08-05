@@ -31,3 +31,22 @@ def ensure_command_directory(bin_directory: Path) -> None:
     ) + block
     rc_path.parent.mkdir(parents=True, exist_ok=True)
     rc_path.write_text(updated, encoding="utf-8")
+
+
+def remove_command_directory(bin_directory: Path) -> bool:
+    """Remove the exact block written by :func:`ensure_command_directory`."""
+    rc_path = shell_rc_path()
+    if not rc_path.exists():
+        return False
+    text = rc_path.read_text(encoding="utf-8")
+    block = (
+        f'{PATH_MARKER}\n'
+        f'export PATH="{bin_directory}:$PATH"\n'
+    )
+    if block not in text:
+        return False
+    updated = text.replace(block, "", 1)
+    while "\n\n\n" in updated:
+        updated = updated.replace("\n\n\n", "\n\n")
+    rc_path.write_text(updated, encoding="utf-8")
+    return True

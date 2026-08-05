@@ -547,6 +547,22 @@ def test_windows_login_task_preserves_custom_meeting_home(
 
     commands = []
     meeting_home = tmp_path / "custom meeting"
+    runtime_command = (
+        meeting_home
+        / "runtimes"
+        / "0.18.11"
+        / "venv"
+        / "Scripts"
+        / "am-ctld-service.exe"
+    )
+    runtime_command.parent.mkdir(parents=True)
+    runtime_command.write_bytes(b"launcher")
+    (meeting_home / "active-runtime.json").write_text(
+        json.dumps(
+            {"commands": {"am-ctld-service": str(runtime_command)}}
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(user_service.sys, "platform", "win32")
     monkeypatch.setattr(
         service_core,
@@ -563,7 +579,7 @@ def test_windows_login_task_preserves_custom_meeting_home(
     )
 
     task_command = commands[0][commands[0].index("/TR") + 1]
-    assert str(meeting_home / "bin" / "am-ctld-service.exe") in task_command
+    assert str(runtime_command) in task_command
     assert (
         f'--service-log "{meeting_home / "control" / "am-ctld.log"}"'
         in task_command

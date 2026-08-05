@@ -263,6 +263,62 @@ def stop(
     raise RuntimeError(f"unsupported user-service platform: {system_name}")
 
 
+def uninstall(
+    spec: UserServiceSpec,
+    *,
+    system_name: str | None = None,
+    home: Path | None = None,
+) -> None:
+    """Stop and remove a per-user service definition when present."""
+    system_name = system_name or platform.system()
+    if system_name == "Darwin":
+        target = f"gui/{os.getuid()}/{spec.macos_label}"
+        result = _run(["launchctl", "bootout", target])
+        if (
+            result.returncode not in (0, 3)
+            and "Could not find service" not in result.stderr
+        ):
+            raise RuntimeError(
+                result.stderr.strip() or "launchctl bootout failed"
+            )
+        _run(["launchctl", "enable", target])
+        path = macos_plist_path(spec, home=home)
+        path.unlink(missing_ok=True)
+        return
+    if system_name == "Linux":
+        result = _run(
+            ["systemctl", "--user", "disable", "--now", spec.linux_unit_name]
+        )
+        if result.returncode != 0 and is_installed(
+            spec,
+            system_name=system_name,
+            home=home,
+        ):
+            raise RuntimeError(
+                result.stderr.strip() or "systemctl disable failed"
+            )
+        linux_unit_path(spec, home=home).unlink(missing_ok=True)
+        reloaded = _run(["systemctl", "--user", "daemon-reload"])
+        if reloaded.returncode != 0:
+            raise RuntimeError(
+                reloaded.stderr.strip() or "systemctl daemon-reload failed"
+            )
+        return
+    if system_name == "Windows":
+        _run(["schtasks", "/End", "/TN", spec.windows_task_name])
+        result = _run(
+            ["schtasks", "/Delete", "/TN", spec.windows_task_name, "/F"]
+        )
+        if result.returncode != 0 and is_installed(
+            spec,
+            system_name=system_name,
+            home=home,
+        ):
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+        return
+    raise RuntimeError(f"unsupported user-service platform: {system_name}")
+
+
 def restart(
     spec: UserServiceSpec,
     *,

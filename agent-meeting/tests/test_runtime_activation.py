@@ -110,8 +110,6 @@ def test_windows_activation_copies_console_exes_without_cmd_forwarders(
         "am",
         "am-ctl",
         "am-msgd",
-        "am-msgd-service",
-        "am-ctld-service",
         "amclaude",
         "amcodex",
         "am-codexd",
@@ -121,10 +119,57 @@ def test_windows_activation_copies_console_exes_without_cmd_forwarders(
             runtime / "venv" / "Scripts" / f"{command}.exe"
         ).read_bytes()
         assert not (tmp_path / "bin" / f"{command}.cmd").exists()
+    assert not (tmp_path / "bin" / "am-msgd-service.exe").exists()
+    assert not (tmp_path / "bin" / "am-ctld-service.exe").exists()
     assert not legacy_command.exists()
     assert not obsolete_alias.exists()
     assert not obsolete_link.exists()
     assert not obsolete_configure.exists()
+
+
+def test_windows_activation_defers_locked_stable_launcher(
+    tmp_path,
+    monkeypatch,
+):
+    from agent_meeting.installation import version_activation
+
+    runtime = _fake_runtime(tmp_path, "0.18.11", is_windows=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    locked = bin_dir / "am-update.exe"
+    locked.write_bytes(b"running")
+    real_replace = version_activation.os.replace
+    scheduled = []
+
+    def replace(source, destination):
+        if Path(destination) == locked:
+            raise PermissionError("locked")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(version_activation.os, "replace", replace)
+
+    payload = version_activation.activate_runtime(
+        meeting_home=tmp_path,
+        version="0.18.11",
+        is_windows=True,
+        schedule_windows_replacements=lambda **kwargs: (
+            scheduled.append(kwargs) or tmp_path / "pending.json"
+        ),
+    )
+
+    assert payload["version"] == "0.18.11"
+    assert locked.read_bytes() == b"running"
+    assert len(scheduled) == 1
+    replacement = scheduled[0]["replacements"]
+    assert replacement == [
+        (
+            next(bin_dir.glob(".am-update.exe.tmp.*")),
+            locked,
+        )
+    ]
+    assert replacement[0][0].read_bytes() == (
+        runtime / "venv" / "Scripts" / "am-update.exe"
+    ).read_bytes()
 
 
 def test_activation_refuses_incomplete_runtime(tmp_path):
@@ -142,6 +187,23 @@ def test_activation_refuses_incomplete_runtime(tmp_path):
         )
 
     assert not (tmp_path / "active-runtime.json").exists()
+
+
+def test_windows_legacy_service_launchers_are_removed_after_task_migration(
+    tmp_path,
+):
+    from agent_meeting.installation.version_activation import (
+        remove_legacy_windows_service_launchers,
+    )
+
+    bin_directory = tmp_path / "bin"
+    bin_directory.mkdir()
+    for command in ("am-msgd-service", "am-ctld-service"):
+        (bin_directory / f"{command}.exe").write_bytes(b"legacy")
+
+    remove_legacy_windows_service_launchers(tmp_path)
+
+    assert not list(bin_directory.glob("*-service.exe"))
 
 
 def test_activation_refuses_runtime_with_installing_marker(tmp_path):

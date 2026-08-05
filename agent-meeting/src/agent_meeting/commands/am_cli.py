@@ -48,6 +48,7 @@ from agent_meeting.message_hub import sqlite_message_database
 from agent_meeting.message_hub import service_configuration
 from agent_meeting.messaging import project_identity
 from agent_meeting.operating_systems import process_liveness
+from agent_meeting.installation import uninstall as uninstall_runtime
 
 if sys.platform.startswith("win"):
     for _stream in (sys.stdout, sys.stderr):
@@ -1122,6 +1123,19 @@ def cmd_prune(args):
               f"Re-run with --yes to apply.")
 
 
+def cmd_uninstall(args):
+    try:
+        result = uninstall_runtime.run(
+            Path(MEETING_HOME),
+            dry_run=args.dry_run,
+            assume_yes=args.yes,
+        )
+    except RuntimeError as exc:
+        raise SystemExit(f"ERROR: {exc}") from exc
+    if result:
+        raise SystemExit(result)
+
+
 # ---------- main ----------
 
 def main():
@@ -1180,6 +1194,22 @@ def main():
     s.add_argument("--yes", action="store_true", help="actually delete; without it this is a dry run")
     s.add_argument("--host", default=None)
     s.set_defaults(func=cmd_prune)
+
+    s = sub.add_parser(
+        "uninstall",
+        help="completely remove agent-meeting from this user account",
+    )
+    s.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show the complete removal plan without changing anything",
+    )
+    s.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the typed confirmation and permanently remove everything",
+    )
+    s.set_defaults(func=cmd_uninstall)
 
     s = sub.add_parser("projcache", help="inspect/clear cached --proj declarations (local only, no central am-msgd call)")
     s.add_argument("action", nargs="?", choices=["list", "clear"], default="list")

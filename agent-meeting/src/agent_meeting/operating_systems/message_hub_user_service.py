@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from agent_meeting.installation.version_activation import active_runtime_command
 from agent_meeting.operating_systems import user_service
 
 
@@ -18,7 +19,15 @@ def _spec(
     configuration_path: Path,
 ) -> user_service.UserServiceSpec:
     is_windows = sys.platform.startswith("win")
-    command_name = "am-msgd-service.exe" if is_windows else "am-msgd"
+    command = (
+        active_runtime_command(
+            meeting_home,
+            "am-msgd-service",
+            is_windows=True,
+        )
+        if is_windows
+        else meeting_home / "bin" / "am-msgd"
+    )
     log_path = meeting_home / "logs" / "am-msgd.log"
     service_arguments = (
         ("--service-log", str(log_path))
@@ -28,7 +37,7 @@ def _spec(
     return user_service.UserServiceSpec(
         description="agent-meeting local message hub",
         command=(
-            str(meeting_home / "bin" / command_name),
+            str(command),
             *service_arguments,
             "serve",
             "--config",
@@ -80,6 +89,17 @@ def stop(
     system_name: str | None = None,
 ) -> None:
     user_service.stop(
+        _spec(meeting_home, meeting_home / "am-msgd.json"),
+        system_name=system_name,
+    )
+
+
+def uninstall(
+    meeting_home: Path,
+    *,
+    system_name: str | None = None,
+) -> None:
+    user_service.uninstall(
         _spec(meeting_home, meeting_home / "am-msgd.json"),
         system_name=system_name,
     )

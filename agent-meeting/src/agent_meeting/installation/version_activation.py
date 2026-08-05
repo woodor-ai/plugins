@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Callable
 
 
 PUBLIC_COMMANDS = (
@@ -57,6 +58,37 @@ def runtime_commands(*, is_windows: bool) -> tuple[str, ...]:
     )
 
 
+def active_runtime_command(
+    meeting_home: Path,
+    command: str,
+    *,
+    is_windows: bool,
+) -> Path:
+    try:
+        payload = json.loads(
+            (meeting_home / "active-runtime.json").read_text(encoding="utf-8")
+        )
+        configured = Path(payload["commands"][command])
+        if configured.is_file():
+            return configured
+    except (FileNotFoundError, KeyError, TypeError, ValueError):
+        pass
+    return meeting_home / "bin" / (
+        f"{command}.exe" if is_windows else command
+    )
+
+
+def remove_legacy_windows_service_launchers(meeting_home: Path) -> None:
+    """Remove stable service launchers after tasks switch to versioned paths."""
+    for command in WINDOWS_SERVICE_COMMANDS:
+        try:
+            (meeting_home / "bin" / f"{command}.exe").unlink(missing_ok=True)
+        except PermissionError:
+            # A pre-0.18.11 task may take a moment to release its old image.
+            # It is no longer referenced and a later install can remove it.
+            pass
+
+
 def _atomic_write_json(path: Path, payload: dict) -> None:
     temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     temporary.write_text(
@@ -78,12 +110,19 @@ def _activate_posix_command(source: Path, destination: Path) -> None:
     os.replace(temporary, destination)
 
 
-def _activate_windows_command(source: Path, destination: Path) -> None:
+def _activate_windows_command(
+    source: Path,
+    destination: Path,
+) -> Path | None:
     temporary = destination.with_name(
         f".{destination.name}.tmp.{os.getpid()}"
     )
     shutil.copy2(source, temporary)
-    os.replace(temporary, destination)
+    try:
+        os.replace(temporary, destination)
+    except PermissionError:
+        return temporary
+    return None
 
 
 def activate_runtime(
@@ -91,6 +130,7 @@ def activate_runtime(
     meeting_home: Path,
     version: str,
     is_windows: bool | None = None,
+    schedule_windows_replacements: Callable[..., Path] | None = None,
 ) -> dict:
     is_windows = (
         sys.platform.startswith("win")
@@ -122,14 +162,35 @@ def activate_runtime(
 
     bin_dir = meeting_home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for command, source in sources.items():
+    stable_sources = {
+        command: source
+        for command, source in sources.items()
+        if command not in WINDOWS_SERVICE_COMMANDS
+    }
+    deferred_replacements: list[tuple[Path, Path]] = []
+    for command, source in stable_sources.items():
         destination = bin_dir / (
             f"{command}.exe" if is_windows else command
         )
         if is_windows:
-            _activate_windows_command(source, destination)
+            pending = _activate_windows_command(source, destination)
+            if pending is not None:
+                deferred_replacements.append((pending, destination))
         else:
             _activate_posix_command(source, destination)
+
+    if deferred_replacements:
+        if schedule_windows_replacements is None:
+            from agent_meeting.installation.windows_deferred_replace import (
+                schedule_replacements,
+            )
+
+            schedule_windows_replacements = schedule_replacements
+        schedule_windows_replacements(
+            runtime_dir=runtime_dir,
+            meeting_home=meeting_home,
+            replacements=deferred_replacements,
+        )
 
     payload = {
         "version": version,
