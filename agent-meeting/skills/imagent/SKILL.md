@@ -46,7 +46,8 @@ clone the repository.
 
 For Codex, set the shell tool's `sandbox_permissions` to `require_escalated`
 and justify that the command installs the agent-meeting runtime under the
-user's home directory and downloads the matching GitHub release. Request this
+user's home directory and downloads the matching immutable R2 release bundle.
+Request this
 scoped Codex sandbox approval once; do not request Windows administrator
 privileges, and do not first run the command inside the workspace-only sandbox.
 Claude Code uses its normal command execution path.

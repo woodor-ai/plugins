@@ -1,0 +1,170 @@
+# Plugin release standard
+
+This document is the authority for packaging and releasing this repository.
+It separates rules shared by every plugin from the additional rules owned by
+each plugin. Release artifacts, source versions, manifests, and public docs
+must describe the same release before anything is published.
+
+## Shared release rules
+
+1. Update local `main` from the SSH remote and preserve unrelated working-tree
+   changes. Release from a committed `main`, not from a temporary checkout.
+2. Treat each plugin manifest version as the public cache and installation
+   version. Any distributed behavior change must bump every manifest and
+   package version owned by that plugin in the same commit.
+3. Update user documentation, `docs/INDEX.md`, tests, and examples whenever a
+   public command, supported host, install path, or dependency changes.
+4. Run the target plugin's tests and all repository-level boundary tests that
+   exercise its manifests or installer. A release is not complete when only
+   the changed unit test passes.
+5. Use English commit messages. Push and pull over SSH. Do not create a PR
+   unless explicitly requested.
+6. Never publish from an uncommitted tree, a moving branch archive, or a local
+   marketplace/cache directory. Published inputs must be reproducible from the
+   release commit.
+7. Verify bytes fetched through the public URL after upload. A successful
+   upload command is not delivery verification.
+
+## Marketplace plugin releases
+
+The repository marketplace files list plugin locations but do not duplicate
+plugin versions. Marketplace releases therefore require a version bump in the
+plugin manifests followed by a tested commit on `main`.
+
+| Plugin | Hosts | Version authorities | Plugin-specific checks |
+| --- | --- | --- | --- |
+| `handoff` | Claude Code and Codex | both plugin manifests | card format, pickup hook, both host skill assets |
+| `init-agents` | Claude Code and Codex | both plugin manifests | generated Claude/Codex profiles, conflict-safe apply behavior |
+| `save-money` | Claude Code | Claude plugin manifest | every registered hook, configuration defaults, agent-meeting/handoff dependency claims |
+| `init-proj` | Claude Code | Claude plugin manifest | AMBridge dependency, supported platform, generated-project claims |
+
+For a marketplace-only plugin, push the release commit to `main` after tests.
+No R2 object is produced. Keep the paired Claude/Codex manifest versions equal
+for a dual-host plugin. `init-proj` remains a legacy wrapper around the private
+AMBridge project-creation command; do not describe it as a standalone or
+cross-platform plugin.
+
+## agent-meeting release model
+
+`agent-meeting` is not released from a marketplace checkout. Its complete
+installer, updater, and first-use runtime bootstrap use Cloudflare R2 through
+`dl.omi-atlas.com`. GitHub remains the source repository, but it is not a
+runtime download origin.
+
+### Version authorities
+
+An agent-meeting release uses one semantic version in all of these locations:
+
+- Claude Code and Codex plugin manifests;
+- `agent-meeting/pyproject.toml` and the package `__version__`;
+- `mycodex/pyproject.toml`, its pinned agent-meeting dependency, and package
+  `__version__`;
+- the public installer `RELEASE` value;
+- version assertions in distribution, integration, activation, and uninstall
+  tests;
+- `agent-meeting/docs/CLI_SURFACE.md`.
+
+The release commit receives the repository tag `vX.Y.Z`. Do not publish a
+cachebuster suffix or retain acceptance of an older version form.
+
+### R2 layout and public URLs
+
+Bucket: `omi-dist`
+
+| R2 object key | Public URL | Cache policy | Purpose |
+| --- | --- | --- | --- |
+| `am` | `https://dl.omi-atlas.com/am` | `no-store, max-age=0` | short one-command installer |
+| `am/install.py` | `https://dl.omi-atlas.com/am/install.py` | `no-store, max-age=0` | stable installer fetched by `am-update` |
+| `am/releases/vX.Y.Z/plugins.zip` | `https://dl.omi-atlas.com/am/releases/vX.Y.Z/plugins.zip` | `public, max-age=31536000, immutable` | immutable source bundle for that release |
+
+The two stable installer objects contain identical bytes. They select one
+immutable release bundle; publish the bundle first, then replace the stable
+installer objects. Never overwrite or delete a versioned bundle.
+
+### User installation and update
+
+macOS and Linux:
+
+```sh
+curl -fsSL https://dl.omi-atlas.com/am | python3 -
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://dl.omi-atlas.com/am | py -3 -
+```
+
+Existing installations update with:
+
+```text
+am-update
+am-update --target claude-code
+am-update --target codex
+am-update --check
+```
+
+`am-update` downloads `https://dl.omi-atlas.com/am/install.py`; that installer
+downloads the versioned R2 bundle. The bundled first-use bootstrap derives the
+same R2 bundle URL from its plugin manifest version. Neither path may clone a
+repository, read a local checkout, or download a GitHub archive. Legacy local
+checkouts may only be removed as migration cleanup.
+
+### Packaging and publishing
+
+For release `vX.Y.Z`:
+
+1. Bump every version authority listed above and update current docs.
+2. Run the full test suite and platform-specific installer tests.
+3. Commit and push `main`, create annotated tag `vX.Y.Z` on that commit, and
+   push the tag over SSH.
+4. Build the immutable bundle from the tag with one top-level directory:
+
+   ```sh
+   git archive --format=zip \
+     --prefix="plugins-vX.Y.Z/" \
+     --output="/tmp/plugins-vX.Y.Z.zip" \
+     "vX.Y.Z"
+   ```
+
+5. Confirm the bundle contains `plugins-vX.Y.Z/installers/install.py` and that
+   its manifests and public installer carry `X.Y.Z`.
+6. Upload the immutable bundle before either stable installer object:
+
+   ```sh
+   wrangler r2 object put \
+     "omi-dist/am/releases/vX.Y.Z/plugins.zip" \
+     --file "/tmp/plugins-vX.Y.Z.zip" \
+     --content-type "application/zip" \
+     --cache-control "public, max-age=31536000, immutable" \
+     --remote
+
+   wrangler r2 object put "omi-dist/am" \
+     --file "installers/public/agent-meeting-install.py" \
+     --content-type "text/x-python; charset=utf-8" \
+     --cache-control "no-store, max-age=0" \
+     --remote
+
+   wrangler r2 object put "omi-dist/am/install.py" \
+     --file "installers/public/agent-meeting-install.py" \
+     --content-type "text/x-python; charset=utf-8" \
+     --cache-control "no-store, max-age=0" \
+     --remote
+   ```
+
+   Use the existing Wrangler login or the R2-scoped credentials referenced by
+   the local secrets memo. Never copy credentials into this repository.
+7. Download all three public objects. Compare SHA-256 for the bundle and both
+   installer objects against the local files, inspect response cache headers,
+   and run ZIP integrity validation on the delivered bundle.
+8. Run one clean-install smoke test and one `am-update` smoke test. Validate
+   macOS locally and Windows on the designated LAN machine. A running
+   `am-codexd` with active sessions must defer its version switch rather than
+   interrupt those sessions.
+
+### Rollback
+
+Keep every versioned R2 bundle immutable. To roll back, restore both stable
+installer objects from the prior release tag, upload those identical bytes
+with the stable no-store cache policy, and verify delivery again. Do not move a
+tag or overwrite a released bundle.

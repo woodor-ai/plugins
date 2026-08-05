@@ -29,7 +29,8 @@ irm https://dl.omi-atlas.com/am | py -3 -
 
 Pass `--target claude-code`, `--target codex`, or `--target all` after the
 stdin marker when a specific integration is required. The public bootstrap is
-pinned to a released Git tag rather than a moving branch.
+pinned to an immutable versioned bundle in the `omi-dist` R2 bucket rather
+than a moving branch or repository checkout.
 
 The bootstrap installs the Claude Code `/imagent` and `/talkto` skills and the
 Codex `$imagent` and `$talkto` skills directly from the pinned release. Neither
@@ -71,8 +72,9 @@ Use the single stable updater after an initial installation:
 am-update
 ```
 
-It fetches the public release, installs one new immutable host runtime, then
-refreshes the installed Claude Code and Codex integrations. `am-update` only
+It fetches the stable installer and immutable release bundle from R2, installs
+one new host runtime, then refreshes the installed Claude Code and Codex
+integrations. `am-update` only
 targets clients detected on the machine; use `am-update --target claude-code`
 or `am-update --target codex` to select one explicitly, and `am-update --check`
 to inspect the current state. A Codex runtime switch refuses to interrupt active
@@ -85,6 +87,9 @@ tasks execute immutable versioned launchers, so subsequent updates do not lock
 the public service commands. The foreground launcher and Codex daemon share
 one resolver for npm-installed `codex.cmd`, invoking it through the Windows
 command processor instead of assuming that a native `codex.exe` exists.
+
+Maintainer packaging, R2 object keys, publish order, and delivery verification
+are defined in [`../docs/RELEASE.md`](../docs/RELEASE.md).
 
 ## Uninstall
 

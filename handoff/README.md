@@ -13,7 +13,9 @@ Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-sour
 /plugin install handoff@woodor
 ```
 
-Compatible with Claude Code.
+Compatible with Claude Code and Codex. Claude Code uses `/handoff`; Codex uses
+`$handoff` or the built-in skills picker. Both hosts write the same five-section
+card, while their pending-file directories remain host-specific.
 
 ## How it works
 

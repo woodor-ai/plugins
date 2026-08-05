@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Callable
 
 
-REPOSITORY_ARCHIVE = (
-    "https://codeload.github.com/woodor-ai/plugins/zip/refs/{ref}"
+RELEASE_ARCHIVE = (
+    "https://dl.omi-atlas.com/am/releases/v{version}/plugins.zip"
 )
 TARGETS = ("claude-code", "codex", "all")
 
@@ -53,8 +53,9 @@ def plugin_version(root: Path | None) -> str | None:
 
 def release_archive_url(root: Path | None) -> str:
     version = plugin_version(root)
-    reference = f"tags/v{version}" if version else "heads/main"
-    return REPOSITORY_ARCHIVE.format(ref=reference)
+    if version is None:
+        raise RuntimeError("plugin version is unavailable")
+    return RELEASE_ARCHIVE.format(version=version)
 
 
 def extracted_source_root(directory: Path) -> Path:

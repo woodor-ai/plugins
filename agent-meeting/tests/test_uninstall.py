@@ -20,7 +20,7 @@ def _manifest(meeting_home: Path, targets=None):
 
     return record_installation(
         meeting_home,
-        version="0.18.24",
+        version="0.18.25",
         targets=set(targets or {"codex"}),
     )
 
@@ -31,7 +31,7 @@ def test_install_manifest_merges_targets_and_validates_ownership(tmp_path):
     first = _manifest(tmp_path, {"codex"})
     second = install_manifest.record_installation(
         tmp_path,
-        version="0.18.24",
+        version="0.18.25",
         targets={"claude-code"},
     )
 

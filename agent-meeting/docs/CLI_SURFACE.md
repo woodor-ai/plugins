@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-06 · version 0.18.24
+Last updated: 2026-08-05 · version 0.18.25
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -28,15 +28,16 @@ irm https://dl.omi-atlas.com/am | py -3 -
 ```
 
 It detects the locally installed clients and selects `claude-code`, `codex`,
-or `all`. Its source archive is pinned to the matching release tag.
+or `all`. Its source bundle is the immutable R2 object
+`am/releases/vX.Y.Z/plugins.zip` for the matching plugin version.
 
 When bare `$imagent` finds no PATH command named `am`, it runs the bundled
 `scripts/bootstrap_runtime.py`. Subcommands invoke their stable launcher
 directly and bootstrap only after a command-not-found result, so normal use has
 no repeated existence preflight. Codex requests one scoped sandbox approval
-because installation downloads the matching Git tag and writes the user-owned
-runtime outside the workspace; Windows administrator privileges are not
-required. A bootstrapped plain Codex session must then be restarted from a new
+because installation downloads the matching R2 release bundle and writes the
+user-owned runtime outside the workspace; Windows administrator privileges are
+not required. A bootstrapped plain Codex session must then be restarted from a new
 terminal through `amcodex <name>`. Claude Code can continue the current
 `/imagent` workflow.
 
@@ -46,10 +47,11 @@ The Claude Code integration copies its two owned skills into
 `am-claude-session-start` launcher and does not depend on a plugin cache or
 marketplace checkout.
 
-`am-update` is the only public distribution updater. It downloads the current
-R2-hosted installer into a temporary directory; that installer downloads one
-fixed-tag release archive, creates and atomically selects an immutable host
-runtime, and refreshes each installed integration from the extracted snapshot.
+`am-update` is the only public distribution updater. It downloads
+`https://dl.omi-atlas.com/am/install.py` into a temporary directory; that
+installer downloads one immutable, versioned R2 release bundle, creates and
+atomically selects a host runtime, and refreshes each installed integration
+from the extracted snapshot. Neither hop reads GitHub or a local repository.
 The Claude Code and Codex integrations copy their two owned skills directly
 into `~/.claude/skills` and `~/.codex/skills`; neither registers the extracted
 repository as a marketplace or invokes a Git-based updater. The temporary
@@ -57,6 +59,9 @@ installer, archive, and extracted source are deleted when installation exits. A
 pre-0.18.17 `~/.agent-meeting/updates/plugins` checkout is removed during
 installation. Public releases use their normal semantic version without
 cachebuster suffixes.
+
+The R2 bucket, object keys, cache policies, publish order, and verification
+steps are defined in [`../../docs/RELEASE.md`](../../docs/RELEASE.md).
 
 ```text
 am-update

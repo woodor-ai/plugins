@@ -2,7 +2,9 @@
 
 这里保存已经完成使命、被当前实现取代，或只适用于旧版本的架构、设计与契约文档。
 这些文件用于追溯决策背景，不是当前行为规范；当前使用方式以各插件的 `README.md`、
-`agent-meeting/docs/CLI_SURFACE.md`、代码和测试为准。
+`agent-meeting/docs/CLI_SURFACE.md`、代码和测试为准。当前文档入口和任务路由见
+[`docs/INDEX.md`](../INDEX.md)。任何 agent 都不得把本目录内容当作现行规范，除非
+文档索引明确要求读取某一份历史材料。
 
 ## Architecture
 

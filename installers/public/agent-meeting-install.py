@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the released agent-meeting integration from its public source archive."""
+"""Install the released agent-meeting integration from its R2 release bundle."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ import zipfile
 from pathlib import Path
 
 
-RELEASE = "v0.18.24"
+RELEASE = "v0.18.25"
 ARCHIVE_URL = (
-    "https://codeload.github.com/woodor-ai/plugins/zip/refs/tags/" + RELEASE
+    "https://dl.omi-atlas.com/am/releases/" + RELEASE + "/plugins.zip"
 )
 TARGETS = ("claude-code", "codex", "all")
 

@@ -41,24 +41,27 @@ def test_release_archive_uses_installed_plugin_version(tmp_path):
     manifest = tmp_path / ".codex-plugin" / "plugin.json"
     manifest.parent.mkdir()
     manifest.write_text(
-        json.dumps({"version": "0.18.24+codex.local-test"}),
+        json.dumps({"version": "0.18.25+codex.local-test"}),
         encoding="utf-8",
     )
 
-    assert module.release_archive_url(tmp_path).endswith("/tags/v0.18.24")
+    assert module.release_archive_url(tmp_path) == (
+        "https://dl.omi-atlas.com/am/releases/v0.18.25/plugins.zip"
+    )
 
 
 def test_bundled_script_resolves_plugin_root_and_version():
     module = load_bootstrap()
 
     assert module.plugin_root(SCRIPT) == PRODUCT_ROOT
-    assert module.plugin_version(PRODUCT_ROOT) == "0.18.24"
+    assert module.plugin_version(PRODUCT_ROOT) == "0.18.25"
 
 
-def test_standalone_bootstrap_uses_main_archive():
+def test_standalone_bootstrap_requires_a_plugin_version():
     module = load_bootstrap()
 
-    assert module.release_archive_url(None).endswith("/heads/main")
+    with pytest.raises(RuntimeError, match="plugin version is unavailable"):
+        module.release_archive_url(None)
 
 
 def test_bootstrap_downloads_and_runs_shared_installer(capsys):

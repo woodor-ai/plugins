@@ -2,11 +2,14 @@
 
 > The open-source toolkit for running AI agents at scale.
 
-Four plugins that work as one system: keep your AI spend under control, and keep your agents working together instead of in isolation. Free, open-source, installed in seconds.
+Five plugin packages cover agent coordination, session continuity, project
+profiles, cost controls, and legacy project scaffolding. Host support and
+distribution differ by plugin, so use the installation path listed below.
 
 ## Install
 
-完整安装 `agent-meeting`（自动检测 Claude Code、Codex，二者都存在时同时安装）：
+Complete `agent-meeting` installation automatically detects Claude Code and
+Codex and installs both integrations when both clients are present.
 
 macOS / Linux：
 
@@ -20,31 +23,29 @@ Windows PowerShell：
 irm https://dl.omi-atlas.com/am | py -3 -
 ```
 
-安装器固定下载已发布版本，并建立主机运行时、后台服务、PATH，以及 Claude Code
-和 Codex 的用户 skills。agent-meeting 的两个客户端集成都不会把本地仓库注册成
-marketplace，也不依赖 Git 执行更新。
-如需卸载，先运行 `am uninstall --dry-run` 查看范围，再运行 `am uninstall`；
-无人值守环境可用 `am uninstall --yes`。
+The installer downloads an immutable versioned bundle from R2, then creates the
+host runtime, user services, PATH entry, and Claude Code/Codex skills. Install
+and update never clone a repository or depend on a marketplace checkout. Use
+`am-update` for later releases. Preview removal with `am uninstall --dry-run`.
 
-Claude Code：
+Install the other Claude Code plugins through the Woodor marketplace:
 
 ```
 /plugin marketplace add woodor-ai/plugins
 /plugin install <plugin-name>@woodor
 ```
 
-Codex：
+Codex marketplace packages currently include `agent-meeting`, `handoff`, and
+`init-agents`:
 
 ```bash
 codex plugin marketplace add woodor-ai/plugins
 codex plugin add <plugin-name>@woodor
 ```
 
-完整安装 `agent-meeting` 后启动一个新的 Codex 会话并调用 `$imagent`；无需克隆
-仓库或手动进入 marketplace 缓存目录。新开终端后可直接运行 `amcodex <name>`
-启动托管会话。
-
-Claude Code 支持仓库中的全部插件；Codex 原生 marketplace 当前包含 `agent-meeting`、`handoff` 和 `init-agents`。
+After complete `agent-meeting` installation, open a new terminal and run
+`amcodex <name>` for a managed Codex session. No repository clone or manual
+marketplace-cache access is required.
 
 ## The plugins
 
@@ -55,10 +56,13 @@ They split into two jobs — keeping your agents in sync, and keeping your costs
 #### [`agent-meeting`](./agent-meeting/) — connect agents across windows and machines
 Your agents stop working in isolation. Sessions running in different windows — or on different machines — can message each other, chat as a group, and pull each other in to help. Built on mDNS discovery and a SQLite-backed daemon, so there's no server to set up.
 
-使用上面的完整安装命令直接安装；Claude Code 会显示 `/imagent` 和 `/talkto`。
+Use the complete installer above. Claude Code exposes `/imagent` and `/talkto`;
+Codex exposes `$imagent` and `$talkto`.
 
 #### [`init-agents`](./init-agents/) — cost-tiered subagents in one command
-为 Claude Code 或 Codex 设置三个 project-local profile：`explore` 只读调查、`rd` 实现与验证、`planner` 规划与独立审查。模型和 reasoning 档位按宿主分别配置。
+Install three project-local profiles for Codex or Claude Code: `explore` for
+read-only investigation, `rd` for bounded implementation, and `planner` for
+high-impact planning and review.
 
 ```
 /plugin install init-agents@woodor
@@ -77,12 +81,28 @@ At session end, write a short cue card — what's done, what's pending, what to 
 /plugin install handoff@woodor
 ```
 
+Codex users install the same plugin with `codex plugin add handoff@woodor`.
+
 #### [`save-money`](./save-money/) — lower your bill without changing how you work
-Three background hooks: auto-handoff and restart before you blow your budget, truncation of oversized tool output, and routing image reads to a cheaper subagent. All off by default, opt in per feature.
+Four Claude Code hooks cover auto-handoff, oversized-output truncation, image
+delegation, and main-agent edit delegation. The first three are opt-in; edit
+delegation is opt-out.
 
 ```
 /plugin install save-money@woodor
 ```
+
+### Create projects
+
+#### [`init-proj`](./init-proj/) — legacy AMBridge project wrapper
+
+This Claude Code-only wrapper calls the private AMBridge project-creation
+command. It is not standalone and Windows director launch is not supported.
+
+## Documentation
+
+Start with [`docs/INDEX.md`](./docs/INDEX.md). Release and R2 publishing rules
+are in [`docs/RELEASE.md`](./docs/RELEASE.md).
 
 ## License
 
