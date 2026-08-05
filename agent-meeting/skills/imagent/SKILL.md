@@ -33,9 +33,11 @@ Do not run a launcher-existence preflight before every invocation.
   launcher does not exist. Do not bootstrap for an application error returned
   by an existing launcher. Help-only dispatches make no runtime call.
 
-Bootstrap from this plugin's bundled script. Resolve it relative to this
-`SKILL.md` as `../../scripts/bootstrap_runtime.py`; do not search marketplace
-cache directories or ask the user to clone the repository.
+Bootstrap from the bundled script. A standalone Codex skill installation keeps
+it at `scripts/bootstrap_runtime.py` relative to this `SKILL.md`; a native
+plugin keeps it at `../../scripts/bootstrap_runtime.py`. Use the first path
+that exists. Do not search marketplace cache directories or ask the user to
+clone the repository.
 
 - Codex on macOS/Linux: `python3 <plugin-root>/scripts/bootstrap_runtime.py --target codex`
 - Codex on Windows: `py -3 "<plugin-root>/scripts/bootstrap_runtime.py" --target codex`

@@ -12,6 +12,18 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _command_failure(stage: str, result: subprocess.CompletedProcess) -> None:
+    detail = (
+        getattr(result, "stderr", "")
+        or getattr(result, "stdout", "")
+        or "no diagnostic output"
+    ).strip()
+    print(
+        f"ERROR: {stage} failed (exit {result.returncode}): {detail}",
+        file=sys.stderr,
+    )
+
+
 def installed_plugin(
     claude: str,
     plugin_id: str,
@@ -23,10 +35,15 @@ def installed_plugin(
         text=True,
     )
     if listed.returncode != 0:
+        _command_failure("Claude plugin list", listed)
         return None, None
     try:
         plugins = json.loads(listed.stdout)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError) as error:
+        print(
+            f"ERROR: Claude plugin list returned invalid JSON: {error}",
+            file=sys.stderr,
+        )
         return None, None
     for plugin in plugins:
         if plugin.get("id") == plugin_id:
@@ -41,12 +58,12 @@ def source_plugin_version() -> str:
 
 
 def refresh_local_marketplace(claude: str) -> int:
-    subprocess.run(
+    removed = subprocess.run(
         [claude, "plugin", "marketplace", "remove", "woodor"],
         capture_output=True,
         text=True,
     )
-    return subprocess.run(
+    added = subprocess.run(
         [
             claude,
             "plugin",
@@ -54,7 +71,15 @@ def refresh_local_marketplace(claude: str) -> int:
             "add",
             str(REPOSITORY_ROOT),
         ]
-    ).returncode
+    )
+    if added.returncode != 0:
+        if removed.returncode != 0:
+            _command_failure("Claude marketplace remove", removed)
+        print(
+            f"ERROR: Claude marketplace add failed (exit {added.returncode})",
+            file=sys.stderr,
+        )
+    return added.returncode
 
 
 def main() -> int:
@@ -64,7 +89,16 @@ def main() -> int:
         return 1
     plugin_id = "agent-meeting@woodor"
     is_installed, installed_version = installed_plugin(claude, plugin_id)
-    bundled_version = source_plugin_version()
+    if is_installed is None:
+        return 1
+    try:
+        bundled_version = source_plugin_version()
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        print(
+            f"ERROR: bundled Claude plugin manifest is invalid: {error}",
+            file=sys.stderr,
+        )
+        return 1
     if is_installed and installed_version == bundled_version:
         print(
             f"Claude plugin already matches version {bundled_version}; "
@@ -81,12 +115,24 @@ def main() -> int:
             f"-> {bundled_version}...",
             flush=True,
         )
-        return subprocess.run(
+        updated = subprocess.run(
             [claude, "plugin", "update", plugin_id]
-        ).returncode
-    return subprocess.run(
+        )
+        if updated.returncode != 0:
+            print(
+                f"ERROR: Claude plugin update failed (exit {updated.returncode})",
+                file=sys.stderr,
+            )
+        return updated.returncode
+    installed = subprocess.run(
         [claude, "plugin", "install", plugin_id]
-    ).returncode
+    )
+    if installed.returncode != 0:
+        print(
+            f"ERROR: Claude plugin install failed (exit {installed.returncode})",
+            file=sys.stderr,
+        )
+    return installed.returncode
 
 
 if __name__ == "__main__":

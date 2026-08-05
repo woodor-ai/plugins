@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -15,6 +16,8 @@ from agent_meeting.operating_systems import message_hub_user_service
 
 
 PLUGIN_ID = "agent-meeting@woodor"
+CODEX_SKILL_NAMES = ("imagent", "talkto")
+CODEX_SKILL_OWNER_FILE = ".agent-meeting-owner.json"
 
 
 def _codex_daemon_info() -> dict:
@@ -85,18 +88,52 @@ def _remove_plugin(client: str) -> None:
         if client == "codex"
         else [executable, "plugin", "uninstall", PLUGIN_ID, "-y"]
     )
-    result = subprocess.run(command)
+    result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").lower()
+        if client == "codex" and (
+            "not installed" in detail
+            or "not configured" in detail
+            or "not found" in detail
+        ):
+            return
         raise RuntimeError(
             f"{executable_name} could not remove {PLUGIN_ID}; "
             "the runtime was preserved so the uninstall can be retried"
         )
 
 
+def _remove_codex_skills() -> None:
+    codex_home = Path(
+        os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+    )
+    for skill_name in CODEX_SKILL_NAMES:
+        directory = codex_home / "skills" / skill_name
+        marker = directory / CODEX_SKILL_OWNER_FILE
+        try:
+            owner = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            if directory.exists():
+                print(
+                    f"warning: preserving unowned Codex skill: {directory}",
+                    file=sys.stderr,
+                )
+            continue
+        if owner.get("product") != "agent-meeting":
+            print(
+                f"warning: preserving unowned Codex skill: {directory}",
+                file=sys.stderr,
+            )
+            continue
+        shutil.rmtree(directory)
+
+
 def _print_plan(meeting_home: Path, targets: list[str]) -> None:
     print("agent-meeting complete uninstall plan:")
     for target in targets:
         print(f"  - remove {target} plugin registration: {PLUGIN_ID}")
+    if "codex" in targets:
+        print("  - remove agent-meeting-owned Codex skills: imagent, talkto")
     print("  - stop and delete am-msgd and am-ctld user services")
     if "codex" in targets:
         print("  - stop am-codexd (only when no sessions are active)")
@@ -145,6 +182,8 @@ def run(
     )
     for target in targets:
         _remove_plugin(target)
+    if "codex" in targets:
+        _remove_codex_skills()
     _remove_path_entry(meeting_home)
     uninstall_cleanup.schedule_cleanup(meeting_home)
     print(

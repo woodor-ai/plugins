@@ -1,6 +1,9 @@
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,7 +52,7 @@ def test_one_cross_platform_installer_owns_every_target(tmp_path, monkeypatch):
     assert "--control-url" in commands[0]
     assert "--enable-full-automation" in commands[0]
     assert any("register-claude-marketplace.py" in command[1] for command in commands)
-    assert any("register-codex-marketplace.py" in command[1] for command in commands)
+    assert any("install-codex-integration.py" in command[1] for command in commands)
     assert commands[-1][-2:] == ["update", "--defer-if-active"]
     assert recorded == [(tmp_path / "plugins", meeting_home, "all")]
     assert not legacy_checkout.exists()
@@ -59,3 +62,24 @@ def test_legacy_platform_installers_are_removed():
     assert INSTALLER.is_file()
     assert not (ROOT / "installers/claude-code").exists()
     assert not (ROOT / "installers/codex").exists()
+
+
+def test_child_installer_failure_identifies_stage(tmp_path, monkeypatch, capsys):
+    installer = _load_installer()
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(5, "install-codex-integration.py")
+        ),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        installer._run_python(
+            tmp_path,
+            "installers/shared/install-codex-integration.py",
+        )
+
+    assert capsys.readouterr().err.splitlines() == [
+        "ERROR: installer stage install-codex-integration.py failed (exit 5)"
+    ]

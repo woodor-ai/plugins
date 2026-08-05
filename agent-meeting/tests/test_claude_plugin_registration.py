@@ -57,7 +57,7 @@ def test_main_updates_an_existing_outdated_plugin(registration, monkeypatch):
     monkeypatch.setattr(
         registration,
         "source_plugin_version",
-        lambda: "0.18.17",
+        lambda: "0.18.18",
     )
 
     assert registration.main() == 0
@@ -85,7 +85,7 @@ def test_main_installs_when_plugin_is_absent(registration, monkeypatch):
     monkeypatch.setattr(
         registration,
         "source_plugin_version",
-        lambda: "0.18.17",
+        lambda: "0.18.18",
     )
 
     assert registration.main() == 0
@@ -94,3 +94,41 @@ def test_main_installs_when_plugin_is_absent(registration, monkeypatch):
         ["claude", "plugin", "marketplace", "add", str(REPOSITORY_ROOT)],
         ["claude", "plugin", "install", "agent-meeting@woodor"],
     ]
+
+
+def test_main_reports_plugin_list_failure(registration, monkeypatch, capsys):
+    monkeypatch.setattr(registration.shutil, "which", lambda _name: "claude")
+    monkeypatch.setattr(
+        registration.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            5,
+            "",
+            "Access is denied",
+        ),
+    )
+
+    assert registration.main() == 1
+    assert capsys.readouterr().err.splitlines() == [
+        "ERROR: Claude plugin list failed (exit 5): Access is denied"
+    ]
+
+
+def test_main_reports_invalid_plugin_list_json(registration, monkeypatch, capsys):
+    monkeypatch.setattr(registration.shutil, "which", lambda _name: "claude")
+    monkeypatch.setattr(
+        registration.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            "{",
+            "",
+        ),
+    )
+
+    assert registration.main() == 1
+    assert "ERROR: Claude plugin list returned invalid JSON:" in (
+        capsys.readouterr().err
+    )

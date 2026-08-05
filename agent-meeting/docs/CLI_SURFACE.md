@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-04 · version 0.18.17
+Last updated: 2026-08-04 · version 0.18.18
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -14,9 +14,9 @@ and redirect standard output and errors to the configured service log files.
 The public console launchers remain available for foreground diagnostics.
 
 Claude Code exposes the workflows as `/imagent` and `/talkto`. Codex loads the
-same skills from the native plugin and exposes them through `/skills` or
-`$imagent` and `$talkto`; Codex does not create top-level slash commands from
-skill names.
+same workflows from agent-meeting-owned user skills and exposes them through
+`/skills` or `$imagent` and `$talkto`; Codex does not create top-level slash
+commands from skill names.
 
 ## Distribution update
 
@@ -49,11 +49,13 @@ not produce a failed Claude hook.
 R2-hosted installer into a temporary directory; that installer downloads one
 fixed-tag release archive, creates and atomically selects an immutable host
 runtime, and refreshes each installed integration from the extracted snapshot.
-Neither the updater nor marketplace refresh invokes Git or retains a source
-checkout. The temporary installer, archive, and extracted source are deleted
-when installation exits. A pre-0.18.17 `~/.agent-meeting/updates/plugins`
-checkout is removed during installation. Public releases use their normal
-semantic version without cachebuster suffixes.
+The Codex integration copies its two owned skills directly into
+`~/.codex/skills`; it never registers the extracted repository as a marketplace
+or invokes `codex plugin marketplace upgrade`. The temporary installer,
+archive, and extracted source are deleted when installation exits. A
+pre-0.18.17 `~/.agent-meeting/updates/plugins` checkout is removed during
+installation. Public releases use their normal semantic version without
+cachebuster suffixes.
 
 ```text
 am-update
@@ -84,10 +86,11 @@ am uninstall --yes
 ```
 
 The installer writes `~/.agent-meeting/install-manifest.json`; uninstall uses
-that ownership record to remove only the selected Claude Code/Codex plugin
-registrations, both user services, the exact PATH entry created at install
-time, and the complete agent-meeting home including messages. The shared
-Woodor marketplace is preserved. An active amcodex lease blocks uninstall.
+that ownership record to remove only the selected Claude Code plugin
+registration and/or agent-meeting-owned Codex skills, both user services, the
+exact PATH entry created at install time, and the complete agent-meeting home
+including messages. The shared Woodor marketplace is preserved. An active
+amcodex lease blocks uninstall.
 The final runtime-directory deletion is delegated so Windows can remove the
 launcher that invoked the command.
 

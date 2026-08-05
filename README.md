@@ -20,7 +20,9 @@ Windows PowerShell：
 irm https://dl.omi-atlas.com/am | py -3 -
 ```
 
-安装器固定下载已发布版本，并建立主机运行时、后台服务、PATH 和原生插件集成。
+安装器固定下载已发布版本，并建立主机运行时、后台服务、PATH、Claude 插件集成和
+Codex 用户 skills。Codex 集成不会把本地仓库注册成 marketplace，也不调用
+`codex plugin marketplace upgrade`。
 如需卸载，先运行 `am uninstall --dry-run` 查看范围，再运行 `am uninstall`；
 无人值守环境可用 `am uninstall --yes`。
 
@@ -38,9 +40,9 @@ codex plugin marketplace add woodor-ai/plugins
 codex plugin add <plugin-name>@woodor
 ```
 
-安装 `agent-meeting` 后启动一个新的 Codex 会话并调用 `$imagent`。首次使用会
-自动安装 Windows、macOS 或 Linux 主机运行时；无需克隆仓库或手动进入 marketplace
-缓存目录。自举完成后新开终端，直接运行 `amcodex <name>` 启动托管会话。
+完整安装 `agent-meeting` 后启动一个新的 Codex 会话并调用 `$imagent`；无需克隆
+仓库或手动进入 marketplace 缓存目录。新开终端后可直接运行 `amcodex <name>`
+启动托管会话。
 
 Claude Code 支持仓库中的全部插件；Codex 原生 marketplace 当前包含 `agent-meeting`、`handoff` 和 `init-agents`。
 

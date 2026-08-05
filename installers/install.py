@@ -62,14 +62,22 @@ def _run_python(
     relative_script: str,
     *arguments: str,
 ) -> None:
-    subprocess.run(
-        [
-            sys.executable,
-            str(source_root / relative_script),
-            *arguments,
-        ],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                str(source_root / relative_script),
+                *arguments,
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        print(
+            "ERROR: installer stage "
+            f"{Path(relative_script).name} failed (exit {error.returncode})",
+            file=sys.stderr,
+        )
+        raise
 
 
 def install(
@@ -114,7 +122,14 @@ def install(
         if configure_codex:
             _run_python(
                 source_root,
-                "installers/shared/register-codex-marketplace.py",
+                "installers/shared/install-codex-integration.py",
+                "--codex-home",
+                str(
+                    Path(
+                        os.environ.get("CODEX_HOME")
+                        or (Path.home() / ".codex")
+                    )
+                ),
             )
             daemon = meeting_home / "bin" / (
                 "am-codexd.exe"

@@ -20,7 +20,7 @@ def _manifest(meeting_home: Path, targets=None):
 
     return record_installation(
         meeting_home,
-        version="0.18.17",
+        version="0.18.18",
         targets=set(targets or {"codex"}),
     )
 
@@ -31,7 +31,7 @@ def test_install_manifest_merges_targets_and_validates_ownership(tmp_path):
     first = _manifest(tmp_path, {"codex"})
     second = install_manifest.record_installation(
         tmp_path,
-        version="0.18.17",
+        version="0.18.18",
         targets={"claude-code"},
     )
 
@@ -149,6 +149,11 @@ def test_uninstall_removes_owned_components_and_schedules_cleanup(
         lambda _home: events.append("path"),
     )
     monkeypatch.setattr(
+        uninstall,
+        "_remove_codex_skills",
+        lambda: events.append("codex-skills"),
+    )
+    monkeypatch.setattr(
         uninstall.uninstall_cleanup,
         "schedule_cleanup",
         lambda _home: events.append("cleanup"),
@@ -161,9 +166,34 @@ def test_uninstall_removes_owned_components_and_schedules_cleanup(
         "ctld",
         "claude-code",
         "codex",
+        "codex-skills",
         "path",
         "cleanup",
     ]
+
+
+def test_uninstall_removes_only_agent_meeting_owned_codex_skills(
+    tmp_path,
+    monkeypatch,
+):
+    from agent_meeting.installation import uninstall
+
+    codex_home = tmp_path / "codex"
+    owned = codex_home / "skills" / "imagent"
+    unowned = codex_home / "skills" / "talkto"
+    owned.mkdir(parents=True)
+    unowned.mkdir(parents=True)
+    (owned / uninstall.CODEX_SKILL_OWNER_FILE).write_text(
+        json.dumps({"product": "agent-meeting"}),
+        encoding="utf-8",
+    )
+    (unowned / "SKILL.md").write_text("user content", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    uninstall._remove_codex_skills()
+
+    assert not owned.exists()
+    assert unowned.is_dir()
 
 
 def test_posix_path_removal_preserves_unrelated_shell_configuration(
