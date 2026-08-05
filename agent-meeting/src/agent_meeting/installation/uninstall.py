@@ -10,7 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_meeting.installation import install_manifest, uninstall_cleanup
+from agent_meeting.installation import (
+    claude_integration,
+    install_manifest,
+    uninstall_cleanup,
+)
 from agent_meeting.lifecycle_control import user_service as lifecycle_user_service
 from agent_meeting.operating_systems import message_hub_user_service
 
@@ -128,10 +132,26 @@ def _remove_codex_skills() -> None:
         shutil.rmtree(directory)
 
 
+def _remove_claude_integration(meeting_home: Path) -> None:
+    claude_home = Path(
+        os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")
+    )
+    claude_integration.remove_skills(claude_home)
+    claude_integration.remove_user_configuration(
+        settings_path=claude_home / "settings.json",
+        meeting_home=meeting_home,
+    )
+
+
 def _print_plan(meeting_home: Path, targets: list[str]) -> None:
     print("agent-meeting complete uninstall plan:")
     for target in targets:
-        print(f"  - remove {target} plugin registration: {PLUGIN_ID}")
+        print(f"  - remove legacy {target} plugin registration if present: {PLUGIN_ID}")
+    if "claude-code" in targets:
+        print(
+            "  - remove agent-meeting-owned Claude skills and "
+            "SessionStart hook"
+        )
     if "codex" in targets:
         print("  - remove agent-meeting-owned Codex skills: imagent, talkto")
     print("  - stop and delete am-msgd and am-ctld user services")
@@ -182,6 +202,8 @@ def run(
     )
     for target in targets:
         _remove_plugin(target)
+    if "claude-code" in targets:
+        _remove_claude_integration(meeting_home)
     if "codex" in targets:
         _remove_codex_skills()
     _remove_path_entry(meeting_home)

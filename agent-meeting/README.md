@@ -31,11 +31,11 @@ Pass `--target claude-code`, `--target codex`, or `--target all` after the
 stdin marker when a specific integration is required. The public bootstrap is
 pinned to a released Git tag rather than a moving branch.
 
-The bootstrap installs the Codex `$imagent` and `$talkto` skills directly from
-the pinned release. It does not register a local repository as a marketplace or
-use `codex plugin marketplace upgrade`. Start a new Codex session after
-installation so Codex discovers the refreshed skills. Windows administrator
-privileges are not required.
+The bootstrap installs the Claude Code `/imagent` and `/talkto` skills and the
+Codex `$imagent` and `$talkto` skills directly from the pinned release. Neither
+integration registers a local repository as a marketplace or uses Git for
+updates. Start a new client session after installation so it discovers the
+refreshed skills. Windows administrator privileges are not required.
 
 The runtime is installed under `~/.agent-meeting/runtimes/<version>/venv`;
 stable launchers are added to the user `PATH`. After the first Codex bootstrap,
@@ -52,13 +52,14 @@ python3 installers/install.py --target all
 
 On Windows, invoke the contributor command with `py -3`. The installer builds
 and atomically activates the same versioned host runtime, migrates supported
-legacy artifacts, then installs the matching Claude plugin and/or Codex skills.
+legacy artifacts, then installs the matching Claude Code and/or Codex skills.
 Windows uses pip-generated `.exe` console launchers for interactive commands
 and GUI-subsystem launchers for background services, so login tasks do not
 open persistent console windows.
-The Claude integration uses its native plugin marketplace. The Codex
-integration installs owned user skills under `~/.codex/skills` and never uses a
-local repository as an update source. Codex installation treats
+The Claude integration installs owned user skills under `~/.claude/skills` and
+an owned SessionStart hook in `~/.claude/settings.json`. The Codex integration
+installs owned user skills under `~/.codex/skills`. Neither uses a local
+repository as an update source. Codex installation treats
 `~/.codex/AGENTS.md` as user-owned and never creates or refreshes
 agent-meeting instructions there.
 
@@ -95,12 +96,12 @@ am uninstall --dry-run
 
 Then run `am uninstall` and type `uninstall` at the confirmation prompt. For
 an unattended uninstall, use `am uninstall --yes`. The command removes the
-Claude Code plugin registration and/or owned Codex skills recorded by the
-installer, both user services, the exact agent-meeting PATH entry, and the
-complete `~/.agent-meeting` tree including runtime versions, configuration,
-logs, and message history. It preserves the shared Woodor marketplace because
-other plugins may use it. The command refuses to proceed while amcodex sessions
-are active.
+agent-meeting-owned Claude Code skills and SessionStart hook and/or owned Codex
+skills recorded by the installer, both user services, the exact agent-meeting
+PATH entry, and the complete `~/.agent-meeting` tree including runtime versions,
+configuration, logs, and message history. A legacy shared Woodor marketplace is
+preserved unless it is the disposable source created by an older agent-meeting
+installer. The command refuses to proceed while amcodex sessions are active.
 
 The feature set is shared across Claude Code and Codex. Claude Code exposes
 skills as `/imagent` and `/talkto`; Codex invokes the same skills as `$imagent`

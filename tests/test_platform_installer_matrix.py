@@ -51,7 +51,7 @@ def test_one_cross_platform_installer_owns_every_target(tmp_path, monkeypatch):
     assert "--configure-codex" in commands[0]
     assert "--control-url" in commands[0]
     assert "--enable-full-automation" in commands[0]
-    assert any("register-claude-marketplace.py" in command[1] for command in commands)
+    assert any("install-claude-integration.py" in command[1] for command in commands)
     assert any("install-codex-integration.py" in command[1] for command in commands)
     assert commands[-1][-2:] == ["update", "--defer-if-active"]
     assert recorded == [(tmp_path / "plugins", meeting_home, "all")]

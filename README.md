@@ -20,9 +20,9 @@ Windows PowerShell：
 irm https://dl.omi-atlas.com/am | py -3 -
 ```
 
-安装器固定下载已发布版本，并建立主机运行时、后台服务、PATH、Claude 插件集成和
-Codex 用户 skills。Codex 集成不会把本地仓库注册成 marketplace，也不调用
-`codex plugin marketplace upgrade`。
+安装器固定下载已发布版本，并建立主机运行时、后台服务、PATH，以及 Claude Code
+和 Codex 的用户 skills。agent-meeting 的两个客户端集成都不会把本地仓库注册成
+marketplace，也不依赖 Git 执行更新。
 如需卸载，先运行 `am uninstall --dry-run` 查看范围，再运行 `am uninstall`；
 无人值守环境可用 `am uninstall --yes`。
 
@@ -55,9 +55,7 @@ They split into two jobs — keeping your agents in sync, and keeping your costs
 #### [`agent-meeting`](./agent-meeting/) — connect agents across windows and machines
 Your agents stop working in isolation. Sessions running in different windows — or on different machines — can message each other, chat as a group, and pull each other in to help. Built on mDNS discovery and a SQLite-backed daemon, so there's no server to set up.
 
-```
-/plugin install agent-meeting@woodor
-```
+使用上面的完整安装命令直接安装；Claude Code 会显示 `/imagent` 和 `/talkto`。
 
 #### [`init-agents`](./init-agents/) — cost-tiered subagents in one command
 为 Claude Code 或 Codex 设置三个 project-local profile：`explore` 只读调查、`rd` 实现与验证、`planner` 规划与独立审查。模型和 reasoning 档位按宿主分别配置。

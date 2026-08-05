@@ -114,7 +114,9 @@ def install(
         if configure_claude:
             _run_python(
                 source_root,
-                "installers/shared/register-claude-marketplace.py",
+                "installers/shared/install-claude-integration.py",
+                "--meeting-home",
+                str(meeting_home),
             )
         if configure_codex:
             _run_python(

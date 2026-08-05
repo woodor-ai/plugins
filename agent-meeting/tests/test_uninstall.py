@@ -20,7 +20,7 @@ def _manifest(meeting_home: Path, targets=None):
 
     return record_installation(
         meeting_home,
-        version="0.18.21",
+        version="0.18.22",
         targets=set(targets or {"codex"}),
     )
 
@@ -31,7 +31,7 @@ def test_install_manifest_merges_targets_and_validates_ownership(tmp_path):
     first = _manifest(tmp_path, {"codex"})
     second = install_manifest.record_installation(
         tmp_path,
-        version="0.18.21",
+        version="0.18.22",
         targets={"claude-code"},
     )
 
@@ -154,6 +154,11 @@ def test_uninstall_removes_owned_components_and_schedules_cleanup(
         lambda: events.append("codex-skills"),
     )
     monkeypatch.setattr(
+        uninstall,
+        "_remove_claude_integration",
+        lambda _home: events.append("claude-integration"),
+    )
+    monkeypatch.setattr(
         uninstall.uninstall_cleanup,
         "schedule_cleanup",
         lambda _home: events.append("cleanup"),
@@ -166,6 +171,7 @@ def test_uninstall_removes_owned_components_and_schedules_cleanup(
         "ctld",
         "claude-code",
         "codex",
+        "claude-integration",
         "codex-skills",
         "path",
         "cleanup",
