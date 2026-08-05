@@ -11,4 +11,5 @@ it; each worker must read those files itself before acting. Documents under
 index explicitly routes a task there.
 
 Before changing a plugin version, installer, marketplace manifest, tag, or
-published artifact, read [`docs/RELEASE.md`](docs/RELEASE.md) completely.
+published artifact, read [`docs/RELEASE.md`](docs/RELEASE.md) completely, then
+read any plugin-specific release standard to which it routes the task.

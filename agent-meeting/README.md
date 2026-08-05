@@ -89,7 +89,8 @@ one resolver for npm-installed `codex.cmd`, invoking it through the Windows
 command processor instead of assuming that a native `codex.exe` exists.
 
 Maintainer packaging, R2 object keys, publish order, and delivery verification
-are defined in [`../docs/RELEASE.md`](../docs/RELEASE.md).
+are defined in [`docs/RELEASE.md`](docs/RELEASE.md). Repository-wide release
+rules remain in [`../docs/RELEASE.md`](../docs/RELEASE.md).
 
 ## Uninstall
 

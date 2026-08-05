@@ -26,7 +26,8 @@ update both this index and `docs/archive/README.md` in the same change.
 | Task | Documents to load |
 | --- | --- |
 | Repository orientation or plugin selection | `README.md` and the target plugin's `README.md` |
-| Versioning, packaging, publishing, tags, R2, or marketplace changes | `docs/RELEASE.md` and the target plugin's `README.md` |
+| Repository-wide versioning, publishing, tags, or marketplace changes | `docs/RELEASE.md` and the target plugin's `README.md` |
+| agent-meeting packaging, R2 publishing, delivery verification, or rollback | `docs/RELEASE.md` and `agent-meeting/docs/RELEASE.md` |
 | agent-meeting commands, installation, update, uninstall, or runtime behavior | `agent-meeting/README.md` and `agent-meeting/docs/CLI_SURFACE.md` |
 | agent-meeting skill behavior or message handling | the relevant file under `agent-meeting/skills/` plus `agent-meeting/docs/CLI_SURFACE.md` |
 | handoff behavior | `handoff/README.md` and `handoff/skills/handoff/SKILL.md` |
@@ -40,8 +41,9 @@ update both this index and `docs/archive/README.md` in the same change.
 | Document | Purpose |
 | --- | --- |
 | `README.md` | Public repository overview, installation entry points, and plugin catalog |
-| `docs/RELEASE.md` | Current repository-wide and plugin-specific release rules |
+| `docs/RELEASE.md` | Repository-wide release rules and plugin-specific routing |
 | `agent-meeting/README.md` | Public installation, update, configuration, and usage guide |
+| `agent-meeting/docs/RELEASE.md` | agent-meeting packaging, R2 publishing, verification, and rollback standard |
 | `agent-meeting/docs/CLI_SURFACE.md` | Supported agent-meeting command and runtime contract |
 | `handoff/README.md` | Handoff user workflow and host support |
 | `init-agents/README.md` | Generated worker profiles and conflict behavior |

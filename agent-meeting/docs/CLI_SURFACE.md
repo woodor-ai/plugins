@@ -18,7 +18,7 @@ same workflows from agent-meeting-owned user skills and exposes them through
 `/skills` or `$imagent` and `$talkto`; Codex does not create top-level slash
 commands from skill names.
 
-## Distribution update
+## Installation and update
 
 The public full-install bootstrap is available at one stable short URL:
 
@@ -28,10 +28,8 @@ irm https://dl.omi-atlas.com/am | py -3 -
 ```
 
 It detects the locally installed clients and selects `claude-code`, `codex`,
-or `all`. Its source bundle is the immutable R2 object
-`am/releases/vX.Y.Z/agent-meeting.zip` for the matching plugin version. The
-bundle contains only the agent-meeting runtime, its Codex launcher package,
-the shared installers, and the repository license.
+or `all`. It installs the immutable agent-meeting release selected by the
+public bootstrap.
 
 When bare `$imagent` finds no PATH command named `am`, it runs the bundled
 `scripts/bootstrap_runtime.py`. Subcommands invoke their stable launcher
@@ -62,8 +60,9 @@ pre-0.18.17 `~/.agent-meeting/updates/plugins` checkout is removed during
 installation. Public releases use their normal semantic version without
 cachebuster suffixes.
 
-The R2 bucket, object keys, cache policies, publish order, and verification
-steps are defined in [`../../docs/RELEASE.md`](../../docs/RELEASE.md).
+Packaging, R2 object keys, cache policies, publish order, and verification are
+maintainer concerns defined in [`RELEASE.md`](RELEASE.md), not part of the CLI
+surface contract.
 
 ```text
 am-update
