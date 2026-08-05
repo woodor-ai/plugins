@@ -12,6 +12,11 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Iterable
 
+from agent_meeting.installation.legacy_checkout import (
+    legacy_checkout,
+    remove_legacy_checkout,
+)
+
 
 PUBLIC_INSTALLER_URL = "https://dl.omi-atlas.com/am/install.py"
 DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -22,24 +27,6 @@ ALL_TARGETS = (TARGET_CLAUDE_CODE, TARGET_CODEX)
 
 def default_meeting_home() -> Path:
     return Path(os.environ.get("MEETING_HOME") or (Path.home() / ".agent-meeting"))
-
-
-def legacy_checkout(meeting_home: Path) -> Path:
-    return meeting_home / "updates" / "plugins"
-
-
-def remove_legacy_checkout(meeting_home: Path) -> None:
-    """Remove the updater-owned Git checkout used before version 0.18.17."""
-    checkout = legacy_checkout(meeting_home)
-    try:
-        shutil.rmtree(checkout)
-    except FileNotFoundError:
-        return
-    try:
-        checkout.parent.rmdir()
-    except OSError:
-        pass
-
 
 def detect_targets(*, home: Path | None = None) -> tuple[str, ...]:
     """Return integrations that are present on this machine."""
@@ -96,7 +83,10 @@ def install_latest(
                 check=True,
             )
     finally:
-        remove_legacy_checkout(meeting_home)
+        remove_legacy_checkout(
+            meeting_home,
+            suppress_errors=sys.exc_info()[0] is not None,
+        )
 
 
 def active_runtime_version(meeting_home: Path) -> str | None:

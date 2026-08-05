@@ -6,28 +6,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_SOURCE = REPOSITORY_ROOT / "agent-meeting" / "src"
+sys.path.insert(0, str(PACKAGE_SOURCE))
+try:
+    from agent_meeting.installation.legacy_checkout import (
+        remove_legacy_checkout,
+    )
+finally:
+    sys.path.pop(0)
+
+
 TARGET_CLAUDE_CODE = "claude-code"
 TARGET_CODEX = "codex"
 TARGET_ALL = "all"
-
-
-def _remove_legacy_update_checkout(meeting_home: Path) -> None:
-    checkout = meeting_home / "updates" / "plugins"
-    try:
-        shutil.rmtree(checkout)
-    except FileNotFoundError:
-        return
-    try:
-        checkout.parent.rmdir()
-    except OSError:
-        pass
 
 
 def _record_installation(
@@ -142,7 +139,10 @@ def install(
             )
         _record_installation(source_root, meeting_home, target)
     finally:
-        _remove_legacy_update_checkout(meeting_home)
+        remove_legacy_checkout(
+            meeting_home,
+            suppress_errors=sys.exc_info()[0] is not None,
+        )
 
 
 def main(argv=None) -> int:
