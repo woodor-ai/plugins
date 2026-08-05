@@ -19,7 +19,7 @@ def _fake_runtime(
     *,
     is_windows: bool,
 ) -> Path:
-    from agent_meeting.installation.version_activation import RUNTIME_COMMANDS
+    from agent_meeting.installation.version_activation import runtime_commands
 
     runtime = meeting_home / "runtimes" / version
     command_dir = (
@@ -28,7 +28,7 @@ def _fake_runtime(
         else runtime / "venv" / "bin"
     )
     command_dir.mkdir(parents=True)
-    for command in RUNTIME_COMMANDS:
+    for command in runtime_commands(is_windows=is_windows):
         path = command_dir / (f"{command}.exe" if is_windows else command)
         path.write_bytes(f"{version}:{command}".encode())
     return runtime
@@ -110,6 +110,8 @@ def test_windows_activation_copies_console_exes_without_cmd_forwarders(
         "am",
         "am-ctl",
         "am-msgd",
+        "am-msgd-service",
+        "am-ctld-service",
         "amclaude",
         "amcodex",
         "am-codexd",

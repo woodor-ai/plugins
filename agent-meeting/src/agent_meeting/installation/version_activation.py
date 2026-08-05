@@ -24,6 +24,10 @@ RUNTIME_COMMANDS = PUBLIC_COMMANDS + (
     "am-statusline",
     "am-claude-session-start",
 )
+WINDOWS_SERVICE_COMMANDS = (
+    "am-ctld-service",
+    "am-msgd-service",
+)
 OBSOLETE_COPIED_RUNTIME_FILES = (
     "am_common.py",
     "meeting_common.py",
@@ -43,6 +47,14 @@ def runtime_command_path(
     if is_windows:
         return runtime_dir / "venv" / "Scripts" / f"{command}.exe"
     return runtime_dir / "venv" / "bin" / command
+
+
+def runtime_commands(*, is_windows: bool) -> tuple[str, ...]:
+    return (
+        RUNTIME_COMMANDS + WINDOWS_SERVICE_COMMANDS
+        if is_windows
+        else RUNTIME_COMMANDS
+    )
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -99,7 +111,7 @@ def activate_runtime(
             command,
             is_windows=is_windows,
         )
-        for command in RUNTIME_COMMANDS
+        for command in runtime_commands(is_windows=is_windows)
     }
     missing = [str(path) for path in sources.values() if not path.is_file()]
     if missing:

@@ -17,11 +17,19 @@ def _spec(
     meeting_home: Path,
     configuration_path: Path,
 ) -> user_service.UserServiceSpec:
-    command_name = "am-msgd.exe" if sys.platform.startswith("win") else "am-msgd"
+    is_windows = sys.platform.startswith("win")
+    command_name = "am-msgd-service.exe" if is_windows else "am-msgd"
+    log_path = meeting_home / "logs" / "am-msgd.log"
+    service_arguments = (
+        ("--service-log", str(log_path))
+        if is_windows
+        else ()
+    )
     return user_service.UserServiceSpec(
         description="agent-meeting local message hub",
         command=(
             str(meeting_home / "bin" / command_name),
+            *service_arguments,
             "serve",
             "--config",
             str(configuration_path),
@@ -29,7 +37,7 @@ def _spec(
         macos_label=MACOS_LABEL,
         windows_task_name=WINDOWS_TASK_NAME,
         linux_unit_name=LINUX_UNIT_NAME,
-        log_path=meeting_home / "logs" / "am-msgd.log",
+        log_path=log_path,
     )
 
 

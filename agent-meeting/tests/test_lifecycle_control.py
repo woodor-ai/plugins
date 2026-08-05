@@ -563,7 +563,11 @@ def test_windows_login_task_preserves_custom_meeting_home(
     )
 
     task_command = commands[0][commands[0].index("/TR") + 1]
-    assert str(meeting_home / "bin" / "am-ctld.exe") in task_command
+    assert str(meeting_home / "bin" / "am-ctld-service.exe") in task_command
+    assert (
+        f'--service-log "{meeting_home / "control" / "am-ctld.log"}"'
+        in task_command
+    )
     assert f'--meeting-home "{meeting_home}"' in task_command
     assert commands[2][-1] == "/Enable"
     assert commands[3][:2] == ["schtasks", "/Run"]

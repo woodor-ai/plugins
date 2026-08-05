@@ -14,18 +14,26 @@ LINUX_UNIT_NAME = "woodor-am-ctld.service"
 
 
 def _spec(meeting_home: Path) -> user_service.UserServiceSpec:
-    command_name = "am-ctld.exe" if sys.platform.startswith("win") else "am-ctld"
+    is_windows = sys.platform.startswith("win")
+    command_name = "am-ctld-service.exe" if is_windows else "am-ctld"
+    log_path = meeting_home / "control" / "am-ctld.log"
+    service_arguments = (
+        ("--service-log", str(log_path))
+        if is_windows
+        else ()
+    )
     return user_service.UserServiceSpec(
         description="agent-meeting lifecycle controller",
         command=(
             str(meeting_home / "bin" / command_name),
+            *service_arguments,
             "--meeting-home",
             str(meeting_home),
         ),
         macos_label=MACOS_LABEL,
         windows_task_name=WINDOWS_TASK_NAME,
         linux_unit_name=LINUX_UNIT_NAME,
-        log_path=meeting_home / "control" / "am-ctld.log",
+        log_path=log_path,
         process_type="Interactive",
         environment=(("MEETING_HOME", str(meeting_home)),),
     )

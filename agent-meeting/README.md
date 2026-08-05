@@ -33,7 +33,9 @@ python3 installers/install.py --target all
 On Windows, invoke the contributor command with `py -3`. The installer builds
 and atomically activates the same versioned host runtime, migrates supported
 legacy artifacts, then registers the matching native plugin marketplace.
-Windows uses pip-generated `.exe` console launchers.
+Windows uses pip-generated `.exe` console launchers for interactive commands
+and GUI-subsystem launchers for background services, so login tasks do not
+open persistent console windows.
 Codex installation treats `~/.codex/AGENTS.md` as user-owned and never creates
 or refreshes agent-meeting instructions there.
 

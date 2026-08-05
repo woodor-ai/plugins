@@ -20,7 +20,7 @@ def test_product_version_matches_agent_meeting_runtime():
     import mycodex
     import agent_meeting
 
-    assert mycodex.__version__ == "0.18.9"
+    assert mycodex.__version__ == "0.18.10"
     assert mycodex.__version__ == agent_meeting.__version__
     manifests = (
         REPOSITORY_ROOT / "agent-meeting/.codex-plugin/plugin.json",

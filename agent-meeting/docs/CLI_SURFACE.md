@@ -1,12 +1,17 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-04 · version 0.18.9
+Last updated: 2026-08-04 · version 0.18.10
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
 pip-generated `~/.agent-meeting/bin/am.exe` console launcher. The same
 rule applies to `am-ctl`, `am-msgd`, `am-update`, `amclaude`, `amcodex`, and
 `am-codexd`.
+
+Windows Task Scheduler uses the internal GUI-subsystem launchers
+`am-msgd-service.exe` and `am-ctld-service.exe`. They create no console window
+and redirect standard output and errors to the configured service log files.
+The public console launchers remain available for foreground diagnostics.
 
 Claude Code exposes the workflows as `/imagent` and `/talkto`. Codex loads the
 same skills from the native plugin and exposes them through `/skills` or
@@ -197,11 +202,14 @@ runtime entrypoint.
 | `am prune` | Prune stale session rows without deleting messages |
 | `am projcache [list\|clear]` | Manage local authoritative-project cache |
 
-The daemon entrypoint used by launchd, Task Scheduler, and systemd is:
+The foreground daemon entrypoint used by launchd and systemd is:
 
 ```text
 am-msgd serve --config ~/.agent-meeting/am-msgd.json
 ```
+
+Windows Task Scheduler invokes `am-msgd-service.exe` with the same daemon
+arguments plus its service-log path.
 
 The former `meeting-daemon` executable and `meeting daemon` command have no
 compatibility alias. Upgrade cleanup removes old launchd and Windows task

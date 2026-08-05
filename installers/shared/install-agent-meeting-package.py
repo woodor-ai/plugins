@@ -18,8 +18,8 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "agent-meeting" / "src"))
 sys.path.insert(0, str(REPOSITORY_ROOT / "mycodex" / "src"))
 
 from agent_meeting.installation.version_activation import (
-    RUNTIME_COMMANDS,
     activate_runtime,
+    runtime_commands,
     runtime_command_path,
 )
 from agent_meeting.installation.message_hub_service_installation import (
@@ -120,7 +120,7 @@ def install_runtime(
             )
             missing = [
                 command
-                for command in RUNTIME_COMMANDS
+                for command in runtime_commands(is_windows=is_windows)
                 if not runtime_command_path(
                     final_runtime,
                     command,

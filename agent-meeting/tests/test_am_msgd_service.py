@@ -439,6 +439,42 @@ def test_linux_service_definition_uses_explicit_serve(
     assert commands == [["systemctl", "--user", "daemon-reload"]]
 
 
+def test_windows_service_uses_console_free_entrypoint_and_log(
+    tmp_path,
+    monkeypatch,
+):
+    from agent_meeting.operating_systems import (
+        message_hub_user_service,
+        user_service,
+    )
+
+    commands = []
+    monkeypatch.setattr(message_hub_user_service.sys, "platform", "win32")
+    monkeypatch.setattr(
+        user_service,
+        "_run",
+        lambda command: (
+            commands.append(command)
+            or subprocess.CompletedProcess(command, 0, "", "")
+        ),
+    )
+
+    meeting_home = tmp_path / "custom meeting"
+    message_hub_user_service.ensure_installed(
+        meeting_home,
+        meeting_home / "am-msgd.json",
+        system_name="Windows",
+    )
+
+    task_command = commands[0][commands[0].index("/TR") + 1]
+    assert str(meeting_home / "bin" / "am-msgd-service.exe") in task_command
+    assert (
+        f'--service-log "{meeting_home / "logs" / "am-msgd.log"}"'
+        in task_command
+    )
+    assert f'--config "{meeting_home / "am-msgd.json"}"' in task_command
+
+
 def test_installation_migrates_legacy_host_and_stop_state(tmp_path):
     from agent_meeting.installation import message_hub_service_installation
 

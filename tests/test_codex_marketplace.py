@@ -55,12 +55,11 @@ def test_ai_platform_manifests_declare_only_their_supported_components():
     codex = _read_json(plugin_root / ".codex-plugin" / "plugin.json")
 
     assert claude["skills"] == "./skills/"
-    # Claude Code auto-loads the standard hooks/hooks.json path. Declaring it
-    # here loads the same file twice and causes plugin activation to fail.
-    assert "hooks" not in claude
+    assert claude["hooks"] == "./claude-hooks/hooks.json"
     assert (plugin_root / claude["skills"]).is_dir()
-    assert (plugin_root / "hooks" / "hooks.json").is_file()
+    assert (plugin_root / claude["hooks"]).is_file()
 
     assert codex["skills"] == "./skills/"
     assert "hooks" not in codex
     assert (plugin_root / codex["skills"]).is_dir()
+    assert not (plugin_root / "hooks" / "hooks.json").exists()
