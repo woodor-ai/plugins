@@ -55,7 +55,6 @@ def install_latest(
     *,
     meeting_home: Path,
     targets: Iterable[str],
-    installer_url: str = PUBLIC_INSTALLER_URL,
     opener: Callable[..., object] = urllib.request.urlopen,
     run: Callable[..., object] = subprocess.run,
 ) -> None:
@@ -65,7 +64,7 @@ def install_latest(
         with tempfile.TemporaryDirectory(prefix="agent-meeting-update-") as raw:
             installer = Path(raw) / "install.py"
             request = urllib.request.Request(
-                installer_url,
+                PUBLIC_INSTALLER_URL,
                 headers={"User-Agent": "agent-meeting-updater"},
             )
             with opener(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:

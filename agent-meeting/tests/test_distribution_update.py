@@ -264,3 +264,20 @@ def test_am_update_check_reports_runtime_and_detected_targets(
         "active runtime: 0.15.3",
         "installed targets: claude-code",
     ]
+
+
+def test_am_update_offers_no_way_to_redirect_the_installer_source():
+    import inspect
+
+    from agent_meeting.commands import am_update_cli
+    from agent_meeting.installation import distribution_update
+
+    # The updater must always fetch the released public installer, so neither
+    # the command line nor the call signature may point it somewhere else.
+    with pytest.raises(SystemExit):
+        am_update_cli.build_parser().parse_args(
+            ["--installer-url", "https://example.invalid/install.py"]
+        )
+    assert "installer_url" not in inspect.signature(
+        distribution_update.install_latest
+    ).parameters

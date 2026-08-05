@@ -24,11 +24,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="show the active runtime and detected integrations without updating",
     )
-    parser.add_argument(
-        "--installer-url",
-        default=distribution_update.PUBLIC_INSTALLER_URL,
-        help=argparse.SUPPRESS,
-    )
     return parser
 
 
@@ -51,7 +46,6 @@ def main(argv: list[str] | None = None) -> int:
         distribution_update.install_latest(
             meeting_home=meeting_home,
             targets=targets,
-            installer_url=args.installer_url,
         )
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         print(f"ERROR: {exc}")
