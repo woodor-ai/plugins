@@ -79,7 +79,7 @@ def test_install_downloads_pinned_release_and_runs_repository_installer(
     )
 
     assert requested == [(public_installer.ARCHIVE_URL, 60)]
-    assert public_installer.ARCHIVE_URL.endswith("/tags/v0.18.18")
+    assert public_installer.ARCHIVE_URL.endswith("/tags/v0.18.19")
     assert commands[0][2:4] == ["--target", "codex"]
     assert commands[0][-2:] == [
         "--meeting-home",

@@ -88,9 +88,6 @@ def main() -> int:
         print("ERROR: claude CLI not found", file=sys.stderr)
         return 1
     plugin_id = "agent-meeting@woodor"
-    is_installed, installed_version = installed_plugin(claude, plugin_id)
-    if is_installed is None:
-        return 1
     try:
         bundled_version = source_plugin_version()
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
@@ -99,16 +96,19 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    print("Refreshing Claude marketplace from the release archive...", flush=True)
+    refreshed = refresh_local_marketplace(claude)
+    if refreshed != 0:
+        return refreshed
+    is_installed, installed_version = installed_plugin(claude, plugin_id)
+    if is_installed is None:
+        return 1
     if is_installed and installed_version == bundled_version:
         print(
             f"Claude plugin already matches version {bundled_version}; "
             "skipping redundant update."
         )
         return 0
-    print("Refreshing Claude marketplace from the release archive...", flush=True)
-    refreshed = refresh_local_marketplace(claude)
-    if refreshed != 0:
-        return refreshed
     if is_installed:
         print(
             f"Updating Claude plugin {installed_version or 'unknown'} "
