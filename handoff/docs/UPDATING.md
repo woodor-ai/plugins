@@ -42,10 +42,8 @@ installed plugin files.
 
 ## Distribution source
 
-handoff is a marketplace-only plugin. handoff releases do **not** produce or
-upload an R2 object, immutable release bundle, or `dl.omi-atlas.com` installer.
-The release commit on `main` in the following GitHub repository is the
-marketplace source:
+handoff is distributed through the Woodor marketplace. The release commit on
+`main` in the following GitHub repository is the marketplace source:
 
 ```text
 https://github.com/woodor-ai/plugins.git
@@ -77,9 +75,7 @@ Codex refreshes its configured Git marketplace snapshot, normally under
 `~/.codex/.tmp/marketplaces/woodor`, then installs the selected version under
 `~/.codex/plugins/cache/woodor/handoff/<version>`.
 
-Both flows therefore require GitHub availability. This is intentionally
-different from `am-update`, which downloads the agent-meeting installer and
-immutable release bundle from R2.
+Both flows therefore require GitHub availability.
 
 ## First-time rollout
 
