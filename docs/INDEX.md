@@ -45,7 +45,7 @@ update both this index and `docs/archive/README.md` in the same change.
 | `agent-meeting/README.md` | Public installation, update, configuration, and usage guide |
 | `agent-meeting/docs/RELEASE.md` | agent-meeting packaging, R2 publishing, verification, and rollback standard |
 | `agent-meeting/docs/CLI_SURFACE.md` | Supported agent-meeting command and runtime contract |
-| `handoff/README.md` | Handoff user workflow and host support |
+| `handoff/README.md` | Handoff user workflow, updater command, and host support |
 | `init-agents/README.md` | Generated worker profiles and conflict behavior |
 | `init-proj/README.md` | Legacy Claude Code project-creation wrapper and its AMBridge dependency |
 | `save-money/README.md` | Hook behavior, defaults, and dependencies |

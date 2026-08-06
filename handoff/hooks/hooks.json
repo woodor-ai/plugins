@@ -1,5 +1,5 @@
 {
-  "description": "Auto-pickup handoff-pending.md on session start (startup/resume/clear/compact). Emits content as additionalContext and atomically archives to docs/handoff/archive/.",
+  "description": "Install the stable handoff-update command and auto-pickup handoff-pending.md on session start. Emits pending content as additionalContext and atomically archives it.",
   "hooks": {
     "SessionStart": [
       {

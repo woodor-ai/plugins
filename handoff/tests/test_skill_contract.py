@@ -37,4 +37,4 @@ def test_host_manifests_publish_the_same_version():
         (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
 
-    assert claude["version"] == codex["version"] == "0.6.2"
+    assert claude["version"] == codex["version"] == "0.6.3"

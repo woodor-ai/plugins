@@ -33,7 +33,7 @@ plugin manifests followed by a tested commit on `main`.
 
 | Plugin | Hosts | Version authorities | Plugin-specific checks |
 | --- | --- | --- | --- |
-| `handoff` | Claude Code and Codex | both plugin manifests | card format, pickup hook, both host skill assets |
+| `handoff` | Claude Code and Codex | both plugin manifests | card format, pickup hook, updater bootstrap, both host skill assets |
 | `init-agents` | Claude Code and Codex | both plugin manifests | generated Claude/Codex profiles, conflict-safe apply behavior |
 | `save-money` | Claude Code | Claude plugin manifest | every registered hook, configuration defaults, agent-meeting/handoff dependency claims |
 | `init-proj` | Claude Code | Claude plugin manifest | AMBridge dependency, supported platform, generated-project claims |

@@ -1,7 +1,7 @@
 {
   "name": "handoff",
-  "version": "0.6.2",
-  "description": "Session-end handoff cards with auto-pickup. Write a focused 30-line 3-section cue card from current conversation context; the next SessionStart auto-loads it, archives it, and prompts the agent to action the remaining work.",
+  "version": "0.6.3",
+  "description": "Session-end handoff cards with auto-pickup and a stable handoff-update command. Write a focused 30-line 3-section cue card; the next SessionStart auto-loads it and prompts the agent to continue.",
   "author": {
     "name": "Woodor",
     "url": "https://github.com/woodor-ai"

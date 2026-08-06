@@ -17,6 +17,32 @@ Compatible with Claude Code and Codex. Claude Code uses `/handoff`; Codex uses
 `$handoff` or the built-in skills picker. Both hosts write the same three-section
 card, while their pending-file directories remain host-specific.
 
+## Update
+
+After installing handoff 0.6.3 or newer, start one new Claude Code or Codex
+session. Its SessionStart hook installs the stable `handoff-update` command
+under `~/.handoff/bin` and adds that directory to the user `PATH`. Open a new
+terminal after the first bootstrap, then update every installed host with:
+
+```sh
+handoff-update
+```
+
+The updater detects whether `handoff@woodor` is installed in Claude Code,
+Codex, or both. It refreshes the Woodor marketplace and updates only those
+installed integrations. It uses the public host CLIs and never reads a Git
+checkout or plugin cache directly.
+
+```sh
+handoff-update --check
+handoff-update --target claude-code
+handoff-update --target codex
+```
+
+The command is installed without administrator privileges on macOS, Linux,
+and Windows. Start a new Codex thread or restart Claude Code after an update so
+the host loads the refreshed skill and hooks.
+
 ## How it works
 
 **Step 1 — write the card.** At the end of a session, invoke the handoff skill. It uses the current conversation as its primary source and writes a compact cue card inside the real shell working directory: `.claude/handoff-pending.md` for Claude Code or `.codex/handoff-pending.md` for Codex. It reads project files only when the conversation does not establish the exact breakpoint or next action.

@@ -21,7 +21,7 @@
       "name": "handoff",
       "displayName": "Woodor: Handoff",
       "source": "./handoff",
-      "description": "Session-end handoff cards with auto-pickup. Write a focused 30-line, three-section cue card from current conversation context; the next SessionStart auto-loads and archives it."
+      "description": "Session-end handoff cards with auto-pickup and a stable handoff-update command for refreshing installed Claude Code and Codex integrations."
     },
     {
       "name": "save-money",

@@ -76,6 +76,8 @@ codex plugin add init-agents@woodor
 
 #### [`handoff`](./handoff/) — never re-explain where you left off
 At session end, write a short cue card — what's done, what's pending, what to do next. The next session picks it up automatically and archives it. No copy-pasting context to get going again.
+After the first updated session, run `handoff-update` from any terminal to refresh
+every Claude Code or Codex installation detected on the machine.
 
 ```
 /plugin install handoff@woodor

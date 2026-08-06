@@ -1,7 +1,7 @@
 {
   "name": "handoff",
-  "version": "0.6.2",
-  "description": "Write a focused Codex session handoff card from current conversation context and automatically load it in the next session.",
+  "version": "0.6.3",
+  "description": "Write a focused Codex session handoff card, load it in the next session, and keep the plugin current with handoff-update.",
   "author": {
     "name": "Woodor",
     "url": "https://github.com/woodor-ai"
@@ -11,7 +11,7 @@
   "interface": {
     "displayName": "Woodor: Handoff",
     "shortDescription": "Carry concise handoff cards between Codex sessions.",
-    "longDescription": "Write a focused three-section session handoff card from current conversation context and automatically load it at the next session start.",
+    "longDescription": "Write a focused three-section session handoff card, automatically load it at the next session start, and update installed host integrations with one stable command.",
     "developerName": "Woodor",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
