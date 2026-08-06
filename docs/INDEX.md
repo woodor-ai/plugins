@@ -31,6 +31,7 @@ update both this index and `docs/archive/README.md` in the same change.
 | agent-meeting commands, installation, update, uninstall, or runtime behavior | `agent-meeting/README.md` and `agent-meeting/docs/CLI_SURFACE.md` |
 | agent-meeting skill behavior or message handling | the relevant file under `agent-meeting/skills/` plus `agent-meeting/docs/CLI_SURFACE.md` |
 | handoff behavior | `handoff/README.md` and `handoff/skills/handoff/SKILL.md` |
+| handoff updater, distribution source, or rollout | `handoff/README.md` and `handoff/docs/UPDATING.md` |
 | project-local agent profiles | `init-agents/README.md` and `init-agents/skills/init-agents/SKILL.md` |
 | save-money hooks | `save-money/README.md` and the relevant hook implementation |
 | legacy init-proj wrapper | `init-proj/README.md` and `init-proj/skills/init-proj/SKILL.md` |
@@ -46,6 +47,7 @@ update both this index and `docs/archive/README.md` in the same change.
 | `agent-meeting/docs/RELEASE.md` | agent-meeting packaging, R2 publishing, verification, and rollback standard |
 | `agent-meeting/docs/CLI_SURFACE.md` | Supported agent-meeting command and runtime contract |
 | `handoff/README.md` | Handoff user workflow, updater command, and host support |
+| `handoff/docs/UPDATING.md` | Handoff updater contract, GitHub distribution source, stable command bootstrap, and rollout |
 | `init-agents/README.md` | Generated worker profiles and conflict behavior |
 | `init-proj/README.md` | Legacy Claude Code project-creation wrapper and its AMBridge dependency |
 | `save-money/README.md` | Hook behavior, defaults, and dependencies |

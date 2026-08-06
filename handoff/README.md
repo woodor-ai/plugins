@@ -43,6 +43,11 @@ The command is installed without administrator privileges on macOS, Linux,
 and Windows. Start a new Codex thread or restart Claude Code after an update so
 the host loads the refreshed skill and hooks.
 
+The complete command contract, first-time rollout, filesystem paths, and
+GitHub marketplace distribution flow are documented in
+[`docs/UPDATING.md`](docs/UPDATING.md). handoff does not publish update
+artifacts to R2.
+
 ## How it works
 
 **Step 1 — write the card.** At the end of a session, invoke the handoff skill. It uses the current conversation as its primary source and writes a compact cue card inside the real shell working directory: `.claude/handoff-pending.md` for Claude Code or `.codex/handoff-pending.md` for Codex. It reads project files only when the conversation does not establish the exact breakpoint or next action.
