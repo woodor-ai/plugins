@@ -2,7 +2,7 @@
 
 > Pick up exactly where you left off — no re-explaining, no lost context.
 
-Never re-explain where you left off. When a session ends, it leaves a short note — what's done, what's pending, what to do next — and your next session picks up right where you stopped. The card is written by you (or your agent) in under a minute and injected automatically into the next session before the first message lands.
+Never re-explain where you left off. When a session ends, it leaves a short note — the current breakpoint, pending decisions, and next actions — and your next session picks up right where you stopped. The card is written by you or your agent and injected automatically into the next session before the first message lands.
 
 Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-source toolkit for running AI agents at scale.
 
@@ -14,12 +14,12 @@ Part of [Woodor Plugins](https://github.com/woodor-ai/plugins) — the open-sour
 ```
 
 Compatible with Claude Code and Codex. Claude Code uses `/handoff`; Codex uses
-`$handoff` or the built-in skills picker. Both hosts write the same five-section
+`$handoff` or the built-in skills picker. Both hosts write the same three-section
 card, while their pending-file directories remain host-specific.
 
 ## How it works
 
-**Step 1 — write the card.** At the end of a session, call `/handoff`. The skill writes a compact cue card to `.claude/handoff-pending.md` inside your current working directory (the real shell `pwd`, not the git root — so it works correctly across multiple agent worktrees pointing at the same repo).
+**Step 1 — write the card.** At the end of a session, invoke the handoff skill. It uses the current conversation as its primary source and writes a compact cue card inside the real shell working directory: `.claude/handoff-pending.md` for Claude Code or `.codex/handoff-pending.md` for Codex. It reads project files only when the conversation does not establish the exact breakpoint or next action.
 
 **Step 2 — automatic pickup.** The next time you open a session in that project, the `SessionStart` hook fires, reads the pending card, moves it to `docs/handoff/archive/handoff-<timestamp>.md`, and injects its content as `additionalContext` before your first message. No copy-paste. No manual re-loading. If there is no pending card the hook exits silently.
 
@@ -27,47 +27,32 @@ The archive rename is atomic — if two sessions start at the same instant, only
 
 ## The handoff card
 
-Cards are capped at **70 lines**. If the draft exceeds that, the skill tells you to compress before writing. Five sections, always in this order:
+Cards are capped at **30 lines** and contain exactly three sections:
 
-1. **In-flight** — what was being worked on when the session ended.
-2. **Pending decisions** — anything blocked on a user choice or external event.
-3. **First step** — a required-reading list (key docs changed this session + recent architecture / design docs the next agent must understand first, each with a one-line reason; "none" if there are none), then one concrete action to take immediately.
-4. **New docs / roadmap / progress** — docs created this session (with paths), the project roadmap (pointer if a roadmap doc exists), and where progress stands plus the next milestone.
-5. **Leftover todos** — unfinished or deferred action items from this session, one per line, phrased so the next agent can act on them directly. Decision items already listed in section 2 are not repeated here. Write "none" if there is nothing left.
+1. **Current breakpoint** — unfinished work, with narrow file, command, commit, or state-document pointers when useful.
+2. **Pending user decisions** — only choices or external events that block progress.
+3. **Next actions and leftover todos** — the first action is what the next session should do immediately; remaining actions follow one per line.
 
-Empty sections get a placeholder line rather than being omitted. Cards must not copy project-state documents verbatim — use pointers (`see PLAN.md §2`, `see commit abc1234`) to stay under the line limit and avoid stale duplication.
+Empty sections contain `None` instead of being omitted. The card records session-specific deltas rather than restating project background, roadmaps, architecture documents, Git history, or diffs.
 
 **Example card:**
 
 ```
-# Handoff 2026-06-17 14:30
+# Handoff 2026-08-06 14:30 PDT
 
-## In-flight
-Refactoring the session-state serializer. Branch: feat/serializer-v2.
-Last commit: abc1234 — split encode/decode into separate modules.
+## 1. Current breakpoint
+- Serializer encode/decode split is complete in commit abc1234.
+- Streaming API wiring has not started; the relevant contract is in docs/serializer-migration.md §2.
 
-## Pending decisions
-Decide whether the archive format should be JSON or MessagePack (see PLAN.md §3.1).
+## 2. Pending user decisions
+- Choose JSON or MessagePack for the archive format; see PLAN.md §3.1.
 
-## First step
-Required reading:
-- docs/serializer-migration.md — new this session; defines the encode/decode contract the next steps depend on
-- PLAN.md §3 — archive format decision, needed before extending the serializer further
-
-Run `npm test -- --grep serializer` to confirm the split didn't break existing tests,
-then open src/serializer/decode.ts and continue from TODO on line 88.
-
-## New docs / roadmap / progress
-- New docs: docs/serializer-migration.md
-- Roadmap: see PLAN.md §4 (v2 serializer → streaming API → drop v1)
-- Progress: encode/decode split done; next milestone is wiring the streaming API.
-
-## Leftover todos
-- Add unit test for the new decode.ts error path (line 102)
-- Update CHANGELOG.md entry for v2 serializer once tests pass
+## 3. Next actions and leftover todos
+- Run `npm test -- --grep serializer`, then continue from src/serializer/decode.ts:88.
+- Add the decode error-path test after the streaming API wiring passes.
 ```
 
-When a new session picks up this card, it must add every item in **Leftover todos** to its task list before starting work — not just read and archive the card.
+When a new session picks up this card, it adds every action in section 3 to its task list before starting work. If section 3 says `None`, it creates no task.
 
 ## Hooks
 
