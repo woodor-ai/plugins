@@ -5,6 +5,8 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SKILL = PLUGIN_ROOT / "skills" / "handoff" / "SKILL.md"
 PICKUP = PLUGIN_ROOT / "bin" / "handoff-pickup.py"
+CODEX_HOOKS = PLUGIN_ROOT / "hooks" / "hooks.json"
+CLAUDE_HOOKS = PLUGIN_ROOT / "claude-hooks" / "hooks.json"
 
 
 def test_skill_keeps_handoff_fast_and_delta_focused():
@@ -37,4 +39,25 @@ def test_host_manifests_publish_the_same_version():
         (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
 
-    assert claude["version"] == codex["version"] == "0.6.3"
+    assert claude["version"] == codex["version"] == "0.6.4"
+    assert claude["hooks"] == "./claude-hooks/hooks.json"
+
+
+def test_host_hooks_use_their_supported_command_runners():
+    codex = json.loads(CODEX_HOOKS.read_text(encoding="utf-8"))
+    claude = json.loads(CLAUDE_HOOKS.read_text(encoding="utf-8"))
+    codex_handlers = [
+        handler
+        for group in codex["hooks"]["SessionStart"]
+        for handler in group["hooks"]
+    ]
+    claude_handlers = [
+        handler
+        for group in claude["hooks"]["SessionStart"]
+        for handler in group["hooks"]
+    ]
+
+    assert all("handoff-python-hook" in handler["command"] for handler in codex_handlers)
+    assert all("||" not in handler["command"] for handler in codex_handlers)
+    assert all("commandWindows" in handler for handler in codex_handlers)
+    assert all("||" in handler["command"] for handler in claude_handlers)

@@ -1,0 +1,14 @@
+#!/bin/sh
+
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$1"
+fi
+if command -v py >/dev/null 2>&1; then
+    exec py -3 "$1"
+fi
+if command -v python >/dev/null 2>&1; then
+    exec python "$1"
+fi
+
+echo "handoff: Python 3 is required to run SessionStart hooks" >&2
+exit 127

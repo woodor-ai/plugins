@@ -1,6 +1,6 @@
 {
   "name": "handoff",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Write a focused Codex session handoff card, load it in the next session, and keep the plugin current with handoff-update.",
   "author": {
     "name": "Woodor",

@@ -78,7 +78,7 @@ handoff-update --target codex
 
 After the first installation of handoff 0.6.3 or newer, open one new session
 and then one new terminal before using `handoff-update`. After each update,
-start a new Codex thread or restart Claude Code.
+restart the Codex app or app-server, or restart Claude Code.
 
 ## Example
 

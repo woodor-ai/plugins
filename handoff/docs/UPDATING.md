@@ -40,6 +40,10 @@ PATH block is not rewritten on every SessionStart. After handoff itself is
 updated, the next new session refreshes the stable updater from the newly
 installed plugin files.
 
+Starting with handoff 0.6.4, Codex startup also removes retired inline
+SessionStart hooks written by handoff 0.6.0 and earlier. It preserves native
+plugin hook trust and reindexes any unrelated inline SessionStart hook state.
+
 ## Distribution source
 
 handoff is distributed through the Woodor marketplace. The release commit on
@@ -98,9 +102,9 @@ open a new terminal so the PATH change is visible. All later updates use only
 ## Completion and failure behavior
 
 After updating, the command probes the installed versions again and prints the
-result for each selected host. A new Codex thread or Claude Code restart is
-still required because active sessions keep the skill and hook version loaded
-at session start.
+result for each selected host. Restart the Codex app or app-server, or restart
+Claude Code, because a long-running Codex app-server can retain hook paths from
+the plugin cache that existed before the update.
 
 The updater stops on the first host CLI failure and returns a nonzero exit
 status. It does not roll back a host that already completed successfully; run

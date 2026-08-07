@@ -24,11 +24,11 @@ installer = _load(
 
 
 def test_version_parsers_recognize_both_host_outputs():
-    codex = "handoff@woodor  installed, enabled  0.6.3  /tmp/handoff\n"
-    claude = "❯ handoff@woodor\n  Version: 0.6.3\n  Scope: user\n"
+    codex = "handoff@woodor  installed, enabled  0.6.4  /tmp/handoff\n"
+    claude = "❯ handoff@woodor\n  Version: 0.6.4\n  Scope: user\n"
 
-    assert updater._codex_version(codex) == "0.6.3"
-    assert updater._claude_version(claude) == "0.6.3"
+    assert updater._codex_version(codex) == "0.6.4"
+    assert updater._claude_version(claude) == "0.6.4"
     assert updater._codex_version("handoff@woodor  not installed\n") is None
 
 
@@ -54,7 +54,7 @@ def test_default_update_targets_only_installed_integrations(monkeypatch, capsys)
 
     assert updater.main([]) == 0
     assert calls == ["claude-code", "codex"]
-    assert "Start a new Codex thread" in capsys.readouterr().out
+    assert "Restart the Codex app or app-server" in capsys.readouterr().out
 
 
 def test_posix_bootstrap_installs_stable_command_and_path_once(tmp_path):

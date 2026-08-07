@@ -1,0 +1,47 @@
+{
+  "description": "Install the stable handoff-update command and auto-pickup handoff-pending.md on session start. Emits pending content as additionalContext and atomically archives it.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-bootstrap-host.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\" || python \"${CLAUDE_PLUGIN_ROOT}/bin/handoff-pickup-host.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

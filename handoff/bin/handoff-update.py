@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 
-UPDATER_VERSION = "0.6.3"
+UPDATER_VERSION = "0.6.4"
 PLUGIN_SELECTOR = "handoff@woodor"
 TARGET_CLAUDE_CODE = "claude-code"
 TARGET_CODEX = "codex"
@@ -186,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     for target in targets:
         version = refreshed.get(target)
         print(f"Updated {target}: {version.version if version else 'unknown'}")
-    print("Start a new Codex thread or restart Claude Code to load the update.")
+    print("Restart the Codex app or app-server, or restart Claude Code, to load the update.")
     return 0
 
 
