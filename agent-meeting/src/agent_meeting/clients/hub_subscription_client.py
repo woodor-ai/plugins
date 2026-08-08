@@ -204,7 +204,6 @@ class HubSubscriptionClient:
                 continue
 
             backoff = self.BACKOFF_BASE
-            self.log("ws connected")
             if self.on_connect:
                 self.on_connect()
 
@@ -213,7 +212,6 @@ class HubSubscriptionClient:
             last_ping_time = time.time()
             while not disconnected:
                 if self.pause_event is not None and self.pause_event.is_set():
-                    self.log("delivery paused; closing subscription")
                     if self.paused_ack_event is not None:
                         self.paused_ack_event.set()
                     break

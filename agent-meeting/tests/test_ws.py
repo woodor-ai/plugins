@@ -34,6 +34,20 @@ import urllib.error
 TEST_PORT = 8799
 HOST = "127.0.0.1"
 TEST_PROJECT = "ws1proj"
+SOURCE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+AM_MSGD_PATH = os.path.join(
+    SOURCE_ROOT,
+    "agent_meeting",
+    "commands",
+    "am_msgd_cli.py",
+)
+MONITOR_PATH = os.path.join(
+    SOURCE_ROOT,
+    "agent_meeting",
+    "ai_platforms",
+    "claude_code",
+    "session_message_monitor.py",
+)
 
 # ---------- minimal WS client ----------
 
@@ -221,12 +235,9 @@ def _http(path: str, method="GET", body=None, params_=None, method_=None,
 def start_am_msgd(db_dir: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["MEETING_HOME"] = db_dir
-    # 初始化 DB inline
-    am_msgd_path = os.path.join(
-        os.path.dirname(__file__), "..", "bin", "am-msgd"
-    )
+    env["PYTHONPATH"] = SOURCE_ROOT
     proc = subprocess.Popen(
-        [sys.executable, am_msgd_path, "serve", f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, AM_MSGD_PATH, "serve", f"--port={TEST_PORT}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -672,8 +683,7 @@ def test_monitor_no_tmp_file(db_dir: str):
     check("TC-PRA2: no STATE_FILE before test", not os.path.exists(state_file))
 
     # Verify monitor.py source has no STATE_FILE / last_msg_id references
-    monitor_path = os.path.join(os.path.dirname(__file__), "..", "bin", "monitor.py")
-    with open(monitor_path, encoding="utf-8") as f:
+    with open(MONITOR_PATH, encoding="utf-8") as f:
         src = f.read()
     check("TC-PRA2: STATE_FILE removed from monitor source",
           "STATE_FILE" not in src,

@@ -16,6 +16,7 @@ derive_project() entirely, so identity never depends on the machine running
 the test.
 
 Test cases:
+  TC-M0: healthy startup keeps routine connection state out of stderr
   TC-M1: monitor 连上后能收到实时消息并打出正确的通知 stdout 行
   TC-M2: 带游标连入能补未读（backlog replay）
   TC-M3: server ping → monitor 回 masked pong（central am-msgd 不报协议错、连接不掉）
@@ -501,6 +502,26 @@ os.execv({real_path!r}, [{real_path!r}] + args)
 
 # ---------- test cases ----------
 
+def test_m0_healthy_startup_stderr_is_empty(db_dir: str):
+    """TC-M0: a healthy monitor startup does not emit routine state to stderr."""
+    print("\n[TC-M0] healthy startup keeps stderr empty")
+
+    proc, shared, _ = start_monitor("m0_healthy", db_dir)
+    try:
+        time.sleep(2.0)
+        check("TC-M0: monitor remains alive", proc.poll() is None)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+    stderr = proc.stderr.read().decode(errors="replace")  # type: ignore[union-attr]
+    check("TC-M0: routine startup emits no stderr", stderr == "", repr(stderr))
+    check(
+        "TC-M0: startup banner remains on stdout",
+        any("monitor started" in line for line in shared),
+        repr(shared),
+    )
+
 def test_m1_realtime_stdout(db_dir: str):
     """TC-M1: monitor 连上后能收到实时消息并打出正确的通知 stdout 行"""
     print("\n[TC-M1] 实时消息 → stdout 格式")
@@ -974,6 +995,7 @@ def main():
         try:
             test_stdout_format_unchanged()
             test_emit_message_unit()
+            test_m0_healthy_startup_stderr_is_empty(tmp)
             test_m1_realtime_stdout(tmp)
             test_m2_backlog_replay(tmp)
             test_m3_ping_pong(tmp)

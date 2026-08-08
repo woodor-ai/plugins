@@ -28,8 +28,15 @@ import urllib.request
 
 TEST_PORT = 8801  # distinct port, not used by any other test file
 HOST = "127.0.0.1"
+SOURCE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+AM_MSGD_PATH = os.path.join(
+    SOURCE_ROOT,
+    "agent_meeting",
+    "commands",
+    "am_msgd_cli.py",
+)
 
-# ---------- DB bootstrap (must match bin/am-msgd's _SCHEMA) ----------
+# ---------- DB bootstrap (must match am-msgd's schema) ----------
 
 _SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -106,7 +113,6 @@ def init_db(home_dir: str):
 # ---------- central am-msgd lifecycle ----------
 
 def start_am_msgd(home_dir: str) -> subprocess.Popen:
-    am_msgd_path = os.path.join(os.path.dirname(__file__), "..", "bin", "am-msgd")
     env = os.environ.copy()
     # Both MUST be set: MEETING_HOME so the central am-msgd owns our temp DB, and
     # AM_MSGD_HOST so nothing in this process's own code path (none here,
@@ -114,8 +120,9 @@ def start_am_msgd(home_dir: str) -> subprocess.Popen:
     # discovering/registering against a real production central am-msgd.
     env["MEETING_HOME"] = home_dir
     env["AM_MSGD_HOST"] = f"http://{HOST}:{TEST_PORT}"
+    env["PYTHONPATH"] = SOURCE_ROOT
     proc = subprocess.Popen(
-        [sys.executable, am_msgd_path, "serve", f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, AM_MSGD_PATH, "serve", f"--port={TEST_PORT}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

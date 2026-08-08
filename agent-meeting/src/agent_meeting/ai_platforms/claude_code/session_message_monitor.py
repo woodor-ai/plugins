@@ -361,10 +361,6 @@ def _on_text(msg: dict) -> None:
         else:
             _emit_message(sender, sender_project, ask, group)
 
-    elif msg.get("type") == "caught_up":
-        _log(f"caught_up cursor={msg.get('cursor')}")
-
-
 def _on_connect() -> None:
     # Re-register on every reconnect so role/cwd are correct after central am-msgd restart/wipe.
     _register()

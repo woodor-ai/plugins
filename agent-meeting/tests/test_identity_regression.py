@@ -38,6 +38,13 @@ import urllib.request
 
 TEST_PORT = 8797  # distinct port to avoid collision with live central am-msgd (8765) or other test (8799)
 HOST = "127.0.0.1"
+SOURCE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+AM_MSGD_PATH = os.path.join(
+    SOURCE_ROOT,
+    "agent_meeting",
+    "commands",
+    "am_msgd_cli.py",
+)
 
 # ---------- DB bootstrap (new composite-key schema) ----------
 
@@ -116,11 +123,11 @@ def init_db(home_dir: str):
 # ---------- central am-msgd lifecycle ----------
 
 def start_am_msgd(home_dir: str) -> subprocess.Popen:
-    am_msgd_path = os.path.join(os.path.dirname(__file__), "..", "bin", "am-msgd")
     env = os.environ.copy()
     env["MEETING_HOME"] = home_dir
+    env["PYTHONPATH"] = SOURCE_ROOT
     proc = subprocess.Popen(
-        [sys.executable, am_msgd_path, "serve", f"--port={TEST_PORT}", "--no-mdns"],
+        [sys.executable, AM_MSGD_PATH, "serve", f"--port={TEST_PORT}", "--no-mdns"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
