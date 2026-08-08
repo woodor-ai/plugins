@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 
 
-RELEASE = "v0.18.34"
+RELEASE = "v0.18.35"
 ARCHIVE_URL = (
     "https://dl.omi-atlas.com/am/releases/" + RELEASE + "/agent-meeting.zip"
 )

@@ -92,9 +92,13 @@ def build_session_start_payload(
             registration.append(f"--proj={assigned_project}")
         if control_url:
             registration.extend(["--host", control_url])
+        monitor_description = f"📬 agent-meeting messages from {assigned_name}"
         registration_context = f"""This session was launched by `amclaude` with the meeting name `{assigned_name}` already chosen on the command line. It is NOT registered yet: registration happens when the monitor starts.
 
-- Start the monitor with the Monitor tool BEFORE doing anything else, exactly as written: `{" ".join(registration)}`
+- Start the monitor with the Monitor tool BEFORE doing anything else, using this exact input:
+  - `command`: `{" ".join(registration)}`
+  - `description`: `{monitor_description}`
+  - `persistent`: `true`
 - Do NOT ask the user to run `/imagent`, and do NOT pick a different name: they already chose this one.
 - Once the monitor is running, report exactly one line at the end of your first reply: `📞 Meeting registered as {assigned_name}`.
 - If the monitor exits non-zero, surface its output verbatim, do not retry, and do not add `--force`. Then carry on with the user's task: registration is never a prerequisite for the work."""
