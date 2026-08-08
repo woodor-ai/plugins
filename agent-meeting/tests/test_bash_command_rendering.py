@@ -193,7 +193,7 @@ def test_assigned_session_context_orders_the_monitor_not_a_slash_command(
     context = payload["hookSpecificOutput"]["additionalContext"]
     monitor = (tmp_path / "bin" / "am-session-monitor.exe").as_posix()
     assert f"{monitor} worker --proj=tools --host http://10.0.0.114:8765" in context
-    assert "`description`: `📬 agent-meeting messages from worker`" in context
+    assert "`description`: `📬 agent-meeting inbox for worker`" in context
     assert "`persistent`: `true`" in context
     assert "NO meeting name yet" not in context
     assert "\\" not in context.split("Backend:")[0]
@@ -208,7 +208,9 @@ def test_manual_monitor_uses_the_same_description_contract():
         / "SKILL.md"
     ).read_text(encoding="utf-8")
 
-    assert "`description`: `📬 agent-meeting messages from <name>`" in skill
+    assert "`description`: `📬 agent-meeting inbox for <name>`" in skill
+    assert "`~/.agent-meeting/bin/am message <recipient> <msg_id>`" in skill
+    assert "Read recent history" not in skill
     assert "📞 agent-meeting: incoming call" not in skill
 
 

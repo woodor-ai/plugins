@@ -463,7 +463,7 @@ def test_windows_service_uses_console_free_entrypoint_and_log(
     runtime_command = (
         meeting_home
         / "runtimes"
-        / "0.18.37"
+        / "0.18.38"
         / "venv"
         / "Scripts"
         / "am-msgd-service.exe"

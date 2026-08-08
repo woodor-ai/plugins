@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-08 · version 0.18.37
+Last updated: 2026-08-08 · version 0.18.38
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -133,7 +133,7 @@ action, so `/imagent NAME` is not needed. Because a hook cannot make a session
 speak, the wrapper also supplies claude's initial prompt so that first action
 happens at launch instead of waiting for the user; a launch that already
 carries its own prompt keeps it. Claude monitor summaries use the fixed
-`📬 agent-meeting messages from <name>` description for both assigned and
+`📬 agent-meeting inbox for <name>` description for both assigned and
 manually registered sessions. A generated fallback name registers
 nothing and only labels the session for lifecycle control. `amcodex` is the corresponding Codex wrapper and
 accepts the same `--name` option plus `--model sol|terra` (default `sol`) and
@@ -203,10 +203,13 @@ Common options:
 - `show`: `--limit`, `--host`.
 - `turn` and `delete`: `--host`.
 
-`message` is am-codexd's precise-read path. A notification carrying
-`msg_id=17029` must be followed by `am message SELF 17029`; opening a
-whole conversation can expose later messages and lead to the wrong task being
-handled.
+`message` is the precise-read path for both Claude monitors and am-codexd. A
+Claude notification renders the canonical sender, current recipient, and
+global ID as `📬 New Message from SENDER to RECIPIENT`, followed by
+`[via woodor:agent-meeting] Message ID: 17029`; group notifications preserve
+`in group GROUP[ @you]` between sender and recipient. The agent must follow the
+notification with `am message RECIPIENT 17029`. Opening a whole conversation
+can expose later messages and lead to the wrong task being handled.
 
 For an `amcodex` session, `am-codexd` may deliver one compact working-turn
 notification through Codex app-server `turn/steer`. Such a notification contains

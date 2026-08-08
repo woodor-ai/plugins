@@ -326,30 +326,29 @@ def _resolve_ws_addr():
         return None
 
 
-def _emit_message(peer: str, peer_project: str, ask, group=None, mentioned: bool = False):
+def _emit_message(peer: str, peer_project: str, message_id: int, group=None, mentioned: bool = False):
     """Print the harness-facing notification line. Format is frozen -- do not change.
 
     peer is always rendered as the canonical peer@peer_project identity,
-    including peer@* for a global sender. SKILL.md's peer-extraction
-    instructions must stay in sync with this format.
+    including peer@* for a global sender. The current monitor identity is the
+    recipient, and message_id is the exact message the skill must read.
+    SKILL.md's extraction instructions must stay in sync with this format.
     """
     peer_id = f"{peer}@{peer_project}"
     at_tag = " @you" if (group and mentioned) else ""
     location = f" in group {group}{at_tag}" if group else ""
-    if ask:
-        clean = ask.replace("\r", " ").replace("\n", " ")
-        if len(clean) > 100:
-            clean = clean[:100] + "..."
-        print(f"📬 New Message from {peer_id}{location} [via woodor:agent-meeting]: {clean}", flush=True)
-    else:
-        print(f"📬 New Message from {peer_id}{location} [via woodor:agent-meeting]", flush=True)
+    print(
+        f"📬 New Message from {peer_id}{location} to {_display_id} "
+        f"[via woodor:agent-meeting] Message ID: {message_id}",
+        flush=True,
+    )
 
 
 def _on_text(msg: dict) -> None:
     if msg.get("type") == "msg":
         sender = msg.get("sender", "")
         sender_project = msg.get("sender_project", "")
-        ask = msg.get("ask") or None
+        message_id = msg.get("msg_id")
         group = msg.get("group") or None
         # suppress self-sent messages
         if sender == SELF and sender_project == _PROJECT:
@@ -357,9 +356,9 @@ def _on_text(msg: dict) -> None:
         if "mention" in msg:
             if not msg["mention"]:
                 return
-            _emit_message(sender, sender_project, ask, group, mentioned=True)
+            _emit_message(sender, sender_project, message_id, group, mentioned=True)
         else:
-            _emit_message(sender, sender_project, ask, group)
+            _emit_message(sender, sender_project, message_id, group)
 
 def _on_connect() -> None:
     # Re-register on every reconnect so role/cwd are correct after central am-msgd restart/wipe.

@@ -539,7 +539,7 @@ def test_m1_realtime_stdout(db_dir: str):
         time.sleep(2.0)
 
         # Send a live message with ask
-        _send("m1_alice", "m1_bob", "hello world", ask="请回复")
+        with_ask = _send("m1_alice", "m1_bob", "hello world", ask="请回复")
 
         lines = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=6.0,
                                      _shared_lines=shared, _shared_offset=offset)
@@ -547,19 +547,30 @@ def test_m1_realtime_stdout(db_dir: str):
         check("TC-M1: got notification stdout line", len(lines) >= 1, f"got {lines}")
         if lines:
             line = lines[0]
-            expected_prefix = f"📬 New Message from m1_alice@{TEST_PROJECT} [via woodor:agent-meeting]:"
+            expected = (
+                f"📬 New Message from m1_alice@{TEST_PROJECT} "
+                f"to m1_bob@{TEST_PROJECT} [via woodor:agent-meeting] "
+                f"Message ID: {with_ask['msg_id']}"
+            )
             check("TC-M1: stdout format correct",
-                  line.startswith(expected_prefix),
+                  line == expected,
                   f"got: {line!r}")
-            check("TC-M1: ask text in stdout",
-                  "请回复" in line, f"got: {line!r}")
+            check("TC-M1: ask text omitted from compact notification",
+                  "请回复" not in line, f"got: {line!r}")
 
         # Send a message without ask
-        _send("m1_alice", "m1_bob", "no ask msg")
+        without_ask = _send("m1_alice", "m1_bob", "no ask msg")
         lines2 = collect_stdout_lines(proc, "📬 New Message", count=1, timeout=5.0,
                                       _shared_lines=shared, _shared_offset=offset)
         check("TC-M1: no-ask line correct",
-              any(l == f"📬 New Message from m1_alice@{TEST_PROJECT} [via woodor:agent-meeting]" for l in lines2),
+              any(
+                  l == (
+                      f"📬 New Message from m1_alice@{TEST_PROJECT} "
+                      f"to m1_bob@{TEST_PROJECT} [via woodor:agent-meeting] "
+                      f"Message ID: {without_ask['msg_id']}"
+                  )
+                  for l in lines2
+              ),
               f"got: {lines2}")
 
     finally:
@@ -872,15 +883,12 @@ def test_stdout_format_unchanged():
     with open(MONITOR_IMPLEMENTATION_PATH, encoding="utf-8") as f:
         src = f.read()
 
-    # 1:1 format: peer_id (name@project, or bare name for the global "*"
-    # project) + empty location → no "in group"
-    template_with_ask = '📬 New Message from {peer_id}{location} [via woodor:agent-meeting]: {clean}'
-    template_without_ask = '📬 New Message from {peer_id}{location} [via woodor:agent-meeting]'
+    template_start = '📬 New Message from {peer_id}{location} to {_display_id} '
+    template_end = '[via woodor:agent-meeting] Message ID: {message_id}'
 
-    check("FMT: with-ask format string present verbatim",
-          template_with_ask in src, "not found in monitor.py source")
-    check("FMT: without-ask format string present verbatim",
-          template_without_ask in src, "not found in monitor.py source")
+    check("FMT: exact-message format string present verbatim",
+          template_start in src and template_end in src,
+          "not found in monitor.py source")
 
 
 def test_emit_message_unit():
@@ -898,7 +906,7 @@ def test_emit_message_unit():
     with open(MONITOR_IMPLEMENTATION_PATH, encoding="utf-8") as f:
         src = f.read()
 
-    ns: dict = {}
+    ns: dict = {"_display_id": "receiver@wsproj"}
     # Extract and exec just _emit_message so we don't trigger module-level side effects
     lines = src.splitlines()
     start = next(i for i, l in enumerate(lines) if l.startswith("def _emit_message("))
@@ -923,39 +931,44 @@ def test_emit_message_unit():
     # Test group message
     buf = io.StringIO()
     with redirect_stdout(buf):
-        emit("alice", "wsproj", "请回复", "dev-chan")
+        emit("alice", "wsproj", 101, "dev-chan")
     line = buf.getvalue().strip()
     check("TC-MG2: group msg has 'in group dev-chan'",
           "in group dev-chan" in line, repr(line))
     check("TC-MG2: group msg has sender@project",
           "alice@wsproj" in line, repr(line))
-    check("TC-MG2: group msg has ask",
-          "请回复" in line, repr(line))
+    check("TC-MG2: group msg has recipient and message ID",
+          "to receiver@wsproj" in line and "Message ID: 101" in line, repr(line))
 
-    # Test group message without ask — exact match, no trailing ask/colon
+    # Test a second group message — exact match including recipient and ID.
     buf2 = io.StringIO()
     with redirect_stdout(buf2):
-        emit("bob", "wsproj", None, "team-chat")
+        emit("bob", "wsproj", 102, "team-chat")
     line2 = buf2.getvalue().strip()
     check("TC-MG2: group no-ask has 'in group team-chat'",
           "in group team-chat" in line2, repr(line2))
-    check("TC-MG2: group no-ask exact format (no ask suffix)",
-          line2 == "📬 New Message from bob@wsproj in group team-chat [via woodor:agent-meeting]", repr(line2))
+    check("TC-MG2: group exact format",
+          line2 == (
+              "📬 New Message from bob@wsproj in group team-chat to receiver@wsproj "
+              "[via woodor:agent-meeting] Message ID: 102"
+          ), repr(line2))
 
     # Test 1:1 message — must NOT contain "in group"
     buf3 = io.StringIO()
     with redirect_stdout(buf3):
-        emit("carol", "wsproj", "hi", None)
+        emit("carol", "wsproj", 103, None)
     line3 = buf3.getvalue().strip()
     check("TC-MG2: 1:1 msg no 'in group'",
           "in group" not in line3, repr(line3))
     check("TC-MG2: 1:1 msg has sender@project",
           "carol@wsproj" in line3, repr(line3))
+    check("TC-MG2: 1:1 msg has recipient and message ID",
+          "to receiver@wsproj" in line3 and "Message ID: 103" in line3, repr(line3))
 
     # Test 1:1 message with group omitted (default)
     buf4 = io.StringIO()
     with redirect_stdout(buf4):
-        emit("dave", "wsproj", None)
+        emit("dave", "wsproj", 104)
     line4 = buf4.getvalue().strip()
     check("TC-MG2: 1:1 default no 'in group'",
           "in group" not in line4, repr(line4))
@@ -965,10 +978,13 @@ def test_emit_message_unit():
     # _fmt_id) for the project that means "no project restriction".
     buf5 = io.StringIO()
     with redirect_stdout(buf5):
-        emit("erin", "*", "hi", None)
+        emit("erin", "*", 105, None)
     line5 = buf5.getvalue().strip()
     check("TC-MG2: global project keeps canonical @* suffix",
-          line5 == "📬 New Message from erin@* [via woodor:agent-meeting]: hi", repr(line5))
+          line5 == (
+              "📬 New Message from erin@* to receiver@wsproj "
+              "[via woodor:agent-meeting] Message ID: 105"
+          ), repr(line5))
 
 
 # ---------- main ----------

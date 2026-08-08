@@ -92,7 +92,7 @@ def build_session_start_payload(
             registration.append(f"--proj={assigned_project}")
         if control_url:
             registration.extend(["--host", control_url])
-        monitor_description = f"📬 agent-meeting messages from {assigned_name}"
+        monitor_description = f"📬 agent-meeting inbox for {assigned_name}"
         registration_context = f"""This session was launched by `amclaude` with the meeting name `{assigned_name}` already chosen on the command line. It is NOT registered yet: registration happens when the monitor starts.
 
 - Start the monitor with the Monitor tool BEFORE doing anything else, using this exact input:
