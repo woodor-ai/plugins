@@ -24,6 +24,7 @@ from agent_meeting.lifecycle_control.terminals import (
 )
 from agent_meeting.lifecycle_control.status_detectors import detect_claude_state
 from agent_meeting.lifecycle_control.rules import evaluate_session, load_rule_config
+from agent_meeting.operating_systems.process_liveness import is_process_alive
 
 
 API_HOST = "127.0.0.1"
@@ -41,14 +42,6 @@ def control_home() -> Path:
         os.environ.get("MEETING_HOME") or (Path.home() / ".agent-meeting")
     )
     return meeting_home / "control"
-
-
-def _pid_alive(pid) -> bool:
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, TypeError, ValueError):
-        return False
 
 
 def _read_json(path: Path) -> dict:
@@ -164,7 +157,7 @@ class Controller:
         monitor_controls: dict[str, dict] = {}
         for monitor_path in monitor_dir.glob("*.json"):
             monitor = _read_json(monitor_path)
-            if not monitor or not _pid_alive(monitor.get("monitor_pid")):
+            if not monitor or not is_process_alive(monitor.get("monitor_pid")):
                 try:
                     monitor_path.unlink()
                 except OSError:
@@ -179,7 +172,7 @@ class Controller:
             descriptor = _read_json(descriptor_path)
             if not descriptor:
                 continue
-            if not _pid_alive(descriptor.get("wrapper_pid")):
+            if not is_process_alive(descriptor.get("wrapper_pid")):
                 try:
                     descriptor_path.unlink()
                 except OSError:

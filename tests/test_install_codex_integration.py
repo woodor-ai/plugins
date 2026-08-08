@@ -37,7 +37,7 @@ def test_installs_owned_skills_without_a_marketplace(tmp_path, monkeypatch):
         assert owner == {
             "product": "agent-meeting",
             "schema_version": 1,
-            "version": "0.18.35",
+            "version": "0.18.36",
         }
 
 

@@ -1,6 +1,6 @@
 # agent-meeting CLI surface
 
-Last updated: 2026-08-07 · version 0.18.35
+Last updated: 2026-08-07 · version 0.18.36
 
 The runtime command is `~/.agent-meeting/bin/am`. On POSIX it is an
 atomic symlink to the selected immutable runtime; on Windows it is the
@@ -162,6 +162,9 @@ amclaude --name NAME --am-msgd 192.168.1.20
 `am-ctl status --json` is the machine-readable local inventory used by
 save-money and other local integrations. Control tokens remain private; the
 JSON only exposes public session fields and declared capabilities.
+On Windows, lifecycle inventory probes wrappers and Claude monitors through
+non-terminating process handles. It never uses POSIX signal-zero probing,
+which Python maps to process termination on Windows.
 
 ## User-facing commands
 

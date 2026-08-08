@@ -35,6 +35,12 @@ def is_windows_process_alive(process_id: int) -> bool:
 
 def is_process_alive(process_id: int) -> bool:
     """Return whether a PID is alive on the current operating system."""
+    try:
+        process_id = int(process_id)
+    except (TypeError, ValueError):
+        return False
+    if process_id <= 0:
+        return False
     if sys.platform.startswith("win"):
         return is_windows_process_alive(process_id)
     try:

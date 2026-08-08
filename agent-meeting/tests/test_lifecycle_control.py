@@ -230,6 +230,122 @@ def test_controller_discovers_live_amclaude_descriptor(tmp_path, monkeypatch):
     assert sessions[0]["state"] == "idle"
 
 
+def test_controller_scan_never_uses_os_kill_for_liveness(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_HOME", str(tmp_path))
+    from agent_meeting.lifecycle_control import controller_process
+
+    wrappers = tmp_path / "control" / "wrappers"
+    monitors = tmp_path / "control" / "monitors"
+    wrappers.mkdir(parents=True)
+    monitors.mkdir(parents=True)
+    (wrappers / "amclaude-instance-1.json").write_text(
+        json.dumps(
+            {
+                "wrapper": "amclaude",
+                "platform": "claude",
+                "identity": "worker@tools",
+                "instance_id": "instance-1",
+                "wrapper_pid": 2002,
+                "cwd": str(tmp_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (monitors / "claude-monitor-1.json").write_text(
+        json.dumps(
+            {
+                "identity": "worker@tools",
+                "monitor_pid": 1001,
+                "control": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    probed = []
+    monkeypatch.setattr(
+        controller_process,
+        "is_process_alive",
+        lambda pid: probed.append(pid) or True,
+    )
+    monkeypatch.setattr(
+        controller_process.os,
+        "kill",
+        lambda *_args: pytest.fail(
+            "controller liveness probes must not call os.kill"
+        ),
+    )
+    monkeypatch.setattr(
+        controller_process,
+        "_http_json",
+        lambda *_args, **_kwargs: {"sessions": []},
+    )
+    monkeypatch.setattr(
+        controller_process,
+        "detect_claude_state",
+        lambda _cwd, **_kwargs: {
+            "state": "idle",
+            "confidence": "high",
+            "source": "test",
+        },
+    )
+
+    sessions = controller_process.Controller().scan()
+
+    assert probed == [1001, 2002]
+    assert sessions[0]["delivery_control"] == {}
+
+
+def test_cross_platform_liveness_rejects_an_invalid_pid():
+    from agent_meeting.operating_systems.process_liveness import is_process_alive
+
+    assert is_process_alive(None) is False
+    assert is_process_alive(0) is False
+
+
+def test_windows_liveness_probe_queries_without_terminating(monkeypatch):
+    import ctypes
+    from agent_meeting.operating_systems import process_liveness
+
+    calls = []
+
+    class Kernel32:
+        @staticmethod
+        def OpenProcess(access, inherit, pid):
+            calls.append(("open", access, inherit, pid))
+            return 1
+
+        @staticmethod
+        def GetExitCodeProcess(handle, exit_code):
+            calls.append(("exit-code", handle))
+            exit_code._obj.value = 259
+            return 1
+
+        @staticmethod
+        def CloseHandle(handle):
+            calls.append(("close", handle))
+            return 1
+
+    fake_ctypes = SimpleNamespace(
+        windll=SimpleNamespace(kernel32=Kernel32()),
+        c_ulong=ctypes.c_ulong,
+        byref=ctypes.byref,
+    )
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(process_liveness.sys, "platform", "win32")
+    monkeypatch.setattr(
+        process_liveness.os,
+        "kill",
+        lambda *_args: pytest.fail("Windows liveness must not call os.kill"),
+    )
+
+    assert process_liveness.is_process_alive(13060) is True
+    assert calls == [
+        ("open", 0x1000, False, 13060),
+        ("exit-code", 1),
+        ("close", 1),
+    ]
+
+
 def test_amclaude_descriptor_does_not_persist_arguments(tmp_path, monkeypatch):
     monkeypatch.setenv("MEETING_HOME", str(tmp_path))
     from agent_meeting.launcher.amclaude_session import ClaudeSupervisor
@@ -730,7 +846,7 @@ def test_windows_login_task_preserves_custom_meeting_home(
     runtime_command = (
         meeting_home
         / "runtimes"
-        / "0.18.35"
+        / "0.18.36"
         / "venv"
         / "Scripts"
         / "am-ctld-service.exe"

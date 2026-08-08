@@ -26,7 +26,7 @@ def test_install_writes_direct_integration_without_claude_marketplace(
     module = _load_module()
     calls = []
     session_start = tmp_path / "meeting" / "bin" / "am-claude-session-start"
-    monkeypatch.setattr(module, "_plugin_version", lambda: "0.18.35")
+    monkeypatch.setattr(module, "_plugin_version", lambda: "0.18.36")
     monkeypatch.setattr(
         module.claude_integration,
         "install_skills",
@@ -63,7 +63,7 @@ def test_install_writes_direct_integration_without_claude_marketplace(
             {
                 "source_root": REPOSITORY_ROOT,
                 "claude_home": claude_home,
-                "version": "0.18.35",
+                "version": "0.18.36",
             },
         ),
         (
@@ -85,7 +85,7 @@ def test_removes_legacy_plugin_and_disposable_marketplace(monkeypatch):
         commands.append(command)
         if command[-3:] == ["plugin", "list", "--json"]:
             output = json.dumps(
-                [{"id": "agent-meeting@woodor", "version": "0.18.35"}]
+                [{"id": "agent-meeting@woodor", "version": "0.18.36"}]
             )
         elif command[-4:] == ["plugin", "marketplace", "list", "--json"]:
             output = json.dumps(
